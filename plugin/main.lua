@@ -201,13 +201,16 @@ local function physRelease(reason)
 end
 local function physStart()
     if not (S.physUse and physApi() and S.sel and S.target) then return end
+    S.physNo = S.physNo or {}
+    if S.physNo[S.sel.item] then return end
     physRelease()
     local sid = string.format("%d", S.sel.id)
     local ok, res, why = pcall(reskate.objects.physics, sid, { dynamic = true, mass = 20000, surface = false })
     if not ok or res ~= true then
         local reason = tostring(ok and why or res)
-        if reason ~= S.physWhy then reskate.log("Quick Drop helper: no smooth drag: " .. reason) end
+        if reason ~= S.physWhy then reskate.log("Quick Drop helper: no smooth drag for " .. tostring(S.sel.item) .. ": " .. reason) end
         S.physWhy = reason
+        if string.find(reason, "only fixed", 1, true) then S.physNo[S.sel.item] = true end
         return
     end
     local okm, m = pcall(reskate.objects.motion, sid)
@@ -217,6 +220,7 @@ local function physStart()
         return
     end
     S.physWhy = nil
+    S.physWorked = true
     S.phys = { sid = sid, id = S.sel.id, q0 = m.rotation, h0 = S.target.heading, rev0 = m.edit_revision, poseAt = -1e9,
         state = "drag", from = S.clock }
 end
@@ -273,11 +277,11 @@ local function scanTick()
         local ca, sa = math.cos(th.a), math.sin(th.a)
         local r1, f1 = V(ca, 0, -sa), V(sa, 0, ca)
         local ch0, sh0 = math.cos(sh.heading), math.sin(sh.heading)
-        local per = S.scanPer or 16
+        local per = S.scanPer or 6
         local t0 = now()
         for _ = 1, per do
             if th.k >= th.n * th.n then break end
-            if clockOk and now() - t0 > 0.006 then break end
+            if clockOk and now() - t0 > 0.0015 then break end
             local i, j = th.k % th.n, math.floor(th.k / th.n)
             th.k += 1
             local at = sh.pos + r1 * (-th.R + (i + 0.5) * 2 * th.R / th.n) + f1 * (-th.R + (j + 0.5) * 2 * th.R / th.n)
@@ -300,6 +304,13 @@ local function scanTick()
         if th.k < th.n * th.n then return end
         sh.thin, sh.thinDone = nil, true
         local pts = th.pts
+        if th.detail then
+            sh.extra = pts
+            sh.done = true
+            sh.others = nil
+            reskate.log(string.format("Quick Drop helper: measured %s: %d points, %d more in the fine pass", tostring(S.sel.item), sh.count or 0, #pts))
+            return
+        end
         if #pts >= 2 then
             -- the bar's direction: the main axis of the points, seen from above
             local mx, mz = 0, 0
@@ -335,11 +346,11 @@ local function scanTick()
     local ch, shh = math.cos(sh.heading), math.sin(sh.heading)
     local right, fwd = V(ch, 0, -shh), V(shh, 0, ch)
     local n = SCAN_N
-    local per = S.scanPer or 16
+    local per = S.scanPer or 6
     local t0 = now()
     for _ = 1, per do
         if sh.k >= n * n then break end
-        if clockOk and now() - t0 > 0.006 then break end
+        if clockOk and now() - t0 > 0.0015 then break end
         local i, j = sh.k % n, math.floor(sh.k / n)
         sh.k += 1
         local u = -sh.R + (i + 0.5) * 2 * sh.R / n
@@ -406,61 +417,48 @@ local function scanTick()
         sh.thin = sh.thin or { k = 0, n = 48, R = count > 0 and math.max(1, ext * sh.scale * 1.3) or 3, a = sh.heading + 0.35, pts = {} }
         return
     end
+    -- a quick fine pass over the object for thin parts the grid can miss (a rail on top, a pole)
+    if count >= 6 and not sh.thinDone then
+        sh.done = false
+        sh.thin = sh.thin or { k = 0, n = 32, R = math.max(1, ext * sh.scale * 1.1 + 0.3), a = sh.heading + 0.35, pts = {}, detail = true }
+        return
+    end
     sh.others = nil
     reskate.log(string.format("Quick Drop helper: measured %s: %d points across %.1f m", tostring(S.sel.item), count, sh.R * 2))
 end
-local function drawShape(d, t, hot)
+-- the measured shape as a box in the object's own frame (right, up, forward), unscaled: {lo, hi}
+local function shapeBox()
     local sh = S.shape
-    if not (sh and sh.done and S.sel and sh.id == S.sel.id and sh.count and sh.count > 0) then return end
-    local n = SCAN_N
-    local ch, shh, sc = math.cos(t.heading), math.sin(t.heading), t.scale
-    local right, fwd = V(ch, 0, -shh), V(shh, 0, ch)
+    if not (sh and sh.done and S.sel and sh.id == S.sel.id and (sh.count or 0) > 0) then return nil end
+    if sh.box ~= nil then return sh.box or nil end
+    local lx, ly, lz, hx, hy, hz = 1e9, 0, 1e9, -1e9, 0, -1e9
     if sh.bar then
-        -- a thin object: a line along its top, with posts down to the ground about every 0.4 m
-        local col = hot and "#ffe066" or "#ffffff55"
-        local th = hot and 3 or 1
-        local prev, prevW, lastPost = nil, nil, -1e9
-        for idx, q in ipairs(sh.bar) do
-            local wpos = t.pos + (right * q[1] + fwd * q[3]) * sc
-            local top = d:world_to_screen(wpos + V(0, q[2] * sc, 0))
-            if top then
-                if prev and prevW and len(wpos - prevW) < 0.6 * sc then d:line(prev, top, { colour = col, thickness = th }) end
-                local along = len(wpos - t.pos) * (q[1] * right.x >= 0 and 1 or -1)
-                if idx == 1 or idx == #sh.bar or math.abs(along - lastPost) > 0.4 * sc then
-                    local g = d:world_to_screen(wpos)
-                    if g and q[2] > 0.05 then d:line(top, g, { colour = col, thickness = 1 }) end
-                    lastPost = along
-                end
-            end
-            prev, prevW = top, wpos
+        for _, q in ipairs(sh.bar) do
+            lx, hx = math.min(lx, q[1] - 0.03), math.max(hx, q[1] + 0.03)
+            lz, hz = math.min(lz, q[3] - 0.03), math.max(hz, q[3] + 0.03)
+            ly, hy = math.min(ly, q[2]), math.max(hy, q[2])
         end
-        return
-    end
-    local R = sh.R / sh.scale
-    local pts, base = {}, {}
-    for k, y in pairs(sh.h) do
-        local i, j = (k - 1) % n, math.floor((k - 1) / n)
-        local u = -R + (i + 0.5) * 2 * R / n
-        local w = -R + (j + 0.5) * 2 * R / n
-        local wp = t.pos + (right * u + fwd * w) * sc
-        pts[k] = d:world_to_screen(wp + V(0, y * sc, 0))
-        base[k] = { wp = wp, y = y }
-    end
-    local col = hot and "#ffe066" or "#ffffff55"
-    local th = hot and 2 or 1
-    for k, a in pairs(pts) do
-        local i, j = (k - 1) % n, math.floor((k - 1) / n)
-        -- along rows and columns, where the surface is continuous
-        local kr, kc = k + 1, k + n
-        if i < n - 1 and pts[kr] and math.abs(sh.h[kr] - sh.h[k]) < 0.6 then d:line(a, pts[kr], { colour = col, thickness = th }) end
-        if j < n - 1 and pts[kc] and math.abs(sh.h[kc] - sh.h[k]) < 0.6 then d:line(a, pts[kc], { colour = col, thickness = th }) end
-        -- the sides: down to the ground where the shape ends
-        local edge = (i == 0 or not sh.h[k - 1]) or (i == n - 1 or not sh.h[k + 1]) or (j == 0 or not sh.h[k - n]) or (j == n - 1 or not sh.h[k + n])
-        if edge and sh.h[k] > 0.05 then
-            local g = d:world_to_screen(base[k].wp)
-            if g then d:line(a, g, { colour = col, thickness = th }) end
+    else
+        local n = SCAN_N
+        local R = sh.R / sh.scale
+        local half = R / n
+        for k, y in pairs(sh.h) do
+            local i, j = (k - 1) % n, math.floor((k - 1) / n)
+            local u = -R + (i + 0.5) * 2 * R / n
+            local w = -R + (j + 0.5) * 2 * R / n
+            lx, hx = math.min(lx, u - half), math.max(hx, u + half)
+            lz, hz = math.min(lz, w - half), math.max(hz, w + half)
+            ly, hy = math.min(ly, y), math.max(hy, y)
         end
     end
+    for _, q in ipairs(sh.extra or {}) do
+        lx, hx = math.min(lx, q[1] - 0.03), math.max(hx, q[1] + 0.03)
+        lz, hz = math.min(lz, q[3] - 0.03), math.max(hz, q[3] + 0.03)
+        ly, hy = math.min(ly, q[2]), math.max(hy, q[2])
+    end
+    if hx <= lx or hz <= lz or hy - ly < 0.01 then sh.box = false return nil end
+    sh.box = { V(lx, ly, lz), V(hx, hy, hz) }
+    return sh.box
 end
 
 -- sends the change to the game. The game takes at most 4 edits a second, counting refused tries, and one at a
@@ -922,9 +920,10 @@ local function newPanel(ui)
         if m and m ~= S.mode then S.mode = m end
         local sn = ui:toggle("snap", "Snap (G)", S.snap)
         if sn ~= nil then S.snap = sn end
-        local ph = ui:toggle("phys", "Smooth drag (offline)", S.physUse)
-        if ph ~= nil then S.physUse = ph end
-        if S.physUse and S.physWhy then ui:note("Smooth drag off: " .. S.physWhy) end
+        if S.physWorked then
+            local ph = ui:toggle("phys", "Smooth drag (offline)", S.physUse)
+            if ph ~= nil then S.physUse = ph end
+        end
     end
 
     -- every object in the park
@@ -1288,9 +1287,10 @@ reskate.on("draw", function(d)
         local ok, hit = pcall(reskate.world.pick, p + V(0, 6, 0), p - V(0, 1, 0))
         if ok and hit and hit.object and hit.object.position and len(hit.object.position - S.sel.pos0) < 0.5 then S.sel.bp = hit.object.blueprint end
     end
+    local bx = nil
     if S.sel.bp then
         S.boundsCache = S.boundsCache or {}
-        local bx = S.boundsCache[S.sel.bp]
+        bx = S.boundsCache[S.sel.bp]
         if bx == nil then
             local ok, a, b = false, nil, nil
             if reskate.entities then ok, a, b = pcall(reskate.entities.bounds, S.sel.bp) end
@@ -1298,23 +1298,23 @@ reskate.on("draw", function(d)
             bx = (ok and a and b) and { a, b } or false
             S.boundsCache[S.sel.bp] = bx
         end
-        if bx then
-            local lo, hi = bx[1], bx[2]
-            local ext = math.max(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z) * t.scale
-            S.handleLen = clamp(ext * 0.55, 0.6, 6)
-            local ch, sh, sc = math.cos(t.heading), math.sin(t.heading), t.scale
-            local function W(x, y, z) return p + V(x * ch + z * sh, y, -x * sh + z * ch) * sc end
-            local c = {}
-            for i = 0, 7 do
-                c[i] = W(i % 2 == 0 and lo.x or hi.x, math.floor(i / 2) % 2 == 0 and lo.y or hi.y, i < 4 and lo.z or hi.z)
-            end
-            S.boxCorners = c
-        end
     end
-    if not S.boxCorners then
-        local sh = S.shape
-        if not S.handleLen and sh and sh.done and sh.id == S.sel.id and (sh.ext or 0) > 0 then S.handleLen = clamp(sh.ext * t.scale * 0.9, 0.6, 6) end
-        drawShape(d, t, S.dirty or (S.drag and S.drag.moved) or S.phys ~= nil or not lastApplied())
+    -- otherwise the box of the measured shape
+    if not bx then
+        local box = shapeBox()
+        if box then bx = box end
+    end
+    if bx then
+        local lo, hi = bx[1], bx[2]
+        local ext = math.max(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z) * t.scale
+        S.handleLen = clamp(ext * 0.55, 0.6, 6)
+        local ch, sh, sc = math.cos(t.heading), math.sin(t.heading), t.scale
+        local function W(x, y, z) return p + V(x * ch + z * sh, y, -x * sh + z * ch) * sc end
+        local c = {}
+        for i = 0, 7 do
+            c[i] = W(i % 2 == 0 and lo.x or hi.x, math.floor(i / 2) % 2 == 0 and lo.y or hi.y, i < 4 and lo.z or hi.z)
+        end
+        S.boxCorners = c
     end
     -- the handles keep a steady size on screen (about 130 pixels)
     local L = S.handleLen or 1.5
@@ -1403,7 +1403,7 @@ reskate.on("draw", function(d)
     -- the object's box where it is going: shows at once while the game catches up
     if S.boxCorners and S.mode ~= 3 then
         local c = S.boxCorners
-        local col = (S.dirty or (S.drag and S.drag.moved)) and "#ffe066" or "#ffffff66"
+        local col = (S.dirty or (S.drag and S.drag.moved) or S.phys ~= nil or not lastApplied()) and "#ffe066" or "#ffffff66"
         for _, e in ipairs(BOX_EDGES) do
             d:world_line(c[e[1]], c[e[2]], { colour = col, thickness = 2 })
         end
