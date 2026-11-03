@@ -93,6 +93,25 @@ local function fmt(o)
         o.position.z, math.deg(o.heading or 0), o.scale or 1)
 end
 
+-- park objects whose item is not in the catalog: from a mod that is off, missing, or rebuilt with new names.
+-- While the park has any, the game refuses every change to it.
+local function findMissing(blockedKey)
+    local have = {}
+    for _, it in ipairs(reskate.objects.catalog()) do have[it.key] = true end
+    local out = {}
+    for _, o in ipairs(reskate.objects.list()) do
+        if not have[o.item] or (blockedKey and o.item == blockedKey) then table.insert(out, o) end
+    end
+    S.missing = out
+    if #out > 0 then
+        reskate.log(string.format("Quick Drop helper: %d park object(s) are from a mod that is off or not installed:", #out), "warn")
+        for _, o in ipairs(out) do reskate.log("Quick Drop helper:   missing " .. fmt(o), "warn") end
+        -- for the "Clean out park" tool: it removes exactly these from the park save, with the game closed
+        for _, o in ipairs(out) do reskate.log("DDH-CLEANOUT " .. tostring(o.id) .. " " .. tostring(o.item)) end
+    end
+    return out
+end
+
 -- new objects (from Quick Drop or anything else) become the picked one
 local function scan()
     local list = reskate.objects.list()
@@ -100,6 +119,7 @@ local function scan()
     for _, o in ipairs(list) do now[o.id] = o end
     if S.known == nil then
         reskate.log(string.format("Quick Drop helper: %d park objects on this map.", #list))
+        pcall(findMissing)
         if not S.loggedCat then
             S.loggedCat = true
             local n, ddh = 0, {}
@@ -144,9 +164,14 @@ local function send()
     if ok then
         S.dirty = false
     elseif why ~= "the last edit is still being applied" and why ~= "more than 4 edits in a second" then
+        reskate.log("Quick Drop helper: the game refused the change: " .. tostring(why), "warn")
         if string.find(tostring(why), "not installed", 1, true) then
+            local first = S.blocked == nil
             S.blocked = tostring(why):match("installed:%s*(%S+)") or "?"
-            say("The game refuses changes to this park: it has objects from a mod that is turned off or not installed.", S.clock - (S.lastWarn or -1e9) > 5000)
+            if first then pcall(findMissing, S.blocked) end
+            local n = S.missing and #S.missing or 0
+            say(n > 0 and string.format("Park locked: %d object(s) from a missing mod. See the F6 panel.", n)
+                or "Park locked: an object from a missing mod. See the F6 panel.", S.clock - (S.lastWarn or -1e9) > 5000)
         else
             say("Could not change it: " .. tostring(why), S.clock - (S.lastWarn or -1e9) > 5000)
         end
@@ -274,7 +299,7 @@ reskate.input.bind("ddh_quickdrop_plus", "F6")
 reskate.on("action", function(name) if name == "ddh_quickdrop_plus" then openEditor() end end)
 reskate.on("screen_closed", function(title) if title == TITLE and S.open then S.open = false; reskate.camera.release() end end)
 reskate.on("unload", function() if S.open then reskate.camera.release() end end)
-reskate.on("level_loaded", function() S.known = nil; select(nil) end)
+reskate.on("level_loaded", function() S.known = nil; S.blocked = nil; S.missing = nil; S.confirmRemove = nil; select(nil) end)
 
 -- typing exact numbers: a text box with "X Y Z turn size"; change any of them
 local TYPE_ID = "ddh_type"
@@ -377,8 +402,28 @@ reskate.ui.screen(TITLE, function(ui)
         markUndo(); S.target.heading = round(S.target.heading, math.pi / 2); S.target.scale = 1; S.dirty = true
     end
     if ui:button("focus", "Look at it (F)") and S.target then S.cam.goal = S.target.pos end
-    if S.blocked then
-        ui:warn("The game will not change this park: it has objects (" .. S.blocked .. ") from a mod that is off or not installed.")
+    local miss = S.missing or {}
+    if S.blocked or #miss > 0 then
+        ui:separator()
+        ui:heading("Park locked")
+        ui:warn("The game won't change this park.")
+        ui:note("It has objects from a mod that is")
+        ui:note("off, not installed, or rebuilt with")
+        ui:note("new object names.")
+        if S.blocked and S.blocked ~= "?" then ui:info("Game says", S.blocked) end
+        for i, o in ipairs(miss) do
+            if i > 8 then ui:note(string.format("...and %d more (all in ReSkate.log)", #miss - 8)) break end
+            ui:info(titleOf(o.item), string.format("%.0f, %.0f, %.0f", o.position.x, o.position.y, o.position.z))
+            if ui:button("go" .. i, "Look at it") then S.cam.goal = o.position end
+        end
+        ui:note("To clean them out: close the game,")
+        ui:note("then run \"Clean out park.exe\"")
+        ui:note("(MOD SKATE\\DDH_Park_Editor).")
+        if ui:button("recheck", "Check again") then
+            S.blocked = nil
+            pcall(findMissing)
+            if #(S.missing or {}) == 0 then say("No missing objects found. Try moving something again.") end
+        end
     end
     if S.msg ~= "" and S.clock < S.msgUntil then ui:note(S.msg) end
     ui:separator()
@@ -448,7 +493,20 @@ reskate.on("tick", function(dt)
         local id = S.cleanup[1]
         local ok, why = reskate.objects.remove(id)
         reskate.log("Quick Drop helper: removing a leftover object (" .. tostring(id) .. "): " .. (ok and "done" or tostring(why)))
-        if ok or (why ~= "the last edit is still being applied" and why ~= "more than 4 edits in a second") then table.remove(S.cleanup, 1) end
+        if ok or (why ~= "the last edit is still being applied" and why ~= "more than 4 edits in a second") then
+            table.remove(S.cleanup, 1)
+            if not ok then S.cleanupFailed = (S.cleanupFailed or 0) + 1 end
+            if #S.cleanup == 0 then
+                S.blocked = nil
+                pcall(findMissing)
+                if (S.cleanupFailed or 0) > 0 then
+                    say("The game refused to remove " .. S.cleanupFailed .. " of them. Turn the mod back on instead (see ReSkate.log).", true)
+                else
+                    say("Done. The park can be changed again.", true)
+                end
+                S.cleanupFailed = nil
+            end
+        end
     end
 
     if not S.open then
