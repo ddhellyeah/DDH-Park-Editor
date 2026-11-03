@@ -299,7 +299,7 @@ reskate.input.bind("ddh_quickdrop_plus", "F6")
 reskate.on("action", function(name) if name == "ddh_quickdrop_plus" then openEditor() end end)
 reskate.on("screen_closed", function(title) if title == TITLE and S.open then S.open = false; reskate.camera.release() end end)
 reskate.on("unload", function() if S.open then reskate.camera.release() end end)
-reskate.on("level_loaded", function() S.known = nil; S.blocked = nil; S.missing = nil; S.confirmRemove = nil; select(nil) end)
+reskate.on("level_loaded", function() S.listKey = nil; S.known = nil; S.blocked = nil; S.missing = nil; S.confirmRemove = nil; select(nil) end)
 
 -- typing exact numbers: a text box with "X Y Z turn size"; change any of them
 local TYPE_ID = "ddh_type"
@@ -352,8 +352,8 @@ reskate.on("throwdown_ui", function(e)
     say(string.format("Set to %.2f, %.2f, %.2f  ·  %.1f°  ·  %.2f×", t.pos.x, t.pos.y, t.pos.z, math.deg(t.heading), t.scale))
 end)
 
--- the panel beside the game
-reskate.ui.screen(TITLE, function(ui)
+-- the old panel (ReSkate 2.1.3 and older)
+local function oldPanel(ui)
     if S.sel then
         local t = S.target
         ui:card(titleOf(S.sel.item), string.format("%.2f, %.2f, %.2f   ·   %.0f°   ·   %.2f×", t.pos.x, t.pos.y, t.pos.z, math.deg(t.heading), t.scale))
@@ -439,6 +439,217 @@ reskate.ui.screen(TITLE, function(ui)
         ui:info("Shift", "bigger steps")
     end
     if ui:button("close", "Done (Esc)", true) then closeEditor() end
+end
+
+-- ---------------------------------------------------------------- the new panel (ReSkate 2.1.4 widgets)
+-- step sizes for the steppers: metres, degrees, size
+local STEPS = {
+    { m = 0.01, deg = 1, size = 0.01, name = "Fine", mf = "%.2f m", df = "%.0f°", sf = "%.2f×" },
+    { m = 0.1, deg = 15, size = 0.1, name = "Normal", mf = "%.2f m", df = "%.0f°", sf = "%.2f×" },
+    { m = 1, deg = 45, size = 0.5, name = "Big", mf = "%.1f m", df = "%.0f°", sf = "%.1f×" },
+}
+S.stepSize = 2
+S.sec = { move = true, handles = false, objects = true, locked = true, help = false }
+S.search, S.listFilter = "", 1
+S.listAt, S.listKey = -1e9, nil
+S.listObjs, S.listItems, S.listTotal = {}, {}, 0
+
+local function section(ui, id, title, sub)
+    local o = ui:section(id, title, sub, S.sec[id])
+    if o ~= nil then S.sec[id] = o end
+    return S.sec[id]
+end
+
+-- a stepper that only counts as changed when it moved by about a step (the page keeps values on their steps)
+local function stepper(ui, id, label, val, lo, hi, st, fmt)
+    local v = ui:stepper(id, label, clamp(val, lo, hi), lo, hi, st, fmt)
+    if type(v) == "number" and math.abs(v - val) > st * 0.5 + 1e-6 then return v end
+    return nil
+end
+
+local function onStep(lo, st) return math.floor(lo / st + 1e-6) * st end
+
+-- the list of park objects: rebuilt twice a second, or at once when the search or filter changes
+local function rebuildList()
+    local key = S.search .. "|" .. S.listFilter .. "|" .. tostring(S.sel and S.sel.id)
+    if key == S.listKey and S.clock - S.listAt < 500 then return end
+    S.listKey, S.listAt = key, S.clock
+    local have = {}
+    for _, it in ipairs(reskate.objects.catalog()) do have[it.key] = true end
+    local q = string.lower(S.search or "")
+    local from = S.cam.target or V(0, 0, 0)
+    local rows = {}
+    local all = reskate.objects.list()
+    S.listTotal = #all
+    for _, o in ipairs(all) do
+        local title = titleOf(o.item)
+        local ok = true
+        if q ~= "" then
+            ok = string.find(string.lower(title), q, 1, true) or string.find(string.lower(o.item), q, 1, true)
+                or string.find(tostring(o.id), q, 1, true)
+        end
+        local dist = len(o.position - from)
+        if ok and S.listFilter == 2 and dist > 30 then ok = false end
+        if ok and S.listFilter == 3 and not string.find(string.lower(o.item), "ddh", 1, true) then ok = false end
+        if ok then table.insert(rows, { o = o, title = title, dist = dist, missing = not have[o.item] }) end
+    end
+    if S.listFilter == 2 then
+        table.sort(rows, function(a, b) return a.dist < b.dist end)
+    else
+        table.sort(rows, function(a, b)
+            if a.title ~= b.title then return a.title < b.title end
+            return tostring(a.o.id) < tostring(b.o.id)
+        end)
+    end
+    S.listObjs, S.listItems, S.listMatched = {}, {}, #rows
+    for i, r in ipairs(rows) do
+        if i > 200 then break end
+        S.listObjs[i] = r.o
+        local label = string.format("%s%s  ·  %.0f m", r.title, r.missing and " (missing mod)" or "", r.dist)
+        if #label > 80 then label = string.sub(label, 1, 77) .. "..." end
+        S.listItems[i] = label
+    end
+end
+
+local function newPanel(ui)
+    local t = S.sel and S.target
+    -- what is picked, and the everyday buttons
+    if t then
+        ui:card(titleOf(S.sel.item), string.format("%.2f, %.2f, %.2f   ·   %.0f°   ·   %.2f×", t.pos.x, t.pos.y, t.pos.z, math.deg(t.heading), t.scale))
+    else
+        ui:card("Nothing picked", "Click an object, pick one in the list, or drop one with Quick Drop")
+    end
+    if S.msg ~= "" and S.clock < S.msgUntil then ui:note(S.msg) end
+    local b = ui:buttons("top", { "Undo", "Look at it", "Type numbers" }, 0)
+    if b == 1 then undo() end
+    if b == 2 and t then S.cam.goal = t.pos end
+    if b == 3 and t then openTyping() end
+    if ui:button("close", "Done (Esc)", true) then closeEditor() end
+
+    -- exact moving with steppers
+    local st = STEPS[S.stepSize]
+    if t and section(ui, "move", "Move and turn", "Steps: " .. st.name) then
+        local ss = ui:buttons("stepsize", { "Fine", "Normal", "Big" }, S.stepSize)
+        if ss and STEPS[ss] then S.stepSize = ss; st = STEPS[ss] end
+        ui:note(string.format("Each press: %s m  ·  %d°  ·  %s×", tostring(st.m), st.deg, tostring(st.size)))
+        local a = S.sel.anchor
+        if not a or len(t.pos - a) > 40 then a = t.pos; S.sel.anchor = a end
+        local function axis(id, label, val, centre)
+            return stepper(ui, id, label, val, onStep(centre - 50, st.m), onStep(centre - 50, st.m) + 100, st.m, st.mf)
+        end
+        local x = axis("px", "X", t.pos.x, a.x)
+        local y = axis("py", "Y (height)", t.pos.y, a.y)
+        local z = axis("pz", "Z", t.pos.z, a.z)
+        if x or y or z then
+            markUndo()
+            t.pos = V(x or t.pos.x, y or t.pos.y, z or t.pos.z); S.dirty = true
+        end
+        local ty = stepper(ui, "ry", "Turn", math.deg(t.heading), -180, 180, st.deg, st.df)
+        if ty then markUndo(); t.heading = wrap(math.rad(ty)); S.dirty = true end
+        local sz = stepper(ui, "sz", "Size", t.scale, st.size, 10, st.size, st.sf)
+        if sz then markUndo(); t.scale = clamp(sz, 0.1, 10); S.dirty = true end
+        local fx = ui:buttons("fix", { "Straighten", "Size 1" }, 0)
+        if fx == 1 then markUndo(); t.heading = round(t.heading, math.pi / 2); S.dirty = true end
+        if fx == 2 then markUndo(); t.scale = 1; S.dirty = true end
+        ui:note("Tilt: the game only turns placed objects about Y.")
+    end
+
+    -- the handles in the view
+    local modes = { "Move (W)", "Turn (E)", "Size (R)" }
+    if section(ui, "handles", "Handles", modes[S.mode] .. (S.snap and "  ·  steps on" or "")) then
+        local m = ui:buttons("mode", modes, S.mode)
+        if m and m ~= S.mode then S.mode = m end
+        local sn = ui:toggle("snap", "Steps while dragging: 0.25 m, 15°, 0.1 (G)", S.snap)
+        if sn ~= nil then S.snap = sn end
+    end
+
+    -- every object in the park
+    rebuildList()
+    local sub = string.format("%d in the park", S.listTotal)
+    if S.search ~= "" or S.listFilter ~= 1 then sub = string.format("%d of %d shown", S.listMatched or 0, S.listTotal) end
+    if section(ui, "objects", "Objects in this park", sub) then
+        local q = ui:text("search", "Search", S.search, "name, item or id")
+        if type(q) == "string" and q ~= S.search then S.search = q; S.listKey = nil end
+        local f = ui:buttons("filter", { "All", "Near the view (30 m)", "DDH" }, S.listFilter)
+        if f and f ~= S.listFilter then S.listFilter = f; S.listKey = nil end
+        rebuildList()
+        if #S.listItems == 0 then
+            ui:note(S.listTotal == 0 and "No placed objects on this map yet." or "Nothing matches.")
+        else
+            local cur = 0
+            if S.sel then
+                for i, o in ipairs(S.listObjs) do if o.id == S.sel.id then cur = i break end end
+            end
+            local c = ui:list("objlist", "Click one to pick it", S.listItems, cur, 8)
+            if type(c) == "number" and c > 0 and c ~= cur and S.listObjs[c] then
+                local o = S.listObjs[c]
+                send()
+                select(o)
+                S.cam.goal = o.position
+                S.listKey = nil
+                say("Picked " .. titleOf(o.item))
+            end
+            if (S.listMatched or 0) > 200 then ui:note("Showing the first 200. Search to find the rest.") end
+        end
+    end
+
+    -- objects from missing mods
+    local miss = S.missing or {}
+    if (S.blocked or #miss > 0) and section(ui, "locked", "Park locked", string.format("%d from a missing mod", #miss)) then
+        ui:warn("The game won't change this park.")
+        ui:note("It has objects from a mod that is off, not installed, or rebuilt with new object names.")
+        if S.blocked and S.blocked ~= "?" then ui:info("Game says", S.blocked) end
+        for i, o in ipairs(miss) do
+            if i > 8 then ui:note(string.format("...and %d more (all in ReSkate.log)", #miss - 8)) break end
+            ui:info(titleOf(o.item), string.format("%.0f, %.0f, %.0f", o.position.x, o.position.y, o.position.z))
+            if ui:button("go" .. i, "Look at it") then S.cam.goal = o.position end
+        end
+        ui:note("To clean them out: close the game, then run \"Clean out park.exe\" (MOD SKATE\\DDH_Park_Editor).")
+        if ui:button("recheck", "Check again") then
+            S.blocked = nil
+            pcall(findMissing)
+            if #(S.missing or {}) == 0 then say("No missing objects found. Try moving something again.") end
+        end
+    end
+
+    if section(ui, "help", "Controls", "Mouse and keys") then
+        ui:info("Click", "pick an object")
+        ui:info("Drag a handle", "move / turn / size")
+        ui:info("Drag empty space", "turn the view")
+        ui:info("Right-drag", "slide the view")
+        ui:info("Scroll", "zoom")
+        ui:info("Arrows, PgUp, PgDn", "fly the view")
+        ui:info("W / E / R", "move / turn / size handles")
+        ui:info("G", "steps while dragging")
+        ui:info("T", "type numbers")
+        ui:info("F", "look at it")
+        ui:info("Ctrl+Z", "undo")
+        ui:info("Shift", "bigger steps")
+    end
+end
+
+-- which panel: the new one when this ReSkate has the 2.1.4 widgets, otherwise the old one
+local function hasNewWidgets(ui)
+    local ok, yes = pcall(function()
+        return type(ui.stepper) == "function" and type(ui.section) == "function" and type(ui.list) == "function"
+            and type(ui.buttons) == "function" and type(ui.text) == "function"
+    end)
+    return ok and yes
+end
+
+reskate.ui.screen(TITLE, function(ui)
+    if S.newUI == nil then
+        S.newUI = hasNewWidgets(ui)
+        reskate.log("Quick Drop helper: " .. (S.newUI and "using the new panel (ReSkate 2.1.4 widgets)." or "this ReSkate has no 2.1.4 widgets; using the old panel."))
+    end
+    if S.newUI then
+        local ok, err = pcall(newPanel, ui)
+        if ok then return end
+        reskate.log("Quick Drop helper: the new panel failed, going back to the old one: " .. tostring(err), "warn")
+        S.newUI = false
+        return
+    end
+    oldPanel(ui)
 end, { dock = "right", width = 0.2 })
 
 local function press(k)
