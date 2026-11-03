@@ -129,6 +129,27 @@ local function scan()
                 if string.find(string.lower(it.key), "ddh", 1, true) then table.insert(ddh, it.key .. " = " .. tostring(it.title)) end
             end
             reskate.log(string.format("Quick Drop helper: catalog has %d items; with ddh: %s", n, table.concat(ddh, "; ")))
+            -- which loaded models look like park objects (to find a model to copy for the stand-in)
+            local ok, names = pcall(reskate.entities.blueprints, nil, true)
+            if ok and type(names) == "table" then
+                local hits, firsts = {}, {}
+                for i, nm in ipairs(names) do
+                    local l = string.lower(nm)
+                    if i <= 12 then table.insert(firsts, nm) end
+                    if #hits < 40 and (string.find(l, "kick", 1, true) or string.find(l, "ramp", 1, true) or string.find(l, "bk", 1, true) or string.find(l, "prop", 1, true)) then table.insert(hits, nm) end
+                end
+                reskate.log(string.format("Quick Drop helper: MODELS %d loaded; first: %s", #names, table.concat(firsts, " ; ")))
+                reskate.log("Quick Drop helper: MODELS like park objects: " .. table.concat(hits, " ; "))
+            end
+            local ok2, all = pcall(reskate.entities.blueprints, nil, false)
+            if ok2 and type(all) == "table" then
+                local hits = {}
+                for _, nm in ipairs(all) do
+                    local l = string.lower(nm)
+                    if #hits < 40 and (string.find(l, "kick", 1, true) or string.find(l, "bkramp", 1, true)) then table.insert(hits, nm) end
+                end
+                reskate.log(string.format("Quick Drop helper: ALL BLUEPRINTS %d; kicker-like: %s", #all, table.concat(hits, " ; ")))
+            end
         end
     else
         local fresh = {}
@@ -164,14 +185,17 @@ end
 local function lastApplied()
     local l = S.lastSent
     if not l or S.clock - l.at > 1500 then return true end
+    if l.applied then return true end
     if S.clock - (S.appliedCheckAt or -1e9) < 50 then return false end
     S.appliedCheckAt = S.clock
+    l.applied = true
     for _, o in ipairs(reskate.objects.list()) do
         if o.id == l.id then
-            return len(o.position - l.pos) < 0.005 and math.abs((o.scale or 1) - l.scale) < 0.005
+            l.applied = len(o.position - l.pos) < 0.005 and math.abs((o.scale or 1) - l.scale) < 0.005
+            break
         end
     end
-    return true
+    return l.applied
 end
 -- sends the change to the game. The game takes at most 4 edits a second, counting refused tries, and one at a
 -- time, so a new one only goes once the last is applied and fewer than 4 went in the last second.
@@ -218,6 +242,61 @@ local function send()
         S.lastWarn = S.clock
         S.dirty = false
     end
+end
+
+-- a stand-in: while the object is dragged (or the game is still catching up), a copy of it that skaters go
+-- through sits exactly on the handles and moves every frame. It goes once the real object has arrived.
+local GHOST = 1
+S.ghostOff = {}
+local function ghostHide()
+    if S.ghost then pcall(reskate.entities.remove, GHOST); S.ghost = nil end
+end
+-- the model to copy: the one world.pick reported, or else a loaded blueprint named like the item
+S.bpByItem = {}
+local function blueprintFor(sel)
+    if sel.bp then return sel.bp end
+    local item = sel.item
+    if S.bpByItem[item] ~= nil then return S.bpByItem[item] or nil end
+    local found = false
+    local ok, names = pcall(reskate.entities.blueprints, nil, true)
+    if ok and type(names) == "table" then
+        local key = string.lower(item)
+        local core = string.gsub(key, "^own_", "")
+        local short = string.gsub(core, "_+%d+$", "")
+        local best, bestScore = nil, 0
+        for _, n in ipairs(names) do
+            local l = string.lower(n)
+            local score = 0
+            if string.find(l, key, 1, true) then score = 3
+            elseif string.find(l, core, 1, true) then score = 2
+            elseif #short > 6 and string.find(l, short, 1, true) then score = 1 end
+            if score > bestScore or (score == bestScore and score > 0 and #n < #best) then best, bestScore = n, score end
+        end
+        found = best or false
+        reskate.log(string.format("Quick Drop helper: stand-in model for %s: %s (%d models loaded)", item, tostring(best or "none found"), #names))
+    else
+        reskate.log("Quick Drop helper: could not list the loaded models: " .. tostring(names), "warn")
+    end
+    S.bpByItem[item] = found
+    return found or nil
+end
+
+local function ghostUpdate()
+    local sel, t = S.sel, S.target
+    local bp = sel and blueprintFor(sel)
+    if not (S.open and t and bp and not S.ghostOff[bp]) then ghostHide() return end
+    if (S.drag and S.drag.moved) or S.dirty or not lastApplied() then S.ghostUntil = S.clock + 350 end
+    if S.clock >= (S.ghostUntil or 0) then ghostHide() return end
+    local g = S.ghost
+    if g and g.bp == bp and len(g.pos - t.pos) < 1e-4 and math.abs(g.heading - t.heading) < 1e-5 and math.abs(g.scale - t.scale) < 1e-5 then return end
+    local ok, a, why = pcall(reskate.entities.set, GHOST, bp, { position = t.pos, yaw = math.deg(t.heading), scale = t.scale }, false, nil, { solid = false })
+    if not ok or a == false then
+        S.ghostOff[bp] = true
+        reskate.log("Quick Drop helper: no stand-in for " .. tostring(bp) .. ": " .. tostring(ok and why or a), "warn")
+        ghostHide()
+        return
+    end
+    S.ghost = { bp = bp, pos = t.pos, heading = t.heading, scale = t.scale }
 end
 
 local function markUndo()
@@ -338,8 +417,8 @@ end
 reskate.input.bind("ddh_quickdrop_plus", "F6")
 reskate.on("action", function(name) if name == "ddh_quickdrop_plus" then openEditor() end end)
 reskate.on("screen_closed", function(title) if title == TITLE and S.open then S.open = false; reskate.camera.release() end end)
-reskate.on("unload", function() if S.open then reskate.camera.release() end end)
-reskate.on("level_loaded", function() S.listKey = nil; S.known = nil; S.blocked = nil; S.missing = nil; S.confirmRemove = nil; select(nil) end)
+reskate.on("unload", function() ghostHide(); if S.open then reskate.camera.release() end end)
+reskate.on("level_loaded", function() S.ghost = nil; S.listKey = nil; S.known = nil; S.blocked = nil; S.missing = nil; S.confirmRemove = nil; select(nil) end)
 
 -- typing exact numbers: a text box with "X Y Z turn size"; change any of them
 local TYPE_ID = "ddh_type"
@@ -808,11 +887,12 @@ reskate.on("tick", function(dt)
             for _, k in ipairs({ "[", "]", "PageUp", "PageDown", "X", "Z", "Up", "Down", "Right", "Left", "U" }) do S.held[k] = false end
         end
         send()
+        ghostHide()
         return
     end
 
     -- the editor: keys (none while the text box is open)
-    if S.typing then send(); return end
+    if S.typing then send(); ghostUpdate(); return end
     local ctrl = reskate.input.key("Ctrl")
     if press("W") then S.mode = 1 end
     if press("E") then S.mode = 2 end
@@ -950,6 +1030,7 @@ reskate.on("tick", function(dt)
     local pos, f, _, u = camBasis()
     reskate.camera.set(pos, f, u, S.cam.fov)
     send()
+    ghostUpdate()
 end)
 
 -- ---------------------------------------------------------------- drawing the handles
@@ -977,6 +1058,7 @@ reskate.on("draw", function(d)
         S.sel.bpTried = true
         local ok, hit = pcall(reskate.world.pick, p + V(0, 6, 0), p - V(0, 1, 0))
         if ok and hit and hit.object and hit.object.position and len(hit.object.position - S.sel.pos0) < 0.5 then S.sel.bp = hit.object.blueprint end
+        reskate.log(string.format("Quick Drop helper: model of %s from the world: %s", S.sel.item, tostring(S.sel.bp)))
     end
     if S.sel.bp then
         S.boundsCache = S.boundsCache or {}
