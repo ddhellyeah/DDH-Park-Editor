@@ -81,6 +81,7 @@ end
 
 local function select(o, blueprint)
     S.handleLen = nil
+    S.edit = {}
     if not o then S.sel, S.target, S.dirty = nil, nil, false return end
     S.sel = { id = o.id, item = o.item, bp = blueprint, pos0 = o.position, h0 = o.heading or 0 }
     if S.open and S.cam.goal then S.cam.goal = o.position end
@@ -170,6 +171,10 @@ local function send()
     local hd = nil
     if S.sel.h0 == nil or math.abs(wrap(t.heading - S.sel.h0)) > 1e-5 then hd = t.heading end
     local ok, why = reskate.objects.move(S.sel.id, t.pos, hd, t.scale)
+    if S.dragStats then
+        local st = S.dragStats
+        if ok then st.sent += 1 elseif BUSY[why] then st[why] = (st[why] or 0) + 1 else st.other = (st.other or 0) + 1 end
+    end
     if ok then S.sel.h0 = t.heading end
     S.lastSend = S.clock
     if ok then
@@ -405,7 +410,6 @@ local function oldPanel(ui)
             t.scale = sz; S.dirty = true
         end
         if not (x or y or z or ty or sz) then S.sliding = false end
-        if ui:button("type", "Type numbers (T)") then openTyping() end
         ui:separator()
     end
     local m = ui:tabs("mode", { "Move (W)", "Turn (E)", "Size (R)" }, S.mode)
@@ -476,14 +480,38 @@ local function section(ui, id, title, sub)
     return S.sec[id]
 end
 
--- a stepper that only counts as changed when it moved by about a step (the page keeps values on their steps)
-local function stepper(ui, id, label, val, lo, hi, st, fmt)
-    local v = ui:stepper(id, label, clamp(val, lo, hi), lo, hi, st, fmt)
-    if type(v) == "number" and math.abs(v - val) > st * 0.5 + 1e-6 then return v end
-    return nil
+-- a number box: click it and type. What is typed is used once you stop typing for a moment.
+-- "12.5" sets it, "+2" adds 2, "+-0.5" takes 0.5 off; a comma works as the decimal point too.
+local function parseNum(text, cur)
+    local s = string.gsub(text, "^%s+", ""):gsub("%s+$", "")
+    s = string.gsub(s, ",", ".")
+    s = string.gsub(s, "[mx×°]+$", ""):gsub("%s+$", "")
+    if s == "" then return nil end
+    if string.sub(s, 1, 1) == "+" then
+        local v = tonumber(string.sub(s, 2))
+        return v and cur + v or nil
+    end
+    return tonumber(s)
 end
-
-local function onStep(lo, st) return math.floor(lo / st + 1e-6) * st end
+S.edit = {}
+local function numBox(ui, id, label, val, fmt, apply)
+    local shown = string.format(fmt, val)
+    local e = S.edit[id]
+    local pass = e and e.text or shown
+    local q = ui:text(id, label, pass, "type a number")
+    if type(q) ~= "string" then return end
+    if q ~= pass then
+        -- still typing
+        S.edit[id] = { text = q, at = S.clock }
+        return
+    end
+    if e and S.clock - e.at > 700 then
+        S.edit[id] = nil
+        if e.text == shown then return end
+        local v = parseNum(e.text, val)
+        if v then apply(v) else say(label .. ": \"" .. e.text .. "\" is not a number", true) end
+    end
+end
 
 -- the list of park objects: rebuilt twice a second, or at once when the search or filter changes
 local function rebuildList()
@@ -536,37 +564,41 @@ local function newPanel(ui)
         ui:card("Nothing picked", "Click an object, pick one in the list, or drop one with Quick Drop")
     end
     if S.msg ~= "" and S.clock < S.msgUntil then ui:note(S.msg) end
-    local b = ui:buttons("top", { "Undo", "Look at it", "Type numbers" }, 0)
+    local b = ui:buttons("top", { "Undo", "Look at it" }, 0)
     if b == 1 then undo() end
     if b == 2 and t then S.cam.goal = t.pos end
-    if b == 3 and t then openTyping() end
     if ui:button("close", "Done (Esc)", true) then closeEditor() end
 
-    -- exact moving with steppers
+    -- exact numbers: click a box and type; nudge buttons below
     local st = STEPS[S.stepSize]
-    if t and section(ui, "move", "Move and turn", "Steps: " .. st.name) then
+    if t and section(ui, "move", "Move and turn", "Click a number to type it") then
+        numBox(ui, "px", "X (m)", t.pos.x, "%.3f", function(v) markUndo(); t.pos = V(v, t.pos.y, t.pos.z); S.dirty = true end)
+        numBox(ui, "py", "Y, height (m)", t.pos.y, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, v, t.pos.z); S.dirty = true end)
+        numBox(ui, "pz", "Z (m)", t.pos.z, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, t.pos.y, v); S.dirty = true end)
+        numBox(ui, "ry", "Turn (°)", math.deg(t.heading), "%.1f", function(v) markUndo(); t.heading = wrap(math.rad(v)); S.dirty = true end)
+        numBox(ui, "sz", "Size (×)", t.scale, "%.2f", function(v) markUndo(); t.scale = clamp(v, 0.1, 10); S.dirty = true end)
+        ui:note("Tip: +2 adds 2, +-0.5 takes 0.5 off.")
+        ui:heading("Nudge")
         local ss = ui:buttons("stepsize", { "Fine", "Normal", "Big" }, S.stepSize)
         if ss and STEPS[ss] then S.stepSize = ss; st = STEPS[ss] end
         ui:note(string.format("Each press: %s m  ·  %d°  ·  %s×", tostring(st.m), st.deg, tostring(st.size)))
-        local a = S.sel.anchor
-        if not a or len(t.pos - a) > 40 then a = t.pos; S.sel.anchor = a end
-        local function axis(id, label, val, centre)
-            return stepper(ui, id, label, val, onStep(centre - 50, st.m), onStep(centre - 50, st.m) + 100, st.m, st.mf)
-        end
-        local x = axis("px", "X", t.pos.x, a.x)
-        local y = axis("py", "Y (height)", t.pos.y, a.y)
-        local z = axis("pz", "Z", t.pos.z, a.z)
-        if x or y or z then
+        local n = ui:buttons("nudge", { "X −", "X +", "Y −", "Y +", "Z −", "Z +" }, 0)
+        if n then
             markUndo()
-            t.pos = V(x or t.pos.x, y or t.pos.y, z or t.pos.z); S.dirty = true
+            local d = ({ V(-1, 0, 0), V(1, 0, 0), V(0, -1, 0), V(0, 1, 0), V(0, 0, -1), V(0, 0, 1) })[n]
+            if d then t.pos = t.pos + d * st.m; S.dirty = true; S.edit = {} end
         end
-        local ty = stepper(ui, "ry", "Turn", math.deg(t.heading), -180, 180, st.deg, st.df)
-        if ty then markUndo(); t.heading = wrap(math.rad(ty)); S.dirty = true end
-        local sz = stepper(ui, "sz", "Size", t.scale, st.size, 10, st.size, st.sf)
-        if sz then markUndo(); t.scale = clamp(sz, 0.1, 10); S.dirty = true end
-        local fx = ui:buttons("fix", { "Straighten", "Size 1" }, 0)
-        if fx == 1 then markUndo(); t.heading = round(t.heading, math.pi / 2); S.dirty = true end
-        if fx == 2 then markUndo(); t.scale = 1; S.dirty = true end
+        local n2 = ui:buttons("nudge2", { "Turn −", "Turn +", "Size −", "Size +", "Straighten", "Size 1" }, 0)
+        if n2 then
+            markUndo()
+            if n2 == 1 then t.heading = wrap(t.heading - math.rad(st.deg)) end
+            if n2 == 2 then t.heading = wrap(t.heading + math.rad(st.deg)) end
+            if n2 == 3 then t.scale = clamp(t.scale - st.size, 0.1, 10) end
+            if n2 == 4 then t.scale = clamp(t.scale + st.size, 0.1, 10) end
+            if n2 == 5 then t.heading = round(t.heading, math.pi / 2) end
+            if n2 == 6 then t.scale = 1 end
+            S.dirty = true; S.edit = {}
+        end
         ui:note("Tilt: the game only turns placed objects about Y.")
     end
 
@@ -637,7 +669,6 @@ local function newPanel(ui)
         ui:info("Arrows, PgUp, PgDn", "fly the view")
         ui:info("W / E / R", "move / turn / size handles")
         ui:info("G", "steps while dragging")
-        ui:info("T", "type numbers")
         ui:info("F", "look at it")
         ui:info("Ctrl+Z", "undo")
         ui:info("Shift", "bigger steps")
@@ -826,6 +857,7 @@ reskate.on("tick", function(dt)
                     h.sign = cf.y <= 0 and 1 or -1
                 end
                 S.drag = h
+                S.dragStats = { sent = 0, from = S.clock }
             else
                 S.drag = { kind = "click", start = { px = px } }
             end
@@ -883,6 +915,12 @@ reskate.on("tick", function(dt)
             if S.drag.kind == "click" then clickPick(px) end
             local moved = S.drag.moved
             S.drag = nil
+            local st = S.dragStats
+            if st and moved then
+                S.dragStats = nil
+                reskate.log(string.format("Quick Drop helper: drag of %.1f s: %d moves taken, %d refused as still applying, %d as more than 4 a second, %d other",
+                    (S.clock - st.from) / 1000, st.sent, st["the last edit is still being applied"] or 0, st["more than 4 edits in a second"] or 0, st.other or 0))
+            end
             if moved then S.dirty = true; if not sameAsSent(S.target) then S.lastSend = math.min(S.lastSend, S.clock - 300) end end
         end
         if (c.right or c.middle) and not c.over_screen and S.mouse.pos then
