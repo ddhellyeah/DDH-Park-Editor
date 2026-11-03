@@ -153,17 +153,33 @@ local function scan()
     S.known = now
 end
 
+local BUSY = { ["the last edit is still being applied"] = true, ["more than 4 edits in a second"] = true }
+local function sameAsSent(t)
+    local l = S.lastSent
+    return l and l.id == S.sel.id and len(l.pos - t.pos) < 1e-4 and math.abs(wrap(l.heading - t.heading)) < 1e-5
+        and math.abs(l.scale - t.scale) < 1e-5
+end
+-- sends the change to the game. While a handle is dragged it goes about 4 times a second (as often as the game
+-- takes edits), so the object follows the handles; letting go sends the exact final place.
 local function send()
-    if not (S.sel and S.dirty) or S.drag and S.drag.moved or S.clock - S.lastSend < 300 then return end
+    if not (S.sel and S.dirty) then return end
+    local gap = (S.drag and S.drag.moved) and 260 or 300
+    if S.clock - S.lastSend < gap then return end
     local t = S.target
+    if sameAsSent(t) then S.dirty = false return end
     local hd = nil
     if S.sel.h0 == nil or math.abs(wrap(t.heading - S.sel.h0)) > 1e-5 then hd = t.heading end
     local ok, why = reskate.objects.move(S.sel.id, t.pos, hd, t.scale)
     if ok then S.sel.h0 = t.heading end
     S.lastSend = S.clock
     if ok then
+        S.lastSent = { id = S.sel.id, pos = t.pos, heading = t.heading, scale = t.scale }
+        -- still dragging: keep going with the next place
         S.dirty = false
-    elseif why ~= "the last edit is still being applied" and why ~= "more than 4 edits in a second" then
+    elseif BUSY[why] then
+        -- the game is still busy with the last one: try again a little sooner
+        S.lastSend = S.clock - gap + 80
+    else
         reskate.log("Quick Drop helper: the game refused the change: " .. tostring(why), "warn")
         if string.find(tostring(why), "not installed", 1, true) then
             local first = S.blocked == nil
@@ -862,10 +878,12 @@ reskate.on("tick", function(dt)
                     g.moved = true
                 end
             end
+            if S.drag and S.drag.moved then S.dirty = true end
         elseif not c.left and S.mouse.left and S.drag then
             if S.drag.kind == "click" then clickPick(px) end
-            if S.drag.moved then S.dirty = true; S.lastSend = math.min(S.lastSend, S.clock - 300) end
+            local moved = S.drag.moved
             S.drag = nil
+            if moved then S.dirty = true; if not sameAsSent(S.target) then S.lastSend = math.min(S.lastSend, S.clock - 300) end end
         end
         if (c.right or c.middle) and not c.over_screen and S.mouse.pos then
             local _, _, r, u = camBasis()
