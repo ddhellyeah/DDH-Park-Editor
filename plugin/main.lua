@@ -498,7 +498,7 @@ local function numBox(ui, id, label, val, fmt, apply)
     local shown = string.format(fmt, val)
     local e = S.edit[id]
     local pass = e and e.text or shown
-    local q = ui:text(id, label, pass, "type a number")
+    local q = ui:text(id, label, pass, "")
     if type(q) ~= "string" then return end
     if q ~= pass then
         -- still typing
@@ -549,7 +549,7 @@ local function rebuildList()
     for i, r in ipairs(rows) do
         if i > 200 then break end
         S.listObjs[i] = r.o
-        local label = string.format("%s%s  ·  %.0f m", r.title, r.missing and " (missing mod)" or "", r.dist)
+        local label = string.format("%s%s  |  %.0f m", r.title, r.missing and " (missing)" or "", r.dist)
         if #label > 80 then label = string.sub(label, 1, 77) .. "..." end
         S.listItems[i] = label
     end
@@ -559,9 +559,9 @@ local function newPanel(ui)
     local t = S.sel and S.target
     -- what is picked, and the everyday buttons
     if t then
-        ui:card(titleOf(S.sel.item), string.format("%.2f, %.2f, %.2f   ·   %.0f°   ·   %.2f×", t.pos.x, t.pos.y, t.pos.z, math.deg(t.heading), t.scale))
+        ui:card(titleOf(S.sel.item), string.format("%.2f, %.2f, %.2f   |   %.0f°   |   %.2fx", t.pos.x, t.pos.y, t.pos.z, math.deg(t.heading), t.scale))
     else
-        ui:card("Nothing picked", "Click an object, pick one in the list, or drop one with Quick Drop")
+        ui:card("Nothing picked", "Click an object or pick one in the list")
     end
     if S.msg ~= "" and S.clock < S.msgUntil then ui:note(S.msg) end
     local b = ui:buttons("top", { "Undo", "Look at it" }, 0)
@@ -571,24 +571,22 @@ local function newPanel(ui)
 
     -- exact numbers: click a box and type; nudge buttons below
     local st = STEPS[S.stepSize]
-    if t and section(ui, "move", "Move and turn", "Click a number to type it") then
-        numBox(ui, "px", "X (m)", t.pos.x, "%.3f", function(v) markUndo(); t.pos = V(v, t.pos.y, t.pos.z); S.dirty = true end)
-        numBox(ui, "py", "Y, height (m)", t.pos.y, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, v, t.pos.z); S.dirty = true end)
-        numBox(ui, "pz", "Z (m)", t.pos.z, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, t.pos.y, v); S.dirty = true end)
-        numBox(ui, "ry", "Turn (°)", math.deg(t.heading), "%.1f", function(v) markUndo(); t.heading = wrap(math.rad(v)); S.dirty = true end)
-        numBox(ui, "sz", "Size (×)", t.scale, "%.2f", function(v) markUndo(); t.scale = clamp(v, 0.1, 10); S.dirty = true end)
-        ui:note("Tip: +2 adds 2, +-0.5 takes 0.5 off.")
+    if t and section(ui, "move", "Move and turn", "") then
+        numBox(ui, "px", "X", t.pos.x, "%.3f", function(v) markUndo(); t.pos = V(v, t.pos.y, t.pos.z); S.dirty = true end)
+        numBox(ui, "py", "Y", t.pos.y, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, v, t.pos.z); S.dirty = true end)
+        numBox(ui, "pz", "Z", t.pos.z, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, t.pos.y, v); S.dirty = true end)
+        numBox(ui, "ry", "Turn", math.deg(t.heading), "%.1f", function(v) markUndo(); t.heading = wrap(math.rad(v)); S.dirty = true end)
+        numBox(ui, "sz", "Size", t.scale, "%.2f", function(v) markUndo(); t.scale = clamp(v, 0.1, 10); S.dirty = true end)
         ui:heading("Nudge")
         local ss = ui:buttons("stepsize", { "Fine", "Normal", "Big" }, S.stepSize)
         if ss and STEPS[ss] then S.stepSize = ss; st = STEPS[ss] end
-        ui:note(string.format("Each press: %s m  ·  %d°  ·  %s×", tostring(st.m), st.deg, tostring(st.size)))
-        local n = ui:buttons("nudge", { "X −", "X +", "Y −", "Y +", "Z −", "Z +" }, 0)
+        local n = ui:buttons("nudge", { "X -", "X +", "Y -", "Y +", "Z -", "Z +" }, 0)
         if n then
             markUndo()
             local d = ({ V(-1, 0, 0), V(1, 0, 0), V(0, -1, 0), V(0, 1, 0), V(0, 0, -1), V(0, 0, 1) })[n]
             if d then t.pos = t.pos + d * st.m; S.dirty = true; S.edit = {} end
         end
-        local n2 = ui:buttons("nudge2", { "Turn −", "Turn +", "Size −", "Size +", "Straighten", "Size 1" }, 0)
+        local n2 = ui:buttons("nudge2", { "Turn -", "Turn +", "Size -", "Size +", "Straighten", "Size 1" }, 0)
         if n2 then
             markUndo()
             if n2 == 1 then t.heading = wrap(t.heading - math.rad(st.deg)) end
@@ -599,36 +597,35 @@ local function newPanel(ui)
             if n2 == 6 then t.scale = 1 end
             S.dirty = true; S.edit = {}
         end
-        ui:note("Tilt: the game only turns placed objects about Y.")
     end
 
     -- the handles in the view
     local modes = { "Move (W)", "Turn (E)", "Size (R)" }
-    if section(ui, "handles", "Handles", modes[S.mode] .. (S.snap and "  ·  steps on" or "")) then
+    if section(ui, "handles", "Handles", modes[S.mode] .. (S.snap and "  |  snap" or "")) then
         local m = ui:buttons("mode", modes, S.mode)
         if m and m ~= S.mode then S.mode = m end
-        local sn = ui:toggle("snap", "Steps while dragging: 0.25 m, 15°, 0.1 (G)", S.snap)
+        local sn = ui:toggle("snap", "Snap (G)", S.snap)
         if sn ~= nil then S.snap = sn end
     end
 
     -- every object in the park
     rebuildList()
-    local sub = string.format("%d in the park", S.listTotal)
-    if S.search ~= "" or S.listFilter ~= 1 then sub = string.format("%d of %d shown", S.listMatched or 0, S.listTotal) end
+    local sub = tostring(S.listTotal)
+    if S.search ~= "" or S.listFilter ~= 1 then sub = string.format("%d / %d", S.listMatched or 0, S.listTotal) end
     if section(ui, "objects", "Objects in this park", sub) then
-        local q = ui:text("search", "Search", S.search, "name, item or id")
+        local q = ui:text("search", "Search", S.search, "")
         if type(q) == "string" and q ~= S.search then S.search = q; S.listKey = nil end
-        local f = ui:buttons("filter", { "All", "Near the view (30 m)", "DDH" }, S.listFilter)
+        local f = ui:buttons("filter", { "All", "Near", "DDH" }, S.listFilter)
         if f and f ~= S.listFilter then S.listFilter = f; S.listKey = nil end
         rebuildList()
         if #S.listItems == 0 then
-            ui:note(S.listTotal == 0 and "No placed objects on this map yet." or "Nothing matches.")
+            ui:note(S.listTotal == 0 and "No objects." or "Nothing found.")
         else
             local cur = 0
             if S.sel then
                 for i, o in ipairs(S.listObjs) do if o.id == S.sel.id then cur = i break end end
             end
-            local c = ui:list("objlist", "Click one to pick it", S.listItems, cur, 8)
+            local c = ui:list("objlist", "", S.listItems, cur, 8)
             if type(c) == "number" and c > 0 and c ~= cur and S.listObjs[c] then
                 local o = S.listObjs[c]
                 send()
@@ -637,22 +634,21 @@ local function newPanel(ui)
                 S.listKey = nil
                 say("Picked " .. titleOf(o.item))
             end
-            if (S.listMatched or 0) > 200 then ui:note("Showing the first 200. Search to find the rest.") end
+            if (S.listMatched or 0) > 200 then ui:note("First 200 shown.") end
         end
     end
 
     -- objects from missing mods
     local miss = S.missing or {}
-    if (S.blocked or #miss > 0) and section(ui, "locked", "Park locked", string.format("%d from a missing mod", #miss)) then
+    if (S.blocked or #miss > 0) and section(ui, "locked", "Park locked", string.format("%d missing", #miss)) then
         ui:warn("The game won't change this park.")
-        ui:note("It has objects from a mod that is off, not installed, or rebuilt with new object names.")
         if S.blocked and S.blocked ~= "?" then ui:info("Game says", S.blocked) end
         for i, o in ipairs(miss) do
-            if i > 8 then ui:note(string.format("...and %d more (all in ReSkate.log)", #miss - 8)) break end
+            if i > 8 then ui:note(string.format("+%d more", #miss - 8)) break end
             ui:info(titleOf(o.item), string.format("%.0f, %.0f, %.0f", o.position.x, o.position.y, o.position.z))
             if ui:button("go" .. i, "Look at it") then S.cam.goal = o.position end
         end
-        ui:note("To clean them out: close the game, then run \"Clean out park.exe\" (MOD SKATE\\DDH_Park_Editor).")
+        ui:note("Fix: Clean out park.exe (game closed)")
         if ui:button("recheck", "Check again") then
             S.blocked = nil
             pcall(findMissing)
@@ -660,7 +656,7 @@ local function newPanel(ui)
         end
     end
 
-    if section(ui, "help", "Controls", "Mouse and keys") then
+    if section(ui, "help", "Controls", "") then
         ui:info("Click", "pick an object")
         ui:info("Drag a handle", "move / turn / size")
         ui:info("Drag empty space", "turn the view")
@@ -668,7 +664,7 @@ local function newPanel(ui)
         ui:info("Scroll", "zoom")
         ui:info("Arrows, PgUp, PgDn", "fly the view")
         ui:info("W / E / R", "move / turn / size handles")
-        ui:info("G", "steps while dragging")
+        ui:info("G", "snap")
         ui:info("F", "look at it")
         ui:info("Ctrl+Z", "undo")
         ui:info("Shift", "bigger steps")
@@ -804,7 +800,6 @@ reskate.on("tick", function(dt)
     if press("R") then S.mode = 3 end
     if press("G") then S.snap = not S.snap end
     if press("F") and S.target then S.cam.goal = S.target.pos end
-    if press("T") and S.target then openTyping() end
     if press("Z") and ctrl then undo() end
     do -- the view: arrows and PageUp / PageDown slide it
         local _, f, r = camBasis()
