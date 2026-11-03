@@ -160,14 +160,34 @@ local function sameAsSent(t)
     return l and l.id == S.sel.id and len(l.pos - t.pos) < 1e-4 and math.abs(wrap(l.heading - t.heading)) < 1e-5
         and math.abs(l.scale - t.scale) < 1e-5
 end
--- sends the change to the game. While a handle is dragged it goes about 4 times a second (as often as the game
--- takes edits), so the object follows the handles; letting go sends the exact final place.
+-- has the game put the object where we last sent it? (it takes a moment to apply each edit)
+local function lastApplied()
+    local l = S.lastSent
+    if not l or S.clock - l.at > 1500 then return true end
+    if S.clock - (S.appliedCheckAt or -1e9) < 50 then return false end
+    S.appliedCheckAt = S.clock
+    for _, o in ipairs(reskate.objects.list()) do
+        if o.id == l.id then
+            return len(o.position - l.pos) < 0.005 and math.abs((o.scale or 1) - l.scale) < 0.005
+        end
+    end
+    return true
+end
+-- sends the change to the game. The game takes at most 4 edits a second, counting refused tries, and one at a
+-- time, so a new one only goes once the last is applied and fewer than 4 went in the last second.
+-- While a handle is dragged the object follows as often as that allows; letting go sends the exact place.
 local function send()
     if not (S.sel and S.dirty) then return end
-    local gap = (S.drag and S.drag.moved) and 260 or 300
-    if S.clock - S.lastSend < gap then return end
     local t = S.target
     if sameAsSent(t) then S.dirty = false return end
+    local tries = S.tries or {}
+    S.tries = tries
+    while tries[1] and S.clock - tries[1] > 1050 do table.remove(tries, 1) end
+    if #tries >= 4 then return end
+    if not lastApplied() then return end
+    local gap = (S.drag and S.drag.moved) and 150 or 250
+    if S.clock - S.lastSend < gap then return end
+    table.insert(tries, S.clock)
     local hd = nil
     if S.sel.h0 == nil or math.abs(wrap(t.heading - S.sel.h0)) > 1e-5 then hd = t.heading end
     local ok, why = reskate.objects.move(S.sel.id, t.pos, hd, t.scale)
@@ -178,12 +198,11 @@ local function send()
     if ok then S.sel.h0 = t.heading end
     S.lastSend = S.clock
     if ok then
-        S.lastSent = { id = S.sel.id, pos = t.pos, heading = t.heading, scale = t.scale }
+        S.lastSent = { id = S.sel.id, pos = t.pos, heading = t.heading, scale = t.scale, at = S.clock }
         -- still dragging: keep going with the next place
         S.dirty = false
     elseif BUSY[why] then
-        -- the game is still busy with the last one: try again a little sooner
-        S.lastSend = S.clock - gap + 80
+        -- the game is still busy: wait for the next free slot (every try counts toward its 4 a second)
     else
         reskate.log("Quick Drop helper: the game refused the change: " .. tostring(why), "warn")
         if string.find(tostring(why), "not installed", 1, true) then
@@ -916,7 +935,7 @@ reskate.on("tick", function(dt)
                 reskate.log(string.format("Quick Drop helper: drag of %.1f s: %d moves taken, %d refused as still applying, %d as more than 4 a second, %d other",
                     (S.clock - st.from) / 1000, st.sent, st["the last edit is still being applied"] or 0, st["more than 4 edits in a second"] or 0, st.other or 0))
             end
-            if moved then S.dirty = true; if not sameAsSent(S.target) then S.lastSend = math.min(S.lastSend, S.clock - 300) end end
+            if moved then S.dirty = true; if not sameAsSent(S.target) then S.lastSend = math.min(S.lastSend, S.clock - 250) end end
         end
         if (c.right or c.middle) and not c.over_screen and S.mouse.pos then
             local _, _, r, u = camBasis()
