@@ -146,7 +146,7 @@ local function scan()
         end
         if S.sel and not now[S.sel.id] then select(nil) end
         -- moved by something else (Quick Drop again): follow it
-        if S.sel and not S.dirty and not S.drag and not S.phys and S.clock - S.lastSend > 1500 then
+        if S.sel and not S.dirty and not S.drag and S.clock - S.lastSend > 1500 then
             local o = now[S.sel.id]
             S.target = { pos = o.position, heading = o.heading or 0, scale = o.scale or 1 }
         end
@@ -176,297 +176,11 @@ local function lastApplied()
     end
     return l.applied
 end
--- ---------------------------------------------------------------- smooth dragging (ReSkate 2.1.4, offline)
--- While a handle is dragged, the real object is taken over by the game's object physics and pushed toward the
--- handles every frame. Its rotation is set 4 times a second. Letting go saves the place with objects.move, and
--- the object is handed back once the game has saved it. Online, or when the game refuses, dragging works as
--- before (the object follows as often as the game takes edits).
-S.physUse = true
-local function physApi() return reskate.objects.physics and reskate.objects.velocity and reskate.objects.motion and reskate.objects.pose end
-local function yawQuat(q0, dh)
-    -- rotate the starting rotation q0 about up by dh
-    local s, c = math.sin(dh / 2), math.cos(dh / 2)
-    local x, y, z, w = q0[1], q0[2], q0[3], q0[4]
-    -- (0, s, 0, c) * (x, y, z, w)
-    local q = { c * x + s * z, c * y + s * w, c * z - s * x, c * w - s * y }
-    local n = math.sqrt(q[1] ^ 2 + q[2] ^ 2 + q[3] ^ 2 + q[4] ^ 2)
-    return { q[1] / n, q[2] / n, q[3] / n, q[4] / n }
-end
-local function physRelease(reason)
-    local P = S.phys
-    if not P then return end
-    S.phys = nil
-    pcall(reskate.objects.physics, P.sid, nil)
-    if reason then reskate.log("Quick Drop helper: smooth drag handed back: " .. reason) end
-end
-local function physStart()
-    if not (S.physUse and physApi() and S.sel and S.target) then return end
-    S.physNo = S.physNo or {}
-    if S.physNo[S.sel.item] then return end
-    physRelease()
-    local sid = string.format("%d", S.sel.id)
-    local ok, res, why = pcall(reskate.objects.physics, sid, { dynamic = true, mass = 20000, surface = false })
-    if not ok or res ~= true then
-        local reason = tostring(ok and why or res)
-        if reason ~= S.physWhy then reskate.log("Quick Drop helper: no smooth drag for " .. tostring(S.sel.item) .. ": " .. reason) end
-        S.physWhy = reason
-        if string.find(reason, "only fixed", 1, true) then S.physNo[S.sel.item] = true end
-        return
-    end
-    local okm, m = pcall(reskate.objects.motion, sid)
-    if not okm or not m or not m.rotation then
-        pcall(reskate.objects.physics, sid, nil)
-        S.physWhy = "the game gave no motion for it"
-        return
-    end
-    S.physWhy = nil
-    S.physWorked = true
-    S.phys = { sid = sid, id = S.sel.id, q0 = m.rotation, h0 = S.target.heading, rev0 = m.edit_revision, poseAt = -1e9,
-        state = "drag", from = S.clock }
-end
-local function physTick(sec)
-    local P = S.phys
-    if not P then return end
-    if not S.sel or S.sel.id ~= P.id then physRelease("picked another object") return end
-    local ok, m = pcall(reskate.objects.motion, P.sid)
-    if not ok or not m then physRelease("the game let go of it") return end
-    local t = S.target
-    if P.state == "hold" then
-        -- the place was sent: hand it back once the game has saved it (or after a while)
-        local saved = P.accepted and (m.edit_revision ~= P.rev0 and S.clock - P.accepted > 300 or S.clock - P.accepted > 2500)
-        if saved or S.clock - P.holdFrom > 6000 then physRelease() return end
-    end
-    if m.editing then return end
-    if S.clock - P.poseAt >= 260 then
-        local okp, res = pcall(reskate.objects.pose, P.sid, t.pos, yawQuat(P.q0, t.heading - P.h0))
-        if okp and res == true then P.poseAt = S.clock; return end
-    end
-    local err = t.pos - m.position
-    local v = err * 12 + V(0, 9.81 * sec, 0)
-    local sp = len(v)
-    if sp > 45 then v = v * (45 / sp) end
-    pcall(reskate.objects.velocity, P.sid, v)
-end
-local function physLetGo()
-    local P = S.phys
-    if not P then return end
-    P.state = "hold"
-    P.holdFrom = S.clock
-end
-
--- ---------------------------------------------------------------- the measured outline
--- When an object is picked, rays from above measure its shape (what you can collide with). The shape is drawn
--- where the handles are, every frame: bright while it moves, faint when it rests.
-local SCAN_N = 20
-local clockOk = type(os) == "table" and type(os.clock) == "function"
-local function now() return clockOk and os.clock() or 0 end
-local function scanStart()
-    local sel, t = S.sel, S.target
-    if not (sel and t) then return end
-    local others = {}
-    for _, o in ipairs(reskate.objects.list()) do if len(o.position - t.pos) < 30 then table.insert(others, o) end end
-    S.shape = { id = sel.id, R = 3, k = 0, h = {}, pos = t.pos, heading = t.heading, scale = t.scale, others = others, tries = 0 }
-end
-local function scanTick()
-    local sh = S.shape
-    if not sh or sh.done or not S.sel or sh.id ~= S.sel.id then return end
-    -- the object is moving: measure again from the start once it rests
-    if S.drag or S.phys or S.dirty then S.shape = nil return end
-    if sh.thin then
-        local th = sh.thin
-        local ca, sa = math.cos(th.a), math.sin(th.a)
-        local r1, f1 = V(ca, 0, -sa), V(sa, 0, ca)
-        local ch0, sh0 = math.cos(sh.heading), math.sin(sh.heading)
-        local per = S.scanPer or 6
-        local t0 = now()
-        for _ = 1, per do
-            if th.k >= th.n * th.n then break end
-            if clockOk and now() - t0 > 0.0015 then break end
-            local i, j = th.k % th.n, math.floor(th.k / th.n)
-            th.k += 1
-            local at = sh.pos + r1 * (-th.R + (i + 0.5) * 2 * th.R / th.n) + f1 * (-th.R + (j + 0.5) * 2 * th.R / th.n)
-            local ok, hit = pcall(reskate.world.pick, at + V(0, 12, 0), at - V(0, 3, 0))
-            if not ok then S.scanPer = math.max(8, math.floor(per / 2)); th.k -= 1; break end
-            if hit and hit.object then
-                local op = hit.object.position or hit.position
-                local best, bd = nil, 1.5
-                for _, o in ipairs(sh.others) do
-                    local dd = len(o.position - op)
-                    if dd < bd then best, bd = o, dd end
-                end
-                if best and best.id == sh.id then
-                    local d = hit.position - sh.pos
-                    -- into the object's own frame (right, up, forward), unscaled
-                    table.insert(th.pts, { (d.x * ch0 - d.z * sh0) / sh.scale, d.y / sh.scale, (d.x * sh0 + d.z * ch0) / sh.scale })
-                end
-            end
-        end
-        if th.k < th.n * th.n then return end
-        sh.thin, sh.thinDone = nil, true
-        local pts = th.pts
-        if th.detail then
-            sh.extra = pts
-            sh.done = true
-            sh.others = nil
-            reskate.log(string.format("Quick Drop helper: measured %s: %d points, %d more in the fine pass", tostring(S.sel.item), sh.count or 0, #pts))
-            return
-        end
-        if #pts >= 2 then
-            -- the bar's direction: the main axis of the points, seen from above
-            local mx, mz = 0, 0
-            for _, q in ipairs(pts) do mx += q[1]; mz += q[3] end
-            mx, mz = mx / #pts, mz / #pts
-            local sxx, szz, sxz = 0, 0, 0
-            for _, q in ipairs(pts) do
-                local dx, dz = q[1] - mx, q[3] - mz
-                sxx += dx * dx; szz += dz * dz; sxz += dx * dz
-            end
-            local ang = 0.5 * math.atan2(2 * sxz, sxx - szz)
-            local ax, az = math.cos(ang), math.sin(ang)
-            table.sort(pts, function(p1, p2) return p1[1] * ax + p1[3] * az < p2[1] * ax + p2[3] * az end)
-            local ext, wide = 0, 0
-            for _, q in ipairs(pts) do
-                ext = math.max(ext, math.abs(q[1]), math.abs(q[2]), math.abs(q[3]))
-                wide = math.max(wide, math.abs((q[1] - mx) * -az + (q[3] - mz) * ax))
-            end
-            sh.bar, sh.count, sh.ext = pts, #pts, ext
-            -- not a thin bar but a small object the first rays missed: measure it again, close up
-            if wide > 0.08 or ext < 0.8 then
-                sh.barFallback, sh.bar = pts, nil
-                sh.R = math.max(0.6, ext * sh.scale * 1.2 + 0.15)
-                sh.k, sh.h, sh.tries, sh.finer, sh.prev = 0, {}, 1, 2, nil
-                return
-            end
-        end
-        sh.done = true
-        sh.others = nil
-        reskate.log(string.format("Quick Drop helper: measured %s (thin): %d points", tostring(S.sel.item), #pts))
-        return
-    end
-    local ch, shh = math.cos(sh.heading), math.sin(sh.heading)
-    local right, fwd = V(ch, 0, -shh), V(shh, 0, ch)
-    local n = SCAN_N
-    local per = S.scanPer or 6
-    local t0 = now()
-    for _ = 1, per do
-        if sh.k >= n * n then break end
-        if clockOk and now() - t0 > 0.0015 then break end
-        local i, j = sh.k % n, math.floor(sh.k / n)
-        sh.k += 1
-        local u = -sh.R + (i + 0.5) * 2 * sh.R / n
-        local w = -sh.R + (j + 0.5) * 2 * sh.R / n
-        local at = sh.pos + right * u + fwd * w
-        local ok, hit = pcall(reskate.world.pick, at + V(0, 12, 0), at - V(0, 3, 0))
-        if not ok then
-            -- too many rays this tick: fewer next time
-            S.scanPer = math.max(8, math.floor(per / 2))
-            sh.k -= 1
-            break
-        end
-        if hit and hit.object then
-            local op = hit.object.position or hit.position
-            local best, bd = nil, 1.5
-            for _, o in ipairs(sh.others) do
-                local dd = len(o.position - op)
-                if dd < bd then best, bd = o, dd end
-            end
-            if best and best.id == sh.id then sh.h[sh.k] = (hit.position.y - sh.pos.y) / sh.scale end
-        end
-    end
-    if sh.k < n * n then return end
-    -- reached the edge of the measured square: measure a bigger one (twice at most)
-    local edge = false
-    for k, _ in pairs(sh.h) do
-        local i, j = (k - 1) % n, math.floor((k - 1) / n)
-        if i == 0 or j == 0 or i == n - 1 or j == n - 1 then edge = true break end
-    end
-    if edge and sh.tries < 2 then
-        sh.tries += 1
-        sh.R *= 2
-        sh.k, sh.h = 0, {}
-        return
-    end
-    sh.done = true
-    sh.cell = 2 * sh.R / n / sh.scale
-    local count, ext = 0, 0
-    for k, y in pairs(sh.h) do
-        count += 1
-        local i, j = (k - 1) % n, math.floor((k - 1) / n)
-        local u = (-sh.R + (i + 0.5) * 2 * sh.R / n) / sh.scale
-        local w = (-sh.R + (j + 0.5) * 2 * sh.R / n) / sh.scale
-        ext = math.max(ext, math.abs(u), math.abs(w), math.abs(y))
-    end
-    sh.count, sh.ext = count, ext
-    -- small objects get few points: measure a smaller square, finer (twice at most)
-    if not edge and count >= 6 and count < 60 and sh.R > 0.6 and (sh.finer or 0) < 2 then
-        local newR = math.max(0.6, ext * sh.scale * 1.1 + 2 * sh.R / n)
-        if newR < sh.R * 0.8 then
-            sh.finer = (sh.finer or 0) + 1
-            sh.prev = { h = sh.h, R = sh.R, count = count, ext = ext }
-            sh.R = newR
-            sh.done, sh.k, sh.h, sh.tries = false, 0, {}, 1
-            return
-        end
-    end
-    -- a finer square that lost the object: keep the one before
-    if count == 0 and sh.prev then sh.h, sh.R, sh.count, sh.ext = sh.prev.h, sh.prev.R, sh.prev.count, sh.prev.ext; sh.cell = 2 * sh.R / n / sh.scale; count = sh.count end
-    -- thin objects (rails) slip between the rays: a fine pass on a slanted grid, which crosses any thin bar
-    if count < 6 and sh.thinDone and sh.barFallback then sh.bar, sh.count = sh.barFallback, #sh.barFallback end
-    if count < 6 and not sh.thinDone then
-        sh.done = false
-        sh.thin = sh.thin or { k = 0, n = 48, R = count > 0 and math.max(1, ext * sh.scale * 1.3) or 3, a = sh.heading + 0.35, pts = {} }
-        return
-    end
-    -- a quick fine pass over the object for thin parts the grid can miss (a rail on top, a pole)
-    if count >= 6 and not sh.thinDone then
-        sh.done = false
-        sh.thin = sh.thin or { k = 0, n = 32, R = math.max(1, ext * sh.scale * 1.1 + 0.3), a = sh.heading + 0.35, pts = {}, detail = true }
-        return
-    end
-    sh.others = nil
-    reskate.log(string.format("Quick Drop helper: measured %s: %d points across %.1f m", tostring(S.sel.item), count, sh.R * 2))
-end
--- the measured shape as a box in the object's own frame (right, up, forward), unscaled: {lo, hi}
-local function shapeBox()
-    local sh = S.shape
-    if not (sh and sh.done and S.sel and sh.id == S.sel.id and (sh.count or 0) > 0) then return nil end
-    if sh.box ~= nil then return sh.box or nil end
-    local lx, ly, lz, hx, hy, hz = 1e9, 0, 1e9, -1e9, 0, -1e9
-    if sh.bar then
-        for _, q in ipairs(sh.bar) do
-            lx, hx = math.min(lx, q[1] - 0.03), math.max(hx, q[1] + 0.03)
-            lz, hz = math.min(lz, q[3] - 0.03), math.max(hz, q[3] + 0.03)
-            ly, hy = math.min(ly, q[2]), math.max(hy, q[2])
-        end
-    else
-        local n = SCAN_N
-        local R = sh.R / sh.scale
-        local half = R / n
-        for k, y in pairs(sh.h) do
-            local i, j = (k - 1) % n, math.floor((k - 1) / n)
-            local u = -R + (i + 0.5) * 2 * R / n
-            local w = -R + (j + 0.5) * 2 * R / n
-            lx, hx = math.min(lx, u - half), math.max(hx, u + half)
-            lz, hz = math.min(lz, w - half), math.max(hz, w + half)
-            ly, hy = math.min(ly, y), math.max(hy, y)
-        end
-    end
-    for _, q in ipairs(sh.extra or {}) do
-        lx, hx = math.min(lx, q[1] - 0.03), math.max(hx, q[1] + 0.03)
-        lz, hz = math.min(lz, q[3] - 0.03), math.max(hz, q[3] + 0.03)
-        ly, hy = math.min(ly, q[2]), math.max(hy, q[2])
-    end
-    if hx <= lx or hz <= lz or hy - ly < 0.01 then sh.box = false return nil end
-    sh.box = { V(lx, ly, lz), V(hx, hy, hz) }
-    return sh.box
-end
-
 -- sends the change to the game. The game takes at most 4 edits a second, counting refused tries, and one at a
 -- time, so a new one only goes once the last is applied and fewer than 4 went in the last second.
 -- While a handle is dragged the object follows as often as that allows; letting go sends the exact place.
 local function send()
     if not (S.sel and S.dirty) then return end
-    if S.phys and S.phys.state == "drag" then return end
     local t = S.target
     if sameAsSent(t) then S.dirty = false return end
     local tries = S.tries or {}
@@ -487,15 +201,11 @@ local function send()
     if ok then S.sel.h0 = t.heading end
     S.lastSend = S.clock
     if ok then
-        if S.phys and S.phys.state == "hold" then S.phys.accepted = S.clock end
         S.lastSent = { id = S.sel.id, pos = t.pos, heading = t.heading, scale = t.scale, at = S.clock }
         -- still dragging: keep going with the next place
         S.dirty = false
     elseif BUSY[why] then
         -- the game is still busy: wait for the next free slot (every try counts toward its 4 a second)
-    elseif S.phys then
-        -- maybe it won't save an object that physics holds: hand it back and send the place again
-        physRelease("the game refused the move while held: " .. tostring(why))
     else
         reskate.log("Quick Drop helper: the game refused the change: " .. tostring(why), "warn")
         if string.find(tostring(why), "not installed", 1, true) then
@@ -624,7 +334,6 @@ local function closeEditor()
     if not S.open then return end
     if S.typing then S.typing = false; pcall(reskate.ui.close_dialog, "ddh_type") end
     S.drag = nil
-    physLetGo()
     S.open = false
     reskate.camera.release()
     reskate.ui.close()
@@ -632,9 +341,9 @@ end
 
 reskate.input.bind("ddh_quickdrop_plus", "F6")
 reskate.on("action", function(name) if name == "ddh_quickdrop_plus" then openEditor() end end)
-reskate.on("screen_closed", function(title) if title == TITLE and S.open then S.open = false; S.drag = nil; physLetGo(); reskate.camera.release() end end)
-reskate.on("unload", function() physRelease(); if S.open then reskate.camera.release() end end)
-reskate.on("level_loaded", function() S.phys = nil; S.shape = nil; S.listKey = nil; S.known = nil; S.blocked = nil; S.missing = nil; S.confirmRemove = nil; select(nil) end)
+reskate.on("screen_closed", function(title) if title == TITLE and S.open then S.open = false; S.drag = nil; reskate.camera.release() end end)
+reskate.on("unload", function() if S.open then reskate.camera.release() end end)
+reskate.on("level_loaded", function() S.listKey = nil; S.known = nil; S.blocked = nil; S.missing = nil; S.confirmRemove = nil; select(nil) end)
 
 -- typing exact numbers: a text box with "X Y Z turn size"; change any of them
 local TYPE_ID = "ddh_type"
@@ -920,10 +629,6 @@ local function newPanel(ui)
         if m and m ~= S.mode then S.mode = m end
         local sn = ui:toggle("snap", "Snap (G)", S.snap)
         if sn ~= nil then S.snap = sn end
-        if S.physWorked then
-            local ph = ui:toggle("phys", "Smooth drag (offline)", S.physUse)
-            if ph ~= nil then S.physUse = ph end
-        end
     end
 
     -- every object in the park
@@ -1106,13 +811,12 @@ reskate.on("tick", function(dt)
         else
             for _, k in ipairs({ "[", "]", "PageUp", "PageDown", "X", "Z", "Up", "Down", "Right", "Left", "U" }) do S.held[k] = false end
         end
-        physTick(sec)
         send()
         return
     end
 
     -- the editor: keys (none while the text box is open)
-    if S.typing then physTick(sec); send(); return end
+    if S.typing then send(); return end
     local ctrl = reskate.input.key("Ctrl")
     if press("W") then S.mode = 1 end
     if press("E") then S.mode = 2 end
@@ -1172,7 +876,6 @@ reskate.on("tick", function(dt)
                 end
                 S.drag = h
                 S.dragStats = { sent = 0, from = S.clock }
-                if h.kind ~= "size" then physStart() end
             else
                 S.drag = { kind = "click", start = { px = px } }
             end
@@ -1230,7 +933,6 @@ reskate.on("tick", function(dt)
             if S.drag.kind == "click" then clickPick(px) end
             local moved = S.drag.moved
             S.drag = nil
-            physLetGo()
             local st = S.dragStats
             if st and moved then
                 S.dragStats = nil
@@ -1251,14 +953,7 @@ reskate.on("tick", function(dt)
     camGlide(sec)
     local pos, f, _, u = camBasis()
     reskate.camera.set(pos, f, u, S.cam.fov)
-    physTick(sec)
     send()
-    -- measure a newly picked object once it rests
-    if S.sel and S.target and (not S.shape or S.shape.id ~= S.sel.id) and not S.dirty and not S.drag and not S.phys and lastApplied() then
-        pcall(scanStart)
-    end
-    local okScan, errScan = pcall(scanTick)
-    if not okScan then reskate.log("Quick Drop helper: measuring failed: " .. tostring(errScan), "warn"); if S.shape then S.shape.done = true; S.shape.count = 0 end end
 end)
 
 -- ---------------------------------------------------------------- drawing the handles
@@ -1298,11 +993,6 @@ reskate.on("draw", function(d)
             bx = (ok and a and b) and { a, b } or false
             S.boundsCache[S.sel.bp] = bx
         end
-    end
-    -- otherwise the box of the measured shape
-    if not bx then
-        local box = shapeBox()
-        if box then bx = box end
     end
     if bx then
         local lo, hi = bx[1], bx[2]
@@ -1403,7 +1093,7 @@ reskate.on("draw", function(d)
     -- the object's box where it is going: shows at once while the game catches up
     if S.boxCorners and S.mode ~= 3 then
         local c = S.boxCorners
-        local col = (S.dirty or (S.drag and S.drag.moved) or S.phys ~= nil or not lastApplied()) and "#ffe066" or "#ffffff66"
+        local col = (S.dirty or (S.drag and S.drag.moved) or not lastApplied()) and "#ffe066" or "#ffffff66"
         for _, e in ipairs(BOX_EDGES) do
             d:world_line(c[e[1]], c[e[2]], { colour = col, thickness = 2 })
         end

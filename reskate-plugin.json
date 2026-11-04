@@ -1,0 +1,15 @@
+{
+    "api": 1,
+    "entry": "plugin/main.lua",
+    "side": "client",
+    "permissions": [
+        "world.objects",
+        "world.raycast",
+        "camera",
+        "input",
+        "overlay",
+        "ui.screen",
+        "world.entities",
+        "throwdowns"
+    ]
+}
