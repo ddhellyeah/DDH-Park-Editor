@@ -188,7 +188,7 @@ local function send()
     while tries[1] and S.clock - tries[1] > 1050 do table.remove(tries, 1) end
     if #tries >= 4 then return end
     if not lastApplied() then return end
-    local gap = (S.drag and S.drag.moved) and 150 or 250
+    local gap = ((S.drag and S.drag.moved) or S.padMoving) and 150 or 250
     if S.clock - S.lastSend < gap then return end
     table.insert(tries, S.clock)
     local hd = nil
@@ -302,6 +302,9 @@ local function clickPick(px)
     end
 end
 
+-- set later, with the controller code
+local padCaptureOn, padCaptureOff = function() end, function() end
+
 local function openEditor()
     if S.open then return end
     local v = reskate.camera.get()
@@ -327,7 +330,9 @@ local function openEditor()
     S.open = true
     S.drag = nil
     S.mouse = { pos = nil, left = false }
+    S.padWait, S.padBurst, S.padMoving, S.padRep, S.padHeld = true, false, false, {}, {}
     reskate.ui.open(TITLE)
+    padCaptureOn()
 end
 
 local function closeEditor()
@@ -335,14 +340,21 @@ local function closeEditor()
     if S.typing then S.typing = false; pcall(reskate.ui.close_dialog, "ddh_type") end
     S.drag = nil
     S.open = false
+    padCaptureOff()
     reskate.camera.release()
     reskate.ui.close()
 end
 
 reskate.input.bind("ddh_quickdrop_plus", "F6")
-reskate.on("action", function(name) if name == "ddh_quickdrop_plus" then openEditor() end end)
-reskate.on("screen_closed", function(title) if title == TITLE and S.open then S.open = false; S.drag = nil; reskate.camera.release() end end)
-reskate.on("unload", function() if S.open then reskate.camera.release() end end)
+do
+    local ok, why = pcall(reskate.input.bind, "ddh_quickdrop_plus_pad", "Pad.LB+Pad.RB")
+    if not ok then reskate.log("Quick Drop helper: could not bind LB+RB: " .. tostring(why), "warn") end
+end
+reskate.on("action", function(name)
+    if name == "ddh_quickdrop_plus" or name == "ddh_quickdrop_plus_pad" then openEditor() end
+end)
+reskate.on("screen_closed", function(title) if title == TITLE and S.open then S.open = false; S.drag = nil; padCaptureOff(); reskate.camera.release() end end)
+reskate.on("unload", function() padCaptureOff(); if S.open then reskate.camera.release() end end)
 reskate.on("level_loaded", function() S.listKey = nil; S.known = nil; S.blocked = nil; S.missing = nil; S.confirmRemove = nil; select(nil) end)
 
 -- typing exact numbers: a text box with "X Y Z turn size"; change any of them
@@ -480,6 +492,16 @@ local function oldPanel(ui)
         ui:info("Scroll", "zoom")
         ui:info("Arrows, PgUp, PgDn", "fly the view")
         ui:info("Shift", "bigger steps")
+        ui:info("Controller", "LB+RB opens, B closes")
+        ui:info("Left stick", "slide it")
+        ui:info("RT / LT", "raise / lower")
+        ui:info("LB / RB", "turn")
+        ui:info("D-pad up / down", "size")
+        ui:info("D-pad left / right", "pick another object")
+        ui:info("Right stick", "turn the view (hold Y: zoom)")
+        ui:info("R3", "look at it")
+        ui:info("A / View", "snap / undo")
+        ui:info("Hold X", "fine steps")
     end
     if ui:button("close", "Done (Esc)", true) then closeEditor() end
 end
@@ -691,6 +713,16 @@ local function newPanel(ui)
         ui:info("F", "look at it")
         ui:info("Ctrl+Z", "undo")
         ui:info("Shift", "bigger steps")
+        ui:info("Controller", "LB+RB opens, B closes")
+        ui:info("Left stick", "slide it")
+        ui:info("RT / LT", "raise / lower")
+        ui:info("LB / RB", "turn")
+        ui:info("D-pad up / down", "size")
+        ui:info("D-pad left / right", "pick another object")
+        ui:info("Right stick", "turn the view (hold Y: zoom)")
+        ui:info("R3", "look at it")
+        ui:info("A / View", "snap / undo")
+        ui:info("Hold X", "fine steps")
     end
 end
 
@@ -754,6 +786,245 @@ local function handleAt(px)
         if d2(px, sc.center) < 18 then return { kind = "size" } end
     end
     return nil
+end
+
+
+-- ---------------------------------------------------------------- the controller
+-- Reads the pad through reskate.input.gamepad(). Button names are read from its buttons table (several spellings),
+-- or from the XInput bit mask (reskate.input.pad_bits) when the table has none. The first time the editor opens
+-- with a pad, what the pad sends is written to ReSkate.log once, so the names can be checked.
+local XBITS = { up = 0x0001, down = 0x0002, left = 0x0004, right = 0x0008, start = 0x0010, back = 0x0020,
+    ls = 0x0040, rs = 0x0080, lb = 0x0100, rb = 0x0200, a = 0x1000, b = 0x2000, x = 0x4000, y = 0x8000 }
+local PADNAMES = {
+    a = { "a", "A", "cross", "face_down", "south" },
+    b = { "b", "B", "circle", "face_right", "east" },
+    x = { "x", "X", "square", "face_left", "west" },
+    y = { "y", "Y", "triangle", "face_up", "north" },
+    lb = { "lb", "LB", "l1", "left_shoulder", "left_bumper" },
+    rb = { "rb", "RB", "r1", "right_shoulder", "right_bumper" },
+    up = { "up", "dpad_up", "d_up" },
+    down = { "down", "dpad_down", "d_down" },
+    left = { "left", "dpad_left", "d_left" },
+    right = { "right", "dpad_right", "d_right" },
+    start = { "start", "menu", "options" },
+    back = { "back", "view", "select", "share" },
+    ls = { "left_stick", "ls", "l3", "left_thumb", "left_stick_click" },
+    rs = { "right_stick", "rs", "r3", "right_thumb", "right_stick_click" },
+}
+
+local function band(a, b)
+    if bit32 and bit32.band then return bit32.band(a, b) end
+    local r, k = 0, 1
+    while a > 0 and b > 0 do
+        if a % 2 == 1 and b % 2 == 1 then r += k end
+        a, b, k = math.floor(a / 2), math.floor(b / 2), k * 2
+    end
+    return r
+end
+
+local function describe(v, depth)
+    depth = depth or 0
+    if type(v) ~= "table" or depth > 2 then return tostring(v) end
+    local parts = {}
+    for k, x in pairs(v) do table.insert(parts, tostring(k) .. "=" .. describe(x, depth + 1)) end
+    table.sort(parts)
+    return "{" .. table.concat(parts, ", ") .. "}"
+end
+
+local function axis(v, full)
+    v = tonumber(v) or 0
+    if math.abs(v) > 1.5 then v = v / full end
+    return clamp(v, -1, 1)
+end
+
+local function readPad()
+    if not (reskate.input and reskate.input.gamepad) then return nil end
+    local ok, g = pcall(reskate.input.gamepad)
+    if not ok then
+        if not S.padErr then S.padErr = true; reskate.log("Quick Drop helper: controller read failed: " .. tostring(g), "warn") end
+        return nil
+    end
+    if type(g) ~= "table" then return nil end
+    local bits = nil
+    local bt = g.buttons
+    if type(bt) == "number" then bits = bt end
+    if type(bt) ~= "table" and reskate.input.pad_bits then
+        local ok2, pb = pcall(reskate.input.pad_bits)
+        if ok2 and type(pb) == "number" then bits = bits or pb end
+    end
+    if not S.padLogged then
+        S.padLogged = true
+        reskate.log("Quick Drop helper: controller sends " .. describe(g) .. (bits and string.format(" bits=0x%04x", bits) or ""))
+    end
+    local p = {
+        lx = axis(g.left_x, 32767), ly = axis(g.left_y, 32767),
+        rx = axis(g.right_x, 32767), ry = axis(g.right_y, 32767),
+        lt = clamp(axis(g.left_trigger, 255), 0, 1), rt = clamp(axis(g.right_trigger, 255), 0, 1),
+    }
+    for key, names in pairs(PADNAMES) do
+        local down = false
+        if type(bt) == "table" then
+            for _, n in ipairs(names) do if bt[n] then down = true break end end
+        end
+        if not down and bits then down = band(bits, XBITS[key]) ~= 0 end
+        p[key] = down
+    end
+    -- log a pressed button's real name once each, to check the spellings
+    if type(bt) == "table" then
+        S.padSeen = S.padSeen or {}
+        for k, v in pairs(bt) do
+            if v == true and not S.padSeen[k] then
+                S.padSeen[k] = true
+                reskate.log("Quick Drop helper: controller button pressed: " .. tostring(k))
+            end
+        end
+    end
+    return p
+end
+
+-- radial dead zone, then a curve so small pushes are fine
+local function stick(x, y)
+    local m = math.sqrt(x * x + y * y)
+    if m < 0.2 then return 0, 0 end
+    local k = ((math.min(m, 1) - 0.2) / 0.8) ^ 1.6 / m
+    return x * k, y * k
+end
+
+-- a button that steps once, then repeats while held
+local function padStep(key, down)
+    S.padRep = S.padRep or {}
+    local r = S.padRep[key]
+    if not down then S.padRep[key] = nil return false end
+    if not r then S.padRep[key] = { next = S.clock + 350 } return true end
+    if S.clock >= r.next then r.next = S.clock + 110 return true end
+    return false
+end
+
+local function padPress(key, down)
+    S.padHeld = S.padHeld or {}
+    local was = S.padHeld[key]
+    S.padHeld[key] = down
+    return down and not was
+end
+
+local function pickNext(dir)
+    local list = reskate.objects.list()
+    if #list == 0 then say("No placed objects in this park.") return end
+    table.sort(list, function(a, b) return tostring(a.id) < tostring(b.id) end)
+    local at = 0
+    for i, o in ipairs(list) do if S.sel and o.id == S.sel.id then at = i end end
+    local i = at + dir
+    if i < 1 then i = #list elseif i > #list then i = 1 end
+    send()
+    select(list[i])
+    S.cam.goal = list[i].position
+    say(string.format("Picked %s (%d of %d)", titleOf(list[i].item), i, #list))
+end
+
+local function padCapture(on)
+    if S.padCaptured == on then return end
+    if not (reskate.input and reskate.input.capture) then return end
+    local ok, why = pcall(reskate.input.capture, on)
+    if ok then
+        S.padCaptured = on
+    elseif on and not S.captureErr then
+        S.captureErr = true
+        reskate.log("Quick Drop helper: could not keep the controller from the game: " .. tostring(why), "warn")
+    end
+end
+
+padCaptureOn = function() padCapture(true) end
+padCaptureOff = function() padCapture(false) end
+
+-- the open editor with a controller
+local function padEditor(sec)
+    local p = readPad()
+    if not p then return end
+    if S.padWait then
+        for k in pairs(PADNAMES) do if p[k] then return end end
+        if p.lt > 0.3 or p.rt > 0.3 then return end
+        S.padWait = false
+    end
+    local fine = p.x
+    local t = S.target
+
+    if padPress("b", p.b) then closeEditor() return end
+    if padPress("a", p.a) then S.snap = not S.snap; say(S.snap and "Snap on" or "Snap off") end
+    if padPress("back", p.back) then undo() t = S.target end
+    if padPress("rs", p.rs) and t then S.cam.goal = t.pos end
+    if padStep("left", p.left) then pickNext(-1) t = S.target end
+    if padStep("right", p.right) then pickNext(1) t = S.target end
+
+    -- the view: right stick turns it; hold Y and the right stick zooms
+    local rx, ry = stick(p.rx, p.ry)
+    if p.y then
+        if ry ~= 0 then S.cam.goalDist = clamp((S.cam.goalDist or S.cam.dist) * (1 - ry * 1.6 * sec), 0.5, 300) end
+    else
+        S.cam.yaw -= rx * 2.4 * sec
+        S.cam.pitch = clamp(S.cam.pitch + ry * 1.6 * sec, -1.45, 1.45)
+    end
+
+    if not t then
+        local any = math.abs(p.lx) > 0.3 or math.abs(p.ly) > 0.3 or p.lt > 0.3 or p.rt > 0.3 or p.lb or p.rb or p.up or p.down
+        if any and S.clock - (S.padHintAt or -1e9) > 4000 then
+            S.padHintAt = S.clock
+            say("Pick an object first: D-pad left / right.")
+        end
+        return
+    end
+
+    -- the object: one undo step per burst of changes
+    local active = false
+    local function begin()
+        if not S.padBurst then markUndo(); S.padBurst = true end
+        active = true
+    end
+
+    local _, f, r = camBasis()
+    local ff, rr = flat(f), flat(r)
+    local lx, ly = stick(p.lx, p.ly)
+    local up = p.rt - p.lt
+    if math.abs(up) < 0.15 then up = 0 end
+    if S.snap then
+        local step = fine and 0.05 or 0.25
+        local function nudge(key, on, v)
+            if padStep(key, on) then begin(); t.pos += v * step; S.cam.goal = (S.cam.goal or S.cam.target) + v * step end
+        end
+        nudge("fwd", p.ly > 0.5, ff); nudge("back_", p.ly < -0.5, ff * -1)
+        nudge("rgt", p.lx > 0.5, rr); nudge("lft", p.lx < -0.5, rr * -1)
+        nudge("rise", up > 0.5, V(0, 1, 0)); nudge("fall", up < -0.5, V(0, -1, 0))
+        if p.ly > 0.5 or p.ly < -0.5 or p.lx > 0.5 or p.lx < -0.5 or math.abs(up) > 0.5 then active = true end
+    elseif lx ~= 0 or ly ~= 0 or up ~= 0 then
+        begin()
+        local sp = (fine and 0.4 or 2.5) * sec
+        local mv = (ff * ly + rr * lx) * sp + V(0, up * (fine and 0.25 or 1.5) * sec, 0)
+        t.pos += mv
+        S.cam.goal = (S.cam.goal or S.cam.target) + mv
+        S.cam.target += mv
+    end
+
+    -- turn: bumpers, 15 degrees (X held: 1)
+    local tstep = math.rad(fine and 1 or 15)
+    if padStep("lb", p.lb) then begin(); t.heading = wrap(round(t.heading + tstep, tstep)) end
+    if padStep("rb", p.rb) then begin(); t.heading = wrap(round(t.heading - tstep, tstep)) end
+    if p.lb or p.rb then active = true end
+
+    -- size: D-pad up / down, 0.1 (X held: 0.01)
+    local sstep = fine and 0.01 or 0.1
+    if padStep("up", p.up) then begin(); t.scale = clamp(round(t.scale + sstep, sstep), 0.1, 10) end
+    if padStep("down", p.down) then begin(); t.scale = clamp(round(t.scale - sstep, sstep), 0.1, 10) end
+    if p.up or p.down then active = true end
+
+    if active then
+        S.dirty = true
+        S.padMoving = true
+    elseif S.padBurst then
+        -- let go: send the exact place soon
+        S.padBurst = false
+        S.padMoving = false
+        S.dirty = true
+        if not sameAsSent(t) then S.lastSend = math.min(S.lastSend, S.clock - 250) end
+    end
 end
 
 reskate.on("tick", function(dt)
@@ -835,6 +1106,11 @@ reskate.on("tick", function(dt)
         if reskate.input.key("PageUp") then mv += V(0, 1, 0) end
         if reskate.input.key("PageDown") then mv -= V(0, 1, 0) end
         S.cam.goal = (S.cam.goal or S.cam.target) + mv * sp
+    end
+    do
+        local ok, err = pcall(padEditor, sec)
+        if not ok then reskate.log("Quick Drop helper: controller: " .. tostring(err), "warn") end
+        if not S.open then return end
     end
 
     -- the mouse

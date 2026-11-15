@@ -4,7 +4,7 @@ Works with skate.'s own Quick Drop. Drop objects as normal, then press **F6** to
 
 - **W** move: drag the red / green / blue arrows (they face the way the object does), or the coloured squares to slide along a side
 - **E** turn: drag the ring
-- **R** size: drag the green cubes
+- **R** size: drag a corner of the green box
 - The object follows as often as the game takes edits, and lands exactly where you let go
 - Click another placed object to pick it. Drag empty space to turn the view, right-drag to slide it, scroll to zoom, arrows and PgUp / PgDn to fly it
 - **G** snap (0.25 m, 15°, 0.1), **Shift** bigger steps, **Ctrl+Z** undo, **F** look at the object, **Esc** done
@@ -15,14 +15,14 @@ Works with skate.'s own Quick Drop. Drop objects as normal, then press **F6** to
   - **Park locked** and **Controls**
 - On older ReSkate the panel falls back to the old sliders
 
+**Controller** (Xbox or PlayStation): **LB+RB** opens it, **B** closes.
+- Left stick slides the object (the way the view faces), **RT / LT** raise / lower it
+- **LB / RB** turn (15°), **D-pad up / down** size, **D-pad left / right** pick the next placed object
+- Right stick turns the view, hold **Y** + right stick to zoom, **R3** looks at the object
+- **A** snap (stick then moves in 0.25 m steps), **View** undo, hold **X** for fine steps (1°, 0.01, slow slide)
+
 Without opening it: hold **Ctrl** and use [ ] (turn), PgUp / PgDn (height), Z / X (size), arrows (slide) on the last dropped object.
 
-Placed objects only turn about up: the game allows no tilt for plugins. To tilt an object, use ReSkate's own park editor (ReSkate menu > BUILD > PARK EDITOR). Turning a tilted object here makes it flat again; moving it keeps the tilt.
+Placed objects only turn about up (the game allows no tilt for plugins). A park with objects from a mod that is not installed cannot be changed at all, by this or by Quick Drop.
 
-A park with objects from a mod that is off or not installed cannot be changed at all, by this or by Quick Drop: turn that mod back on.
-
-Needs ReSkate 2.1.4 or newer for the full panel (older versions get a simpler one).
-
-## Install
-
-Unzip into ReSkate's `Mods` folder, so you get `Mods\DDH Park Editor\`. Start the game, and if F6 does nothing, approve DDH Park Editor in the ReSkate menu under Plugins.
+Needs ReSkate 2.1.2 or newer. Unzip into ReSkate's `Mods` folder.
