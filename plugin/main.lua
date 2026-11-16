@@ -2511,11 +2511,21 @@ local function padEditor(sec)
 
     -- the view: right stick turns it
     local rx, ry = stick(p.rx, p.ry)
-    -- (up / down the other way round unless "Invert look up/down" is on; left / right as set)
     if S.lookInvX then rx = -rx end
-    if not S.lookInvY then ry = -ry end
-    S.cam.yaw -= rx * 2.4 * sec
-    S.cam.pitch = clamp(S.cam.pitch + ry * 1.6 * sec, -1.45, 1.45)
+    if S.lookInvY then ry = -ry end
+    if holding then
+        -- holding: the right stick circles round the object (up: from higher up)
+        S.cam.yaw -= rx * 2.4 * sec
+        S.cam.pitch = clamp(S.cam.pitch - ry * 1.6 * sec, -1.45, 1.45)
+    elseif rx ~= 0 or ry ~= 0 then
+        -- free, like Quick Drop: the view turns where it stands (up: look up, right: look right)
+        local cpos = camBasis()
+        S.cam.yaw -= rx * 2.4 * sec
+        S.cam.pitch = clamp(S.cam.pitch + ry * 1.6 * sec, -1.45, 1.45)
+        local _, f2 = camBasis()
+        S.cam.target = cpos + f2 * S.cam.dist
+        S.cam.goal = S.cam.target
+    end
 
     local _, f, r = camBasis()
     local ff, rr = flat(f), flat(r)

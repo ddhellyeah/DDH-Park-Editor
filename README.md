@@ -21,7 +21,7 @@ Works with skate.'s own Quick Drop. Drop objects as normal, then press **F6** to
 - **A** picks it up, **A** again puts it down. **B** cancels (it goes back where it was); with nothing held **B** closes
 - Holding: left stick moves it, **RT / LT** raise / lower, **LB / RB** turn (15°), **D-pad up / down** size; it snaps to objects (keep pushing to go past)
 - **X**: not holding, copies the object the cross is on and hands you the copy (**B** right away takes the copy back); holding, drops a copy where it is (tilt and all) and keeps the original in hand. **Y** twice removes the object the cross is on (or the one held)
-- Right stick turns the view, **R3** looks at the object, **View** undo, **Menu** steps on / off, hold **L3** for fine (1°, 0.01, slow)
+- Right stick: not holding, looks around where the view stands (like Quick Drop); holding, circles round the object. (Controls: "Invert look up/down" and "left/right" switches), **R3** looks at the object, **View** undo, **Menu** steps on / off, hold **L3** for fine (1°, 0.01, slow)
 
 Without opening it: hold **Ctrl** and use [ ] (turn), PgUp / PgDn (height), Z / X (size), arrows (slide) on the last dropped object.
 
