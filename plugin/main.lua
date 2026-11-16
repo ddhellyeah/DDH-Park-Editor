@@ -86,6 +86,7 @@ local function select(o, blueprint)
     S.handleLen = nil
     S.edit = {}
     S.guides, S.padRaw, S.tighten, S.snapLock = nil, nil, nil, nil
+    if S.grab and not (o and o.id == S.grab.id) then S.grab = nil end
     if not o then S.sel, S.target, S.dirty = nil, nil, false return end
     S.sel = { id = o.id, item = o.item, bp = blueprint, pos0 = o.position, h0 = o.heading or 0 }
     if S.open and S.cam.goal then S.cam.goal = o.position end
@@ -145,7 +146,14 @@ local function scan()
             if not S.known[id] then table.insert(fresh, o) end
         end
         -- one new object: a drop. Many at once: a park or map loading, not something to pick.
-        if #fresh == 1 then
+        local ec = S.expectCopy
+        if #fresh == 1 and ec and fresh[1].item == ec.item and len(fresh[1].position - ec.pos) < 0.05 then
+            -- the copy made with X: it keeps the tilt, and the held object stays picked
+            local o = fresh[1]
+            reskate.log("Quick Drop helper: copy made " .. fmt(o))
+            if ec.tilt then S.tilt[o.id] = { x = ec.tilt.x, z = ec.tilt.z }; S.tiltSaveDue = true end
+            S.expectCopy = nil
+        elseif #fresh == 1 then
             local o = fresh[1]
             reskate.log("Quick Drop helper: new object " .. fmt(o))
             select(o)
@@ -1803,16 +1811,19 @@ local function oldPanel(ui)
         ui:info("Scroll", "zoom")
         ui:info("Arrows, PgUp, PgDn", "fly the view")
         ui:info("Shift", "bigger steps")
-        ui:info("Controller", "LB+RB opens, B closes")
-        ui:info("Left stick", "slide it")
+        ui:info("Controller", "LB+RB opens")
+        ui:info("Left stick", "fly (holding: move it)")
+        ui:info("A", "pick up what the cross is on / put down")
+        ui:info("B", "cancel (back where it was) / close")
+        ui:info("X", "drop a copy, keep holding")
+        ui:info("Y twice", "remove it")
         ui:info("RT / LT", "raise / lower")
-        ui:info("LB / RB", "turn")
-        ui:info("D-pad up / down", "size")
-        ui:info("D-pad left / right", "pick another object")
-        ui:info("Right stick", "turn the view (hold Y: zoom)")
-        ui:info("R3", "look at it")
-        ui:info("A / View", "snap / undo")
-        ui:info("Hold X", "fine steps")
+        ui:info("LB / RB", "turn (holding)")
+        ui:info("D-pad up / down", "size (holding) / zoom")
+        ui:info("D-pad left / right", "next object")
+        ui:info("Right stick / R3", "turn the view / look at it")
+        ui:info("View / Menu", "undo / steps")
+        ui:info("Hold L3", "fine")
     end
     if ui:button("close", "Done (Esc)", true) then closeEditor() end
 end
@@ -2046,16 +2057,19 @@ local function newPanel(ui)
         ui:info("F", "look at it")
         ui:info("Ctrl+Z", "undo")
         ui:info("Shift", "bigger steps")
-        ui:info("Controller", "LB+RB opens, B closes")
-        ui:info("Left stick", "slide it")
+        ui:info("Controller", "LB+RB opens")
+        ui:info("Left stick", "fly (holding: move it)")
+        ui:info("A", "pick up what the cross is on / put down")
+        ui:info("B", "cancel (back where it was) / close")
+        ui:info("X", "drop a copy, keep holding")
+        ui:info("Y twice", "remove it")
         ui:info("RT / LT", "raise / lower")
-        ui:info("LB / RB", "turn")
-        ui:info("D-pad up / down", "size")
-        ui:info("D-pad left / right", "pick another object")
-        ui:info("Right stick", "turn the view (hold Y: zoom)")
-        ui:info("R3", "look at it")
-        ui:info("A / View", "snap / undo")
-        ui:info("Hold X", "fine steps")
+        ui:info("LB / RB", "turn (holding)")
+        ui:info("D-pad up / down", "size (holding) / zoom")
+        ui:info("D-pad left / right", "next object")
+        ui:info("Right stick / R3", "turn the view / look at it")
+        ui:info("View / Menu", "undo / steps")
+        ui:info("Hold L3", "fine")
     end
 end
 
@@ -2276,6 +2290,115 @@ padCaptureOn = function() padCapture(true) end
 padCaptureOff = function() padCapture(false) end
 
 -- the open editor with a controller
+-- the object under the cross in the middle of the view (aiming with the controller)
+local function aimedObject()
+    local cpos, f = camBasis()
+    local ok, hit = pcall(reskate.world.pick, cpos, cpos + f * 300)
+    if not (ok and type(hit) == "table") then return nil end
+    local at = (hit.object and hit.object.position) or hit.position
+    if not at then return nil end
+    local best, bd = nil, hit.object and 1.5 or 0
+    for _, ob in pairs(S.known or {}) do
+        local dd = len(ob.position - at)
+        if dd < bd then best, bd = ob, dd end
+    end
+    if not best and hit.object and hit.position then
+        bd = 6
+        for _, ob in pairs(S.known or {}) do
+            local dd = len(ob.position - hit.position)
+            if dd < bd then best, bd = ob, dd end
+        end
+    end
+    return best
+end
+
+-- holding an object with the controller (like Quick Drop): A picks it up, A puts it down, B puts it back
+local function startGrab()
+    if not (S.sel and S.target) then return end
+    local t = S.target
+    local tl = S.tilt[S.sel.id]
+    S.grab = { id = S.sel.id, pos = t.pos, heading = t.heading, scale = t.scale, tilt = tl and { x = tl.x, z = tl.z } or nil }
+    markUndo()
+    S.cam.goal = t.pos
+    say("Holding " .. titleOf(S.sel.item) .. ".  A: put down   B: cancel   X: copy")
+end
+local function endHoldMove()
+    if S.padRaw then armTighten(S.guides) end
+    S.padRaw, S.guides, S.snapLock = nil, nil, nil
+end
+local function placeGrab()
+    endHoldMove()
+    S.grab = nil
+    S.dirty = true
+    if S.target and not sameAsSent(S.target) then S.lastSend = math.min(S.lastSend, S.clock - 250) end
+    say("Put down.")
+end
+local function cancelGrab()
+    local g = S.grab
+    S.grab = nil
+    S.padRaw, S.guides, S.snapLock, S.tighten = nil, nil, nil, nil
+    if g and S.sel and S.sel.id == g.id then
+        S.target = { pos = g.pos, heading = g.heading, scale = g.scale }
+        S.tilt[g.id] = g.tilt
+        S.tiltSaveDue = true
+        S.dirty = true
+        S.lastSend = math.min(S.lastSend, S.clock - 250)
+    end
+    say("Cancelled: back where it was.")
+end
+-- X: a copy where the held object is now (tilt and all); the original stays in hand
+local function copyHeld()
+    local t = S.target
+    if not (S.sel and t) then return end
+    S.copyQ = { item = S.sel.item, pos = t.pos, heading = t.heading, scale = t.scale, tilt = S.tilt[S.sel.id], until_ = S.clock + 3000 }
+end
+local function copyTick()
+    local q = S.copyQ
+    if not q then return end
+    if S.clock > q.until_ then S.copyQ = nil; say("The game was busy: no copy made. Try again.", true) return end
+    if not lastApplied() then return end
+    local tries = S.tries or {}
+    S.tries = tries
+    while tries[1] and S.clock - tries[1] > 1050 do table.remove(tries, 1) end
+    if #tries >= 4 then return end
+    table.insert(tries, S.clock)
+    local ok, why = reskate.objects.place(q.item, q.pos, q.heading, q.scale)
+    if ok then
+        S.expectCopy = { item = q.item, pos = q.pos, tilt = q.tilt and { x = q.tilt.x, z = q.tilt.z } or nil }
+        S.copyQ = nil
+        S.lastScan = -1e9
+        say("Copy made. Move on and press X for another.")
+    elseif not BUSY[why] then
+        S.copyQ = nil
+        say("No copy: " .. tostring(why), true)
+    end
+end
+-- Y twice: remove it
+local function deletePress()
+    if not S.sel then return end
+    local id = S.sel.id
+    if S.delAsk and S.delAsk.id == id and S.clock - S.delAsk.at < 2500 then
+        S.delAsk = nil
+        local name = titleOf(S.sel.item)
+        S.grab = nil
+        endHoldMove()
+        letGo(id)
+        local ok, why = reskate.objects.remove(id)
+        if ok then
+            S.tilt[id] = nil
+            S.tiltSaveDue = true
+            select(nil)
+            S.lastScan = -1e9
+            say("Removed " .. name .. ".")
+        else
+            say("Not removed: " .. tostring(why), true)
+        end
+    else
+        S.delAsk = { id = id, at = S.clock }
+        say("Press Y again to remove " .. titleOf(S.sel.item) .. ".")
+    end
+end
+
 local function padEditor(sec)
     local p = readPad()
     if not p then return end
@@ -2284,46 +2407,78 @@ local function padEditor(sec)
         if p.lt > 0.3 or p.rt > 0.3 then return end
         S.padWait = false
     end
-    local fine = p.x
+    -- the controller is in use: the aiming cross shows
+    local anyIn = math.abs(p.lx) > 0.2 or math.abs(p.ly) > 0.2 or math.abs(p.rx) > 0.2 or math.abs(p.ry) > 0.2 or p.lt > 0.2 or p.rt > 0.2
+    for k in pairs(PADNAMES) do if p[k] then anyIn = true end end
+    if anyIn then S.padUsedAt = S.clock end
+
+    local fine = p.ls
     local t = S.target
+    if S.grab and not (S.sel and S.sel.id == S.grab.id) then S.grab = nil end
+    local holding = S.grab ~= nil
 
-    if padPress("b", p.b) then closeEditor() return end
-    if padPress("a", p.a) then S.snap = not S.snap; say(S.snap and "Snap on" or "Snap off") end
-    if padPress("back", p.back) then undo() t = S.target end
-    if padPress("rs", p.rs) and t then S.cam.goal = t.pos end
-    if padStep("left", p.left) then pickNext(-1) t = S.target end
-    if padStep("right", p.right) then pickNext(1) t = S.target end
-
-    -- the view: right stick turns it; hold Y and the right stick zooms
-    local rx, ry = stick(p.rx, p.ry)
-    if p.y then
-        if ry ~= 0 then S.cam.goalDist = clamp((S.cam.goalDist or S.cam.dist) * (1 - ry * 1.6 * sec), 0.5, 300) end
-    else
-        S.cam.yaw -= rx * 2.4 * sec
-        S.cam.pitch = clamp(S.cam.pitch + ry * 1.6 * sec, -1.45, 1.45)
-    end
-
-    if not t then
-        local any = math.abs(p.lx) > 0.3 or math.abs(p.ly) > 0.3 or p.lt > 0.3 or p.rt > 0.3 or p.lb or p.rb or p.up or p.down
-        if any and S.clock - (S.padHintAt or -1e9) > 4000 then
-            S.padHintAt = S.clock
-            say("Pick an object first: D-pad left / right.")
-        end
+    if padPress("b", p.b) then
+        if holding then cancelGrab() else closeEditor() end
         return
     end
-
-    -- the object: one undo step per burst of changes
-    local active = false
-    local function begin()
-        if not S.padBurst then markUndo(); S.padBurst = true end
-        active = true
+    if padPress("start", p.start) then S.snap = not S.snap; say(S.snap and "Steps on" or "Steps off") end
+    if padPress("back", p.back) then
+        if holding then S.grab = nil; endHoldMove() end
+        undo(); t = S.target; holding = false
     end
+    if padPress("rs", p.rs) and t then S.cam.goal = t.pos end
+    if padPress("y", p.y) then deletePress(); t = S.target; holding = S.grab ~= nil end
+    if padPress("a", p.a) then
+        if holding then
+            placeGrab(); holding = false
+        else
+            local o = S.aim
+            if o and not (S.sel and S.sel.id == o.id) then send(); select(o); t = S.target end
+            if S.sel then startGrab(); holding = true else say("Aim the cross at an object, then A.") end
+        end
+    end
+    if padPress("x", p.x) then
+        if holding then copyHeld() else say("Pick it up first (A), then X makes copies.") end
+    end
+    if not holding then
+        if padStep("left", p.left) then pickNext(-1) t = S.target end
+        if padStep("right", p.right) then pickNext(1) t = S.target end
+    end
+
+    -- the view: right stick turns it
+    local rx, ry = stick(p.rx, p.ry)
+    S.cam.yaw -= rx * 2.4 * sec
+    S.cam.pitch = clamp(S.cam.pitch + ry * 1.6 * sec, -1.45, 1.45)
 
     local _, f, r = camBasis()
     local ff, rr = flat(f), flat(r)
     local lx, ly = stick(p.lx, p.ly)
     local up = p.rt - p.lt
     if math.abs(up) < 0.15 then up = 0 end
+
+    if not holding then
+        -- free: the left stick flies the view, RT / LT raise and lower it, D-pad up / down zoom
+        local sp = math.max(S.cam.dist, 3) * (fine and 0.3 or 1.0) * sec
+        if lx ~= 0 or ly ~= 0 or up ~= 0 then
+            S.cam.goal = (S.cam.goal or S.cam.target) + (ff * ly + rr * lx) * sp + V(0, up * sp * 0.6, 0)
+        end
+        if p.up then S.cam.goalDist = clamp((S.cam.goalDist or S.cam.dist) * (1 - 1.5 * sec), 0.5, 300) end
+        if p.down then S.cam.goalDist = clamp((S.cam.goalDist or S.cam.dist) * (1 + 1.5 * sec), 0.5, 300) end
+        -- what A would pick up
+        S.aim = aimedObject()
+        if S.padBurst then
+            S.padBurst = false
+            S.padMoving = false
+        end
+        return
+    end
+    S.aim = nil
+    if not t then return end
+
+    -- holding: one undo step for the whole hold (made when it was picked up)
+    local active = false
+    local function begin() active = true; S.padBurst = true end
+
     if S.snap then
         S.padRaw = nil
         local step = fine and 0.05 or 0.25
@@ -2355,14 +2510,14 @@ local function padEditor(sec)
         S.padRaw = nil
     end
 
-    -- turn: bumpers, 15 degrees (X held: 1)
+    -- turn: bumpers, 15 degrees (L3 held: 1)
     local tstep = math.rad(fine and 1 or 15)
     if padStep("lb", p.lb) then begin(); t.heading = wrap(round(t.heading + tstep, tstep)) end
     if padStep("rb", p.rb) then begin(); t.heading = wrap(round(t.heading - tstep, tstep)) end
     if p.lb or p.rb then active = true end
     if (p.lb or p.rb) and S.padRaw then S.padHd0 = t.heading end
 
-    -- size: D-pad up / down, 0.1 (X held: 0.01)
+    -- size: D-pad up / down, 0.1 (L3 held: 0.01)
     local sstep = fine and 0.01 or 0.1
     if padStep("up", p.up) then begin(); t.scale = clamp(round(t.scale + sstep, sstep), 0.1, 10) end
     if padStep("down", p.down) then begin(); t.scale = clamp(round(t.scale - sstep, sstep), 0.1, 10) end
@@ -2372,7 +2527,7 @@ local function padEditor(sec)
         S.dirty = true
         S.padMoving = true
     elseif S.padBurst then
-        -- let go: send the exact place soon
+        -- let go of the stick: send the exact place soon (still held)
         S.padBurst = false
         S.padMoving = false
         S.dirty = true
@@ -2410,6 +2565,10 @@ reskate.on("tick", function(dt)
         end
     end
 
+    do
+        local okc, errc = pcall(copyTick)
+        if not okc then S.copyQ = nil; reskate.log("Quick Drop helper: copy: " .. tostring(errc), "warn") end
+    end
     do
         local ok, err = pcall(tiltTick)
         if not ok and not S.tiltWarned then S.tiltWarned = true; reskate.log("Quick Drop helper: tilt: " .. tostring(err), "warn") end
@@ -2675,6 +2834,24 @@ reskate.on("draw", function(d)
         if math.abs(mx) > 1 and math.abs(my) > 1 then S.proj = V(mx, my, 0) end
     end
     S.screen = {}
+    -- the controller's aiming cross, and the object it is on (what A picks up)
+    if S.padUsedAt and S.clock - S.padUsedAt < 15000 then
+        local c = V(S.size.x / 2, S.size.y / 2, 0)
+        if S.grab then
+            d:text(c + V(-170, 150, 0), "A put down    B cancel    X copy", { size = 18, colour = "#ffffff", shadow = true })
+        else
+            d:circle(c, 8, { colour = "#ffffffcc", thickness = 2 })
+            d:line(c - V(16, 0, 0), c - V(10, 0, 0), { colour = "#ffffffcc", thickness = 2 })
+            d:line(c + V(10, 0, 0), c + V(16, 0, 0), { colour = "#ffffffcc", thickness = 2 })
+            d:line(c - V(0, 16, 0), c - V(0, 10, 0), { colour = "#ffffffcc", thickness = 2 })
+            d:line(c + V(0, 10, 0), c + V(0, 16, 0), { colour = "#ffffffcc", thickness = 2 })
+            if S.aim then
+                local so = placedSolid(S.aim)
+                drawShape(d, so.shape or so, "#ffffff", 3, so.xf)
+                d:text(c + V(14, 14, 0), titleOf(S.aim.item) .. "  (A)", { size = 16, colour = "#ffffff", shadow = true })
+            end
+        end
+    end
     if not S.target then return end
     local t = S.target
     local p = t.pos
