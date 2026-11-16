@@ -322,6 +322,11 @@ end
 -- models: item = { wide, high, deep }, standing on its base, centred), then every object this plugin has
 -- measured before (kept between launches, so each item is measured once).
 S.exact, S.saved, S.exactBox, S.itemShape = {}, {}, {}, {}
+do
+    local ok, v = pcall(reskate.storage.get, "look")
+    if ok and type(v) == "table" then S.lookInvX, S.lookInvY = v.x == true, v.y == true end
+end
+local function saveLook() pcall(reskate.storage.set, "look", { x = S.lookInvX == true, y = S.lookInvY == true }) end
 local function loadSizes()
     local ok, t = pcall(function() return require("sizes") end)
     local n, m = 0, 0
@@ -1824,6 +1829,10 @@ local function oldPanel(ui)
     end
     if S.msg ~= "" and S.clock < S.msgUntil then ui:note(S.msg) end
     ui:separator()
+    local lx_ = ui:toggle("invy", "Invert look up/down (controller)", S.lookInvY or false)
+    if lx_ ~= nil and lx_ ~= (S.lookInvY or false) then S.lookInvY = lx_; saveLook() end
+    local ly_ = ui:toggle("invx", "Invert look left/right (controller)", S.lookInvX or false)
+    if ly_ ~= nil and ly_ ~= (S.lookInvX or false) then S.lookInvX = ly_; saveLook() end
     local h = ui:toggle("help", "Show the controls", S.help or false)
     if h ~= nil then S.help = h end
     if S.help then
@@ -2067,6 +2076,10 @@ local function newPanel(ui)
     end
 
     if section(ui, "help", "Controls", "") then
+        local iy = ui:toggle("invy2", "Invert look up/down (controller)", S.lookInvY or false)
+        if iy ~= nil and iy ~= (S.lookInvY or false) then S.lookInvY = iy; saveLook() end
+        local ix = ui:toggle("invx2", "Invert look left/right (controller)", S.lookInvX or false)
+        if ix ~= nil and ix ~= (S.lookInvX or false) then S.lookInvX = ix; saveLook() end
         ui:info("Click", "pick an object")
         ui:info("Drag a handle", "move / turn / size")
         ui:info("Drag empty space", "turn the view")
@@ -2498,6 +2511,9 @@ local function padEditor(sec)
 
     -- the view: right stick turns it
     local rx, ry = stick(p.rx, p.ry)
+    -- (up / down the other way round unless "Invert look up/down" is on; left / right as set)
+    if S.lookInvX then rx = -rx end
+    if not S.lookInvY then ry = -ry end
     S.cam.yaw -= rx * 2.4 * sec
     S.cam.pitch = clamp(S.cam.pitch + ry * 1.6 * sec, -1.45, 1.45)
 
