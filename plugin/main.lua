@@ -624,6 +624,37 @@ local function cornersOf(bx)
     return c
 end
 
+-- turns with tilt (see tilting, further on)
+S.tilt, S.held, S.tiltWhy, S.tiltAt, S.tiltSrc = {}, {}, nil, {}, {}
+local MAX_HELD = 32
+local function qmul(a, b)
+    return { a[4] * b[1] + a[1] * b[4] + a[2] * b[3] - a[3] * b[2],
+             a[4] * b[2] - a[1] * b[3] + a[2] * b[4] + a[3] * b[1],
+             a[4] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[4],
+             a[4] * b[4] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3] }
+end
+local function qconj(q) return { -q[1], -q[2], -q[3], q[4] } end
+local function qrot(q, v)
+    local r = qmul(qmul(q, { v.x, v.y, v.z, 0 }), qconj(q))
+    return V(r[1], r[2], r[3])
+end
+local function qaxis(ax, a) local s2 = math.sin(a / 2); return { ax.x * s2, ax.y * s2, ax.z * s2, math.cos(a / 2) } end
+-- the whole turn of an object: its turn about up, then its tilt about its own x and z
+local function fullTurn(heading, tl)
+    local q = qaxis(V(0, 1, 0), heading)
+    if tl then q = qmul(q, qmul(qaxis(V(1, 0, 0), tl.x), qaxis(V(0, 0, 1), tl.z))) end
+    return q
+end
+local function tilted(id)
+    local tl = id and S.tilt[id]
+    return tl ~= nil and (math.abs(tl.x) > 1e-4 or math.abs(tl.z) > 1e-4)
+end
+-- a point of an object turned with its tilt, about the object's point
+local function tiltPoint(p, heading, tl, q)
+    local rel = qmul(fullTurn(heading, tl), qconj(qaxis(V(0, 1, 0), heading)))
+    return p + qrot(rel, q - p)
+end
+
 -- Outlines: what an object fills seen from above (its model's real outline for the Object Maker's objects, else
 -- its box), standing from its base to its top. Snapping goes side to side along these outlines.
 local MIN_EDGE = 0.05
@@ -683,21 +714,87 @@ local function placedShape(o)
 end
 local COS1 = math.cos(math.rad(1))
 
--- Moves pos so the picked object's outline meets or lines up with the outlines of the objects near it.
+-- An object as it stands, tilt and all: its corners and its flat faces (each side of its outline, its top and its
+-- bottom), each face with a corner o, its outward direction n and two directions u, v across it (ulen, vlen long).
+local function faceBox(f)
+    local c = { f.o, f.o + f.u * f.ulen, f.o + f.v * f.vlen, f.o + f.u * f.ulen + f.v * f.vlen }
+    f.c4 = c
+    f.x0, f.x1, f.y0, f.y1, f.z0, f.z1 = math.huge, -math.huge, math.huge, -math.huge, math.huge, -math.huge
+    for _, q in ipairs(c) do
+        f.x0 = math.min(f.x0, q.x); f.x1 = math.max(f.x1, q.x); f.y0 = math.min(f.y0, q.y); f.y1 = math.max(f.y1, q.y)
+        f.z0 = math.min(f.z0, q.z); f.z1 = math.max(f.z1, q.z)
+    end
+    return f
+end
+local function apart3(a, b)
+    return math.max(0, a.x0 - b.x1, b.x0 - a.x1, a.y0 - b.y1, b.y0 - a.y1, a.z0 - b.z1, b.z0 - a.z1)
+end
+local function worldSolid(item, pos, heading, scale, tl)
+    local sh = worldShape(item, pos, heading, scale)
+    local so = { sized = sh.sized, shape = sh, p = pos, lo = sh.lo, hi = sh.hi, ax = sh.ax, az = sh.az, faces = {}, corners = {}, heading = heading, tl = tl }
+    if not sh.sized or #sh.pts < 3 then return so end
+    local isT = tl ~= nil and (math.abs(tl.x) > 1e-4 or math.abs(tl.z) > 1e-4)
+    local R = isT and qmul(fullTurn(heading, tl), qconj(qaxis(V(0, 1, 0), heading))) or nil
+    local function rv(v) return R and qrot(R, v) or v end
+    local function xf(v) return R and (pos + qrot(R, v - pos)) or v end
+    so.xf, so.tilted = isT and xf or nil, isT
+    local base, top = sh.ylo - pos.y, sh.yhi - pos.y
+    local up = rv(UP)
+    for _, q in ipairs(sh.pts) do
+        so.corners[#so.corners + 1] = xf(q + UP * base)
+        so.corners[#so.corners + 1] = xf(q + UP * top)
+    end
+    for i, E in ipairs(sh.edges) do
+        so.faces[#so.faces + 1] = faceBox({ o = xf(E.a + UP * base), n = rv(E.n), u = rv(E.e), v = up, ulen = E.len, vlen = top - base, long = i <= 8, side = true })
+    end
+    -- top and bottom: the outline's extent along the object's own x and z
+    local x0, x1, z0, z1 = math.huge, -math.huge, math.huge, -math.huge
+    for _, q in ipairs(sh.pts) do
+        local a, b = dot(q - pos, sh.ax), dot(q - pos, sh.az)
+        x0 = math.min(x0, a); x1 = math.max(x1, a); z0 = math.min(z0, b); z1 = math.max(z1, b)
+    end
+    local ax, az = rv(sh.ax), rv(sh.az)
+    so.faces[#so.faces + 1] = faceBox({ o = xf(pos + UP * top + sh.ax * x0 + sh.az * z0), n = up, u = ax, v = az, ulen = x1 - x0, vlen = z1 - z0, long = true })
+    so.faces[#so.faces + 1] = faceBox({ o = xf(pos + UP * base + sh.ax * x0 + sh.az * z0), n = up * -1, u = ax, v = az, ulen = x1 - x0, vlen = z1 - z0, long = true })
+    so.x0, so.x1, so.y0, so.y1, so.z0, so.z1 = math.huge, -math.huge, math.huge, -math.huge, math.huge, -math.huge
+    for _, q in ipairs(so.corners) do
+        so.x0 = math.min(so.x0, q.x); so.x1 = math.max(so.x1, q.x); so.y0 = math.min(so.y0, q.y); so.y1 = math.max(so.y1, q.y)
+        so.z0 = math.min(so.z0, q.z); so.z1 = math.max(so.z1, q.z)
+    end
+    return so
+end
+local function tiltOf(id)
+    local tl = S.tilt[id]
+    if tl and (math.abs(tl.x) > 1e-4 or math.abs(tl.z) > 1e-4) then return tl end
+    return nil
+end
+-- a placed object as it stands, kept while it stays put
+S.solidCache = {}
+local function placedSolid(o)
+    local c = S.solidCache[o.id]
+    local box = S.itemBox[o.item]
+    local h, sc = o.heading or 0, o.scale or 1
+    local tl = tiltOf(o.id)
+    local tx, tz = tl and tl.x or 0, tl and tl.z or 0
+    if c and c.box == box and c.h == h and c.sc == sc and c.pos == o.position and c.tx == tx and c.tz == tz then return c.solid end
+    local so = worldSolid(o.item, o.position, h, sc, tl)
+    S.solidCache[o.id] = { box = box, h = h, sc = sc, pos = o.position, tx = tx, tz = tz, solid = so }
+    return so
+end
+
+-- Moves pos so the picked object's faces meet or line up with the faces of the objects near it (tilted or not).
 -- allow(direction, metres) answers how such a move may be made for the handle in use: the move as a vector and
 -- the direction it goes along, or nil when that handle cannot go that way.
 -- Returns the place, and what it snapped to (a list of { o, nb, kind }) or nil.
-local function objSnap(pos, heading, scale, allow)
+local function objSnap(pos, heading, scale, allow, tl)
     if not (S.osnap and S.sel and S.known) then return pos, nil end
-    if S.tilt[S.sel.id] and (math.abs(S.tilt[S.sel.id].x) > 1e-4 or math.abs(S.tilt[S.sel.id].z) > 1e-4) then return pos, nil end
     local thr = clamp(S.cam.dist * 0.03, 0.12, 0.5)
-    local me = worldShape(S.sel.item, pos, heading, scale)
+    local me = worldSolid(S.sel.item, pos, heading, scale, tl)
     local mc = cornersOf(me)
     local reach = SNAP_REACH + len(me.hi - me.lo)
     local near = {}
     for id, o in pairs(S.known) do
-        local tl = S.tilt[id]
-        if id ~= S.sel.id and not (tl and (math.abs(tl.x) > 1e-4 or math.abs(tl.z) > 1e-4)) then
+        if id ~= S.sel.id then
             local d = len(o.position - pos)
             local b = S.itemBox[o.item]
             if d < reach + (b and len((b[2] - b[1]) * (o.scale or 1)) or 0) then near[#near + 1] = { o = o, d = d } end
@@ -705,122 +802,116 @@ local function objSnap(pos, heading, scale, allow)
     end
     table.sort(near, function(a, b) return a.d < b.d end)
     local cands = {}
+    local reachT = thr + SNAP_TOUCH
     for i = 1, math.min(#near, SNAP_MAX) do
         local o = near[i].o
-        local nb = placedShape(o)
-        local axes = { nb.ax, UP, nb.az }
-        local shaped = #me.edges > 0 and #nb.edges > 0
-        local nlo, nhi = { nb.lo.x, nb.lo.y, nb.lo.z }, { nb.hi.x, nb.hi.y, nb.hi.z }
-        -- the picked object's box, measured along this object's directions
-        local mlo, mhi = { math.huge, math.huge, math.huge }, { -math.huge, -math.huge, -math.huge }
-        for _, c in ipairs(mc) do
-            local rel = c - nb.p
-            for k = 1, 3 do
-                local v = dot(rel, axes[k])
-                if v < mlo[k] then mlo[k] = v end
-                if v > mhi[k] then mhi[k] = v end
-            end
+        local nb = placedSolid(o)
+        local function add(axis, m, kind, rank, n, corner)
+            if math.abs(m) > thr then return end
+            local mv, dir = allow(axis, m)
+            if mv then cands[#cands + 1] = { mv = mv, dir = dir, cost = len(mv), rank = rank, o = o, nb = nb, kind = kind, n = n, corner = corner } end
         end
-        local gap, ov = {}, {}
-        for k = 1, 3 do
-            gap[k] = math.max(0, mlo[k] - nhi[k], nlo[k] - mhi[k])
-            ov[k] = math.min(mhi[k], nhi[k]) - math.max(mlo[k], nlo[k])   -- how far the two overlap along it
-        end
-        for k = 1, 3 do
-          -- outline to outline is done below; the box here only for up and down, or for an object with no outline
-          if not (shaped and k ~= 2) then
-            local g = math.max(gap[k % 3 + 1], gap[(k + 1) % 3 + 1])   -- how far apart the two are sideways
-            local opts = {}
-            -- a real side against side (they overlap across the other two ways), not just corner to corner
-            local face = math.min(ov[k % 3 + 1], ov[(k + 1) % 3 + 1]) > 0.02
-            if g <= SNAP_TOUCH then
-                opts[#opts + 1] = { nhi[k] - mlo[k], "touch", axes[k] * -1 }
-                opts[#opts + 1] = { nlo[k] - mhi[k], "touch", axes[k] }
-            end
-            if g <= SNAP_REACH then
-                opts[#opts + 1] = { nlo[k] - mlo[k], "level" }
-                opts[#opts + 1] = { nhi[k] - mhi[k], "level" }
-            end
-            for _, op in ipairs(opts) do
-                if math.abs(op[1]) <= thr then
-                    local mv, dir = allow(axes[k], op[1])
-                    -- sides that really meet come first, then lining up, then corners that only just meet
-                    local rank = (op[2] == "touch" and face) and 0 or (op[2] == "level" and 1 or 2)
-                    if mv then cands[#cands + 1] = { mv = mv, dir = dir, cost = len(mv), rank = rank, o = o, nb = nb, kind = op[2], n = op[3] } end
-                end
-            end
-          end
-        end
-        if shaped then
-            local function add(axis, m, kind, rank, n, corner)
-                if math.abs(m) > thr then return end
-                local mv, dir = allow(axis, m)
-                if mv then cands[#cands + 1] = { mv = mv, dir = dir, cost = len(mv), rank = rank, o = o, nb = nb, kind = kind, n = n, corner = corner } end
-            end
-            local ovY = math.min(me.yhi, nb.yhi) - math.max(me.ylo, nb.ylo)
-            -- only sides near enough to the other one to matter
-            -- (lining up from further off: only the 8 longest sides of each)
-            local reachT = thr + SNAP_TOUCH
+        if #me.faces > 0 and #nb.faces > 0 then
+            -- faces near enough to matter (lining up from further off: only the long ones)
             local mine, theirs = {}, {}
-            for i, F in ipairs(me.edges) do if apart(F, nb) <= (i <= 8 and SNAP_REACH or reachT) then mine[#mine + 1] = { F, i <= 8 } end end
-            for i, E in ipairs(nb.edges) do if apart(E, me) <= (i <= 8 and SNAP_REACH or reachT) then theirs[#theirs + 1] = { E, i <= 8 } end end
-            for _, fp in ipairs(mine) do
-                local F = fp[1]
-                for _, ep in ipairs(theirs) do
-                  local E = ep[1]
-                  local ap = apart(F, E)
-                  if ap <= reachT or (fp[2] and ep[2] and ap <= SNAP_REACH) then
-                    local c = dot(F.n, E.n)
-                    if c < -COS1 or c > COS1 then
-                        local dline = dot(F.a - E.a, E.n)   -- how far my side is out past theirs
-                        if math.abs(dline) <= thr then
-                            local f0, f1 = dot(F.a - E.a, E.e), dot(F.b - E.a, E.e)
-                            if f0 > f1 then f0, f1 = f1, f0 end
-                            local ov = math.min(f1, E.len) - math.max(f0, 0)   -- how far the two sides overlap
-                            if c < 0 then
-                                -- facing each other: they meet
-                                local g = math.max(0, -ov, -ovY)
-                                if g <= SNAP_TOUCH then
-                                    add(E.n, -dline, "touch", (ov > 0.02 and ovY > 0.02) and 0 or 2, E.n * -1)
-                                    -- and their ends meet along the side
-                                    if ov > -SNAP_TOUCH then
-                                        add(E.e, 0 - f0, "level", 1); add(E.e, E.len - f1, "level", 1)
-                                        add(E.e, 0 - f1, "level", 1); add(E.e, E.len - f0, "level", 1)
-                                    end
+            for _, F in ipairs(me.faces) do if apart3(F, nb) <= (F.long and SNAP_REACH or reachT) then mine[#mine + 1] = F end end
+            for _, E in ipairs(nb.faces) do if apart3(E, me) <= (E.long and SNAP_REACH or reachT) then theirs[#theirs + 1] = E end end
+            for _, F in ipairs(mine) do
+                for _, E in ipairs(theirs) do
+                    local ap = apart3(F, E)
+                    if ap <= reachT or (F.long and E.long and ap <= SNAP_REACH) then
+                        local c = dot(F.n, E.n)
+                        if c < -COS1 or c > COS1 then
+                            local dline = dot(F.o - E.o, E.n)   -- how far my face is out past theirs
+                            if math.abs(dline) <= thr then
+                                -- where my face lies across theirs
+                                local u0, u1, v0, v1 = math.huge, -math.huge, math.huge, -math.huge
+                                for _, q in ipairs(F.c4) do
+                                    local du, dv = dot(q - E.o, E.u), dot(q - E.o, E.v)
+                                    u0 = math.min(u0, du); u1 = math.max(u1, du); v0 = math.min(v0, dv); v1 = math.max(v1, dv)
                                 end
-                            elseif math.max(0, -ov) <= SNAP_REACH then
-                                -- facing the same way: lined up flush
-                                add(E.n, -dline, "level", 1)
+                                local ovu = math.min(u1, E.ulen) - math.max(u0, 0)
+                                local ovv = math.min(v1, E.vlen) - math.max(v0, 0)
+                                if c < 0 then
+                                    -- facing each other: they meet
+                                    local g = math.max(0, -ovu, -ovv)
+                                    if g <= SNAP_TOUCH then
+                                        add(E.n, -dline, "touch", (ovu > 0.02 and ovv > 0.02) and 0 or 2, E.n * -1)
+                                        -- and their edges line up, both ways across the face
+                                        if ovu > -SNAP_TOUCH and ovv > -SNAP_TOUCH then
+                                            add(E.u, 0 - u0, "level", 1); add(E.u, E.ulen - u1, "level", 1)
+                                            add(E.u, 0 - u1, "level", 1); add(E.u, E.ulen - u0, "level", 1)
+                                            add(E.v, 0 - v0, "level", 1); add(E.v, E.vlen - v1, "level", 1)
+                                        end
+                                    end
+                                elseif math.max(0, -ovu, -ovv) <= SNAP_REACH then
+                                    -- facing the same way: lined up flush
+                                    add(E.n, -dline, "level", 1)
+                                end
                             end
                         end
                     end
+                end
+            end
+            -- a corner against a face (of the other one, or of mine), when the two are turned differently
+            local function cornerOnFace(pts, E, sign)
+                local best, inside = math.huge, false
+                local m = thr + 0.03
+                local x0, x1, y0, y1, z0, z1 = E.x0 - m, E.x1 + m, E.y0 - m, E.y1 + m, E.z0 - m, E.z1 + m
+                for _, q in ipairs(pts) do
+                  if q.x >= x0 and q.x <= x1 and q.y >= y0 and q.y <= y1 and q.z >= z0 and q.z <= z1 then
+                    local du, dv = dot(q - E.o, E.u), dot(q - E.o, E.v)
+                    -- (only a corner that lands on the face itself)
+                    if du > -0.02 and du < E.ulen + 0.02 and dv > -0.02 and dv < E.vlen + 0.02 then
+                        local dd = dot(q - E.o, E.n)
+                        if dd < best then best, inside = dd, du > 0.01 and du < E.ulen - 0.01 and dv > 0.01 and dv < E.vlen - 0.01 end
+                    end
                   end
                 end
-            end
-            -- a corner against a side (of the other one, or of mine), when the two are turned differently
-            local function cornerOnSide(pts, E, sign)
-                local best, along = math.huge, 0
-                for _, q in ipairs(pts) do
-                    local t = dot(q - E.a, E.e)
-                    if t > -SNAP_TOUCH and t < E.len + SNAP_TOUCH then
-                        local dd = dot(q - E.a, E.n)
-                        if dd < best then best, along = dd, t end
-                    end
-                end
-                if best < math.huge and math.abs(best) <= thr and ovY > -SNAP_TOUCH then
-                    local inside = along > 0.01 and along < E.len - 0.01 and ovY > 0.02
-                    add(E.n * sign, -best * sign, "touch", inside and 0 or 2, E.n * -sign, true)
+                if best < math.huge and math.abs(best) <= thr then
+                    -- my corner onto its face: along its face's direction; its corner onto my face: along mine
+                    add(E.n * sign, -best, "touch", inside and 0 or 2, E.n * -sign, true)
                 end
             end
-            for _, ep in ipairs(theirs) do if apart(ep[1], me) <= reachT then cornerOnSide(me.pts, ep[1], 1) end end
-            for _, fp in ipairs(mine) do if apart(fp[1], nb) <= reachT then cornerOnSide(nb.pts, fp[1], -1) end end
+            for _, E in ipairs(theirs) do if apart3(E, me) <= reachT then cornerOnFace(me.corners, E, 1) end end
+            for _, F in ipairs(mine) do if apart3(F, nb) <= reachT then cornerOnFace(nb.corners, F, -1) end end
+        else
+            -- one of them has no size: by its box (or point)
+            local axes = { nb.ax, UP, nb.az }
+            local nlo, nhi = { nb.lo.x, nb.lo.y, nb.lo.z }, { nb.hi.x, nb.hi.y, nb.hi.z }
+            local mlo, mhi = { math.huge, math.huge, math.huge }, { -math.huge, -math.huge, -math.huge }
+            for _, c in ipairs(mc) do
+                local rel = c - nb.p
+                for k = 1, 3 do
+                    local v = dot(rel, axes[k])
+                    if v < mlo[k] then mlo[k] = v end
+                    if v > mhi[k] then mhi[k] = v end
+                end
+            end
+            local gap, ov = {}, {}
+            for k = 1, 3 do
+                gap[k] = math.max(0, mlo[k] - nhi[k], nlo[k] - mhi[k])
+                ov[k] = math.min(mhi[k], nhi[k]) - math.max(mlo[k], nlo[k])
+            end
+            for k = 1, 3 do
+                local g = math.max(gap[k % 3 + 1], gap[(k + 1) % 3 + 1])
+                local face = math.min(ov[k % 3 + 1], ov[(k + 1) % 3 + 1]) > 0.02
+                if g <= SNAP_TOUCH then
+                    add(axes[k], nhi[k] - mlo[k], "touch", face and 0 or 2, axes[k] * -1)
+                    add(axes[k], nlo[k] - mhi[k], "touch", face and 0 or 2, axes[k])
+                end
+                if g <= SNAP_REACH then
+                    add(axes[k], nlo[k] - mlo[k], "level", 1)
+                    add(axes[k], nhi[k] - mhi[k], "level", 1)
+                end
+            end
         end
     end
     if #cands == 0 then return pos, nil end
     table.sort(cands, function(a, b)
         if a.rank ~= b.rank then return a.rank < b.rank end
         if math.abs(a.cost - b.cost) > 1e-4 then return a.cost < b.cost end
-        -- the same move: side to side before corner to side
+        -- the same move: face to face before corner to face
         return (not a.corner) and b.corner == true
     end)
     -- the nearest snap, then others that go squarely across it (so each one stays exact)
@@ -847,17 +938,21 @@ local function allowAlong(d)   -- an arrow: only along it
         return d * (m / c), d
     end
 end
-local function allowIn(n)      -- a square: only across its plane
+local function allowIn(n)      -- a square: only across its plane (a sloped face: the part of it across the plane)
     return function(ax, m)
-        if math.abs(dot(ax, n)) > 0.05 then return nil end
-        return ax * m, ax
+        local w = ax - n * dot(ax, n)
+        local l2 = dot(w, w)
+        if l2 < 0.25 then return nil end
+        return w * (m / l2), w * (1 / math.sqrt(l2))
     end
 end
 local function allowFree(level, updown)   -- the controller: the ways it is being moved right now
+    local flat = allowIn(UP)
     return function(ax, m)
-        local vertical = math.abs(ax.y) > 0.5
-        if (vertical and not updown) or (not vertical and not level) then return nil end
-        return ax * m, ax
+        if level and updown then return ax * m, ax end
+        if level then return flat(ax, m) end
+        if updown and math.abs(ax.y) >= 0.5 then return UP * (m / ax.y), UP end
+        return nil
     end
 end
 
@@ -894,6 +989,7 @@ local function turnSnap(hd)
         end
     end
     if not best then return hd, nil end
+    if tiltOf(S.sel.id) or tiltOf(best.id) then return hd, nil end
     local me = worldShape(S.sel.item, S.target.pos, hd, S.target.scale)
     local nb = placedShape(best)
     if #me.edges > 0 and #nb.edges > 0 then
@@ -918,15 +1014,37 @@ end
 -- Moving with a turn: when the picked object comes to meet a nearby object that is turned differently, it
 -- takes that object's turn (or the nearest quarter turn of it) so the two sides meet flat. base is the turn it
 -- had when the move began, so pulling it away again gives that turn back.
-local function alignSnap(pos, base, scale, allow)
-    local p1, g1 = objSnap(pos, base, scale, allow)
-    if not (S.osnap and S.sel and S.known and S.itemBox[S.sel.item]) then return p1, base, g1 end
-    -- already meeting something side to side (flat, not just a corner): stays as it is
-    for _, q in ipairs(g1 or {}) do
-        if q.kind == "touch" and q.n and math.abs(q.n.y) < 0.5 and not q.corner then return p1, base, g1 end
+-- the ways of standing exactly like a tilted object, about up by quarter turns (when they can be written as a turn
+-- about up then a tilt about x then z)
+local function standsLike(h, tl)
+    local out = { { h = h, tl = { x = tl.x, z = tl.z } }, { h = wrap(h + math.pi), tl = { x = -tl.x, z = -tl.z } } }
+    if math.abs(tl.x) < 1e-4 then
+        out[#out + 1] = { h = wrap(h + math.pi / 2), tl = { x = -tl.z, z = 0 } }
+        out[#out + 1] = { h = wrap(h - math.pi / 2), tl = { x = tl.z, z = 0 } }
+    elseif math.abs(tl.z) < 1e-4 then
+        out[#out + 1] = { h = wrap(h + math.pi / 2), tl = { x = 0, z = tl.x } }
+        out[#out + 1] = { h = wrap(h - math.pi / 2), tl = { x = 0, z = -tl.x } }
     end
-    local me = worldShape(S.sel.item, pos, base, scale)
-    if #me.edges == 0 then return p1, base, g1 end
+    return out
+end
+local function turnApart(h1, t1, h2, t2)
+    local a, b = fullTurn(h1, t1), fullTurn(h2, t2)
+    local d = math.abs(a[1] * b[1] + a[2] * b[2] + a[3] * b[3] + a[4] * b[4])
+    return 2 * math.acos(math.min(1, d))
+end
+
+-- Moving with a turn: when the picked object comes to meet a nearby object that is turned (or tilted) differently,
+-- it takes that object's turn (and tilt) so the two faces meet flat. base and baseTilt are what it had when the
+-- move began, so pulling it away again gives those back.
+local function alignSnap(pos, base, scale, allow, baseTilt)
+    local bt = baseTilt
+    if bt and math.abs(bt.x) < 1e-4 and math.abs(bt.z) < 1e-4 then bt = nil end
+    local p1, g1 = objSnap(pos, base, scale, allow, bt)
+    if not (S.osnap and S.sel and S.known and S.itemBox[S.sel.item]) then return p1, base, g1, bt end
+    -- already meeting something face to face (not just a corner): stays as it is
+    for _, q in ipairs(g1 or {}) do
+        if q.kind == "touch" and not q.corner and q.rank == 0 then return p1, base, g1, bt end
+    end
     local near = {}
     for id, o in pairs(S.known) do
         if id ~= S.sel.id and S.itemBox[o.item] then
@@ -938,41 +1056,64 @@ local function alignSnap(pos, base, scale, allow)
     table.sort(near, function(a, b) return a.d < b.d end)
     local tries, tried = 0, {}
     local thr = clamp(S.cam.dist * 0.03, 0.12, 0.5)
+    local function try(n, hd, tl)
+        local p2, g2 = objSnap(pos, hd, scale, allow, tl)
+        for _, q in ipairs(g2 or {}) do
+            if q.o.id == n.o.id and q.kind == "touch" and q.rank == 0 and not q.corner then
+                table.insert(g2, { o = n.o, nb = q.nb, kind = "turn" })
+                return p2, g2
+            end
+        end
+        return nil
+    end
     for i = 1, math.min(#near, 2) do
         local n = near[i]
-        local nb = placedShape(n.o)
-        for _, tm in ipairs(turnsToMeet(me, nb, math.rad(90))) do
-            local d, F, E = tm.d, tm.F, tm.E
-            -- would that turn bring my side up to theirs? (where my side's middle goes when it turns about the point)
-            local v = (F.a + F.b) * 0.5 - pos
-            local cd, sd = math.cos(d), math.sin(d)
-            local m = pos + V(v.x * cd + v.z * sd, 0, -v.x * sd + v.z * cd)
-            local dist, along = dot(m - E.a, E.n), dot(m - E.a, E.e)
-            local close = math.abs(dist) <= thr + 0.05 and along > -F.len / 2 - SNAP_TOUCH and along < E.len + F.len / 2 + SNAP_TOUCH
-            local seen = false
-            for _, q in ipairs(tried) do if math.abs(q - d) < 0.003 then seen = true break end end
-            if close and not seen and math.abs(d) > 1e-3 then
-                tried[#tried + 1] = d
-                tries += 1
-                if tries > 6 then break end
-                local hd = wrap(base + d)
-                local p2, g2 = objSnap(pos, hd, scale, allow)
-                for _, q in ipairs(g2 or {}) do
-                    if q.o.id == n.o.id and q.kind == "touch" and q.rank == 0 and not q.corner then
-                        table.insert(g2, { o = n.o, nb = q.nb, kind = "turn" })
-                        return p2, hd, g2
+        local ntl = tiltOf(n.o.id)
+        if ntl then
+            -- a tilted one: stand like it
+            local opts = standsLike(n.o.heading or 0, ntl)
+            table.sort(opts, function(a, b) return turnApart(a.h, a.tl, base, bt) < turnApart(b.h, b.tl, base, bt) end)
+            for _, op in ipairs(opts) do
+                if turnApart(op.h, op.tl, base, bt) > 1e-3 and turnApart(op.h, op.tl, base, bt) <= math.rad(100) then
+                    tries += 1
+                    if tries > 6 then break end
+                    local p2, g2 = try(n, op.h, op.tl)
+                    if p2 then return p2, op.h, g2, op.tl end
+                end
+            end
+        elseif not bt then
+            -- both flat: a turn about up that sets two long sides together
+            local me = worldShape(S.sel.item, pos, base, scale)
+            local nb = placedShape(n.o)
+            if #me.edges > 0 and #nb.edges > 0 then
+                for _, tm in ipairs(turnsToMeet(me, nb, math.rad(90))) do
+                    local d, F, E = tm.d, tm.F, tm.E
+                    local v = (F.a + F.b) * 0.5 - pos
+                    local cd, sd = math.cos(d), math.sin(d)
+                    local m = pos + V(v.x * cd + v.z * sd, 0, -v.x * sd + v.z * cd)
+                    local dist, along = dot(m - E.a, E.n), dot(m - E.a, E.e)
+                    local close = math.abs(dist) <= thr + 0.05 and along > -F.len / 2 - SNAP_TOUCH and along < E.len + F.len / 2 + SNAP_TOUCH
+                    local seen = false
+                    for _, q in ipairs(tried) do if math.abs(q - d) < 0.003 then seen = true break end end
+                    if close and not seen and math.abs(d) > 1e-3 then
+                        tried[#tried + 1] = d
+                        tries += 1
+                        if tries > 6 then break end
+                        local hd = wrap(base + d)
+                        local p2, g2 = try(n, hd, nil)
+                        if p2 then return p2, hd, g2, nil end
                     end
                 end
             end
         end
     end
-    return p1, base, g1
+    return p1, base, g1, bt
 end
-local function snapTurned(pos, base, scale, allow)
-    local ok, p, h, g = pcall(alignSnap, pos, base, scale, allow)
-    if ok then return p, h, g end
+local function snapTurned(pos, base, scale, allow, baseTilt)
+    local ok, p, h, g, tl = pcall(alignSnap, pos, base, scale, allow, baseTilt)
+    if ok then return p, h, g, tl end
     if not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(p), "warn") end
-    return pos, base, nil
+    return pos, base, nil, baseTilt
 end
 local function turnTo(hd)
     local ok, h, g = pcall(turnSnap, hd)
@@ -988,35 +1129,6 @@ end
 -- puts it back whenever the park is loaded. While an object is moved, turned or sized it is let go (the game
 -- shows it flat for that moment), and tilted again once the game has it in its new place. Offline only, and at
 -- most 32 tilted objects at once (the game's limit for one plugin).
-S.tilt, S.held, S.tiltWhy, S.tiltAt, S.tiltSrc = {}, {}, nil, {}, {}
-local MAX_HELD = 32
-local function qmul(a, b)
-    return { a[4] * b[1] + a[1] * b[4] + a[2] * b[3] - a[3] * b[2],
-             a[4] * b[2] - a[1] * b[3] + a[2] * b[4] + a[3] * b[1],
-             a[4] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[4],
-             a[4] * b[4] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3] }
-end
-local function qconj(q) return { -q[1], -q[2], -q[3], q[4] } end
-local function qrot(q, v)
-    local r = qmul(qmul(q, { v.x, v.y, v.z, 0 }), qconj(q))
-    return V(r[1], r[2], r[3])
-end
-local function qaxis(ax, a) local s2 = math.sin(a / 2); return { ax.x * s2, ax.y * s2, ax.z * s2, math.cos(a / 2) } end
--- the whole turn of an object: its turn about up, then its tilt about its own x and z
-local function fullTurn(heading, tl)
-    local q = qaxis(V(0, 1, 0), heading)
-    if tl then q = qmul(q, qmul(qaxis(V(1, 0, 0), tl.x), qaxis(V(0, 0, 1), tl.z))) end
-    return q
-end
-local function tilted(id)
-    local tl = id and S.tilt[id]
-    return tl ~= nil and (math.abs(tl.x) > 1e-4 or math.abs(tl.z) > 1e-4)
-end
--- a point of an object turned with its tilt, about the object's point
-local function tiltPoint(p, heading, tl, q)
-    local rel = qmul(fullTurn(heading, tl), qconj(qaxis(V(0, 1, 0), heading)))
-    return p + qrot(rel, q - p)
-end
 local function heldCount() local n = 0; for _ in pairs(S.held) do n += 1 end; return n end
 local function letGo(id)
     if S.held[id] then
@@ -1035,8 +1147,18 @@ local function holdTilted(o)
         if not ok or r1 == false then
             local why = tostring(ok and (r2 or "refused") or r1)
             S.tiltAt[o.id] = S.clock + 2000
-            if S.tiltWhy ~= why then reskate.log("Quick Drop helper: tilt: the game won't hold " .. titleOf(o.item) .. ": " .. why) end
-            S.tiltWhy = why
+            -- in plain words: what to do so it shows
+            local plain = why
+            if string.find(why, "editing", 1, true) or string.find(why, "menu", 1, true) then
+                plain = "leave Quick Drop (and close menus) and it tilts"
+            elseif string.find(why, "offline", 1, true) then
+                plain = "only in offline play"
+            end
+            if S.tiltWhy ~= plain then
+                reskate.log("Quick Drop helper: tilt: the game won't hold " .. titleOf(o.item) .. ": " .. why)
+                pcall(reskate.ui.toast, "Tilt: " .. plain)
+            end
+            S.tiltWhy = plain
             return
         end
         local ok2, m = pcall(reskate.objects.motion, o.id)
@@ -1050,7 +1172,7 @@ local function holdTilted(o)
         S.held[o.id] = h
         S.tiltWhy = nil
     end
-    if S.clock - h.at < 260 then return end
+    if S.clock - h.at < 320 then return end
     local q = fullTurn(o.heading or 0, tl)
     local rel = qmul(q, qconj(h.q0))
     local at = o.position + qrot(rel, h.off)
@@ -1060,7 +1182,8 @@ local function holdTilted(o)
     h.at = S.clock
     if ok and r1 ~= false then
         h.key = key
-    elseif not h.warned then
+    elseif not h.warned and not string.find(tostring(ok and r2 or r1), "rate limit", 1, true) then
+        -- (too soon after the last one: simply tried again a moment later)
         h.warned = true
         reskate.log("Quick Drop helper: tilt: the game refused the turn for " .. titleOf(o.item) .. ": " .. tostring(ok and r2 or r1))
     end
@@ -1167,7 +1290,7 @@ local function armTighten(guides)
             if not dup then list[#list + 1] = { id = g.o.id, n = g.n } end
         end
     end
-    if #list > 0 and S.sel then
+    if #list > 0 and S.sel and not tiltOf(S.sel.id) then
         S.tighten = { id = S.sel.id, touches = list, at = S.clock, pass = 1 }
     else
         S.tighten = nil
@@ -1213,7 +1336,7 @@ local function tightenJob(job, me, objs)
     local corr, said = V(0, 0, 0), {}
     for _, tc in ipairs(job.touches) do
         local nbo = objs[tc.id]
-        if nbo and S.itemBox[nbo.item] ~= nil and not (S.exact[me.item] and S.exact[nbo.item]) then
+        if nbo and S.itemBox[nbo.item] ~= nil and not (S.exact[me.item] and S.exact[nbo.item]) and not tiltOf(nbo.id) then
             local n = norm(V(tc.n.x, 0, tc.n.z))
             local tg = V(-n.z, 0, n.x)
             local nb = worldShape(nbo.item, nbo.position, nbo.heading or 0, nbo.scale or 1)
@@ -1504,6 +1627,7 @@ local function oldPanel(ui)
             S.tilt[S.sel.id] = { x = tx and math.rad(tx) or tl.x, z = tz and math.rad(tz) or tl.z }
             S.tiltSaveDue = true
         end
+        if tilted(S.sel.id) and S.tiltWhy and not S.held[S.sel.id] then ui:note("Tilt waits: " .. S.tiltWhy) end
         local sz = num("sz", "Size", t.scale, 0.1, 10, "%.2f×")
         if sz then
             if not S.sliding then markUndo(); S.sliding = true end
@@ -1732,7 +1856,7 @@ local function newPanel(ui)
             S.tilt[S.sel.id] = tl2
             S.tiltSaveDue = true
         end
-        if tilted(S.sel.id) and S.tiltWhy and not S.held[S.sel.id] then ui:note("Tilt can't show: " .. S.tiltWhy) end
+        if tilted(S.sel.id) and S.tiltWhy and not S.held[S.sel.id] then ui:note("Tilt waits: " .. S.tiltWhy) end
     end
 
     -- the handles in the view
@@ -2101,9 +2225,15 @@ local function padEditor(sec)
         local sp = (fine and 0.4 or 2.5) * sec
         local mv = (ff * ly + rr * lx) * sp + V(0, up * (fine and 0.25 or 1.5) * sec, 0)
         -- where the stick has taken it, and from that where it snaps to: the stick can always pull it free again
-        if not S.padRaw then S.padHd0 = t.heading end
+        if not S.padRaw then
+            S.padHd0 = t.heading
+            local tl0 = S.tilt[S.sel.id]
+            S.padTilt0 = tl0 and { x = tl0.x, z = tl0.z } or nil
+        end
         S.padRaw = (S.padRaw or t.pos) + mv
-        t.pos, t.heading, S.guides = snapTurned(S.padRaw, S.padHd0 or t.heading, t.scale, allowFree(lx ~= 0 or ly ~= 0, up ~= 0))
+        local ntl
+        t.pos, t.heading, S.guides, ntl = snapTurned(S.padRaw, S.padHd0 or t.heading, t.scale, allowFree(lx ~= 0 or ly ~= 0, up ~= 0), S.padTilt0)
+        S.tilt[S.sel.id] = ntl
         S.cam.goal = (S.cam.goal or S.cam.target) + mv
         S.cam.target += mv
     else
@@ -2249,7 +2379,8 @@ reskate.on("tick", function(dt)
             if h then
                 markUndo()
                 local t = S.target
-                h.start = { pos = t.pos, heading = t.heading, scale = t.scale, px = px }
+                local tl0 = S.tilt[S.sel.id]
+                h.start = { pos = t.pos, heading = t.heading, scale = t.scale, px = px, tilt = tl0 and { x = tl0.x, z = tl0.z } or nil }
                 local o, d = rayAt(px)
                 if h.kind == "axis" then
                     local s0, s1 = S.screen.center, S.screen.unit[h.axis]
@@ -2303,7 +2434,9 @@ reskate.on("tick", function(dt)
                     if S.snap then along = round(along, step) end
                     local way = axesFor(g.start.heading)[g.axis][1]
                     t.pos = g.start.pos + way * along
-                    if toObjects then t.pos, t.heading, S.guides = snapTurned(t.pos, g.start.heading, t.scale, allowAlong(way)) else t.heading = g.start.heading end
+                    local ntl
+                    if toObjects then t.pos, t.heading, S.guides, ntl = snapTurned(t.pos, g.start.heading, t.scale, allowAlong(way), g.start.tilt) else t.heading, ntl = g.start.heading, g.start.tilt end
+                    S.tilt[S.sel.id] = ntl
                     g.moved = true
                 elseif g.kind == "plane" then
                     local o, d = rayAt(px)
@@ -2318,7 +2451,9 @@ reskate.on("tick", function(dt)
                             off = o2
                         end
                         t.pos = g.start.pos + off
-                        if toObjects then t.pos, t.heading, S.guides = snapTurned(t.pos, g.start.heading, t.scale, allowIn(g.n)) else t.heading = g.start.heading end
+                        local ntl
+                        if toObjects then t.pos, t.heading, S.guides, ntl = snapTurned(t.pos, g.start.heading, t.scale, allowIn(g.n), g.start.tilt) else t.heading, ntl = g.start.heading, g.start.tilt end
+                        S.tilt[S.sel.id] = ntl
                         g.moved = true
                     end
                 elseif g.kind == "tilt" then
@@ -2577,7 +2712,7 @@ reskate.on("draw", function(d)
             if not seen[id] then
                 seen[id] = true
                 local nc = cornersOf(gd.nb)
-                if drawShape(d, gd.nb, "#35e0ff", 3) then
+                if drawShape(d, gd.nb.shape or gd.nb, "#35e0ff", 3, gd.nb.xf) then
                     -- drawn
                 elseif #nc == 8 then
                     for _, e in ipairs(BOX_EDGES) do d:world_line(nc[e[1] + 1], nc[e[2] + 1], { colour = "#35e0ff", thickness = 3 }) end
