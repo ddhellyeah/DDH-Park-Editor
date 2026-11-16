@@ -297,7 +297,7 @@ end
 -- Sizes known before any measuring: the Object Maker's objects (sizes.lua beside this file, measured from their
 -- models: item = { wide, high, deep }, standing on its base, centred), then every object this plugin has
 -- measured before (kept between launches, so each item is measured once).
-S.exact, S.saved, S.exactBox = {}, {}, {}
+S.exact, S.saved, S.exactBox, S.itemShape = {}, {}, {}, {}
 local function loadSizes()
     local ok, t = pcall(function() return require("sizes") end)
     local n, m = 0, 0
@@ -307,6 +307,13 @@ local function loadSizes()
                 S.itemBox[item] = { V(-d[1] / 2, 0, -d[3] / 2), V(d[1] / 2, d[2], d[3] / 2) }
                 S.exactBox[item] = S.itemBox[item]
                 S.exact[item] = true
+                -- its outline seen from above: x, z pairs
+                local ol = d[4]
+                if type(ol) == "table" and #ol >= 6 then
+                    local pts = {}
+                    for i = 1, #ol - 1, 2 do pts[#pts + 1] = V(ol[i], 0, ol[i + 1]) end
+                    S.itemShape[item] = pts
+                end
                 n += 1
             end
         end
@@ -613,14 +620,73 @@ local function cornersOf(bx)
     return c
 end
 
--- Moves pos so the picked object's box meets or lines up with the boxes of the objects near it.
+-- Outlines: what an object fills seen from above (its model's real outline for the Object Maker's objects, else
+-- its box), standing from its base to its top. Snapping goes side to side along these outlines.
+local MIN_EDGE = 0.05
+local function localOutline(item)
+    local sh = S.itemShape[item]
+    if sh then return sh end
+    local b = S.itemBox[item]
+    if not b then return nil end
+    local lo, hi = b[1], b[2]
+    return { V(lo.x, 0, lo.z), V(hi.x, 0, lo.z), V(hi.x, 0, hi.z), V(lo.x, 0, hi.z) }
+end
+-- the outline in the world: its corners (at the object's height), and its sides, longest first, each with its
+-- direction e and outward direction n
+local function worldShape(item, pos, heading, scale)
+    local bx = worldBox(item, pos, heading, scale)
+    bx.ylo, bx.yhi = pos.y + bx.lo.y, pos.y + bx.hi.y
+    bx.pts, bx.edges = {}, {}
+    local lp = bx.sized and localOutline(item) or nil
+    if not lp then return bx end
+    local pts = bx.pts
+    for i, q in ipairs(lp) do pts[i] = pos + bx.ax * (q.x * scale) + bx.az * (q.z * scale) end
+    local n = #pts
+    for i = 1, n do
+        local a, b = pts[i], pts[i % n + 1]
+        local e = b - a
+        local l = len(e)
+        if l >= MIN_EDGE then
+            local eu = e * (1 / l)
+            -- which way its outside faces, as a turn (exact: from the outline's own numbers and the object's turn)
+            local la, lb = lp[i], lp[i % n + 1]
+            local ang = wrap(heading + math.atan2(lb.z - la.z, -(lb.x - la.x)))
+            bx.edges[#bx.edges + 1] = { a = a, b = b, e = eu, n = V(eu.z, 0, -eu.x), len = l, ang = ang,
+                x0 = math.min(a.x, b.x), x1 = math.max(a.x, b.x), z0 = math.min(a.z, b.z), z1 = math.max(a.z, b.z) }
+        end
+    end
+    table.sort(bx.edges, function(x, y) return x.len > y.len end)
+    while #bx.edges > 40 do table.remove(bx.edges) end
+    local x0, x1, z0, z1 = math.huge, -math.huge, math.huge, -math.huge
+    for _, q in ipairs(pts) do x0 = math.min(x0, q.x); x1 = math.max(x1, q.x); z0 = math.min(z0, q.z); z1 = math.max(z1, q.z) end
+    bx.x0, bx.x1, bx.z0, bx.z1 = x0, x1, z0, z1
+    return bx
+end
+-- how far apart two flat boxes (x0, x1, z0, z1) are
+local function apart(a, b)
+    return math.max(0, a.x0 - b.x1, b.x0 - a.x1, a.z0 - b.z1, b.z0 - a.z1)
+end
+-- a placed object's outline, kept while it stays put
+S.shapeCache = {}
+local function placedShape(o)
+    local c = S.shapeCache[o.id]
+    local box = S.itemBox[o.item]
+    local h, sc = o.heading or 0, o.scale or 1
+    if c and c.box == box and c.h == h and c.sc == sc and c.pos == o.position then return c.shape end
+    local sh = worldShape(o.item, o.position, h, sc)
+    S.shapeCache[o.id] = { box = box, h = h, sc = sc, pos = o.position, shape = sh }
+    return sh
+end
+local COS1 = math.cos(math.rad(1))
+
+-- Moves pos so the picked object's outline meets or lines up with the outlines of the objects near it.
 -- allow(direction, metres) answers how such a move may be made for the handle in use: the move as a vector and
 -- the direction it goes along, or nil when that handle cannot go that way.
 -- Returns the place, and what it snapped to (a list of { o, nb, kind }) or nil.
 local function objSnap(pos, heading, scale, allow)
     if not (S.osnap and S.sel and S.known) then return pos, nil end
     local thr = clamp(S.cam.dist * 0.03, 0.12, 0.5)
-    local me = worldBox(S.sel.item, pos, heading, scale)
+    local me = worldShape(S.sel.item, pos, heading, scale)
     local mc = cornersOf(me)
     local reach = SNAP_REACH + len(me.hi - me.lo)
     local near = {}
@@ -635,8 +701,9 @@ local function objSnap(pos, heading, scale, allow)
     local cands = {}
     for i = 1, math.min(#near, SNAP_MAX) do
         local o = near[i].o
-        local nb = worldBox(o.item, o.position, o.heading or 0, o.scale or 1)
+        local nb = placedShape(o)
         local axes = { nb.ax, UP, nb.az }
+        local shaped = #me.edges > 0 and #nb.edges > 0
         local nlo, nhi = { nb.lo.x, nb.lo.y, nb.lo.z }, { nb.hi.x, nb.hi.y, nb.hi.z }
         -- the picked object's box, measured along this object's directions
         local mlo, mhi = { math.huge, math.huge, math.huge }, { -math.huge, -math.huge, -math.huge }
@@ -654,6 +721,8 @@ local function objSnap(pos, heading, scale, allow)
             ov[k] = math.min(mhi[k], nhi[k]) - math.max(mlo[k], nlo[k])   -- how far the two overlap along it
         end
         for k = 1, 3 do
+          -- outline to outline is done below; the box here only for up and down, or for an object with no outline
+          if not (shaped and k ~= 2) then
             local g = math.max(gap[k % 3 + 1], gap[(k + 1) % 3 + 1])   -- how far apart the two are sideways
             local opts = {}
             -- a real side against side (they overlap across the other two ways), not just corner to corner
@@ -674,12 +743,79 @@ local function objSnap(pos, heading, scale, allow)
                     if mv then cands[#cands + 1] = { mv = mv, dir = dir, cost = len(mv), rank = rank, o = o, nb = nb, kind = op[2], n = op[3] } end
                 end
             end
+          end
+        end
+        if shaped then
+            local function add(axis, m, kind, rank, n, corner)
+                if math.abs(m) > thr then return end
+                local mv, dir = allow(axis, m)
+                if mv then cands[#cands + 1] = { mv = mv, dir = dir, cost = len(mv), rank = rank, o = o, nb = nb, kind = kind, n = n, corner = corner } end
+            end
+            local ovY = math.min(me.yhi, nb.yhi) - math.max(me.ylo, nb.ylo)
+            -- only sides near enough to the other one to matter
+            -- (lining up from further off: only the 8 longest sides of each)
+            local reachT = thr + SNAP_TOUCH
+            local mine, theirs = {}, {}
+            for i, F in ipairs(me.edges) do if apart(F, nb) <= (i <= 8 and SNAP_REACH or reachT) then mine[#mine + 1] = { F, i <= 8 } end end
+            for i, E in ipairs(nb.edges) do if apart(E, me) <= (i <= 8 and SNAP_REACH or reachT) then theirs[#theirs + 1] = { E, i <= 8 } end end
+            for _, fp in ipairs(mine) do
+                local F = fp[1]
+                for _, ep in ipairs(theirs) do
+                  local E = ep[1]
+                  local ap = apart(F, E)
+                  if ap <= reachT or (fp[2] and ep[2] and ap <= SNAP_REACH) then
+                    local c = dot(F.n, E.n)
+                    if c < -COS1 or c > COS1 then
+                        local dline = dot(F.a - E.a, E.n)   -- how far my side is out past theirs
+                        if math.abs(dline) <= thr then
+                            local f0, f1 = dot(F.a - E.a, E.e), dot(F.b - E.a, E.e)
+                            if f0 > f1 then f0, f1 = f1, f0 end
+                            local ov = math.min(f1, E.len) - math.max(f0, 0)   -- how far the two sides overlap
+                            if c < 0 then
+                                -- facing each other: they meet
+                                local g = math.max(0, -ov, -ovY)
+                                if g <= SNAP_TOUCH then
+                                    add(E.n, -dline, "touch", (ov > 0.02 and ovY > 0.02) and 0 or 2, E.n * -1)
+                                    -- and their ends meet along the side
+                                    if ov > -SNAP_TOUCH then
+                                        add(E.e, 0 - f0, "level", 1); add(E.e, E.len - f1, "level", 1)
+                                        add(E.e, 0 - f1, "level", 1); add(E.e, E.len - f0, "level", 1)
+                                    end
+                                end
+                            elseif math.max(0, -ov) <= SNAP_REACH then
+                                -- facing the same way: lined up flush
+                                add(E.n, -dline, "level", 1)
+                            end
+                        end
+                    end
+                  end
+                end
+            end
+            -- a corner against a side (of the other one, or of mine), when the two are turned differently
+            local function cornerOnSide(pts, E, sign)
+                local best, along = math.huge, 0
+                for _, q in ipairs(pts) do
+                    local t = dot(q - E.a, E.e)
+                    if t > -SNAP_TOUCH and t < E.len + SNAP_TOUCH then
+                        local dd = dot(q - E.a, E.n)
+                        if dd < best then best, along = dd, t end
+                    end
+                end
+                if best < math.huge and math.abs(best) <= thr and ovY > -SNAP_TOUCH then
+                    local inside = along > 0.01 and along < E.len - 0.01 and ovY > 0.02
+                    add(E.n * sign, -best * sign, "touch", inside and 0 or 2, E.n * -sign, true)
+                end
+            end
+            for _, ep in ipairs(theirs) do if apart(ep[1], me) <= reachT then cornerOnSide(me.pts, ep[1], 1) end end
+            for _, fp in ipairs(mine) do if apart(fp[1], nb) <= reachT then cornerOnSide(nb.pts, fp[1], -1) end end
         end
     end
     if #cands == 0 then return pos, nil end
     table.sort(cands, function(a, b)
         if a.rank ~= b.rank then return a.rank < b.rank end
-        return a.cost < b.cost
+        if math.abs(a.cost - b.cost) > 1e-4 then return a.cost < b.cost end
+        -- the same move: side to side before corner to side
+        return (not a.corner) and b.corner == true
     end)
     -- the nearest snap, then others that go squarely across it (so each one stays exact)
     local picked, out = {}, pos
@@ -720,6 +856,28 @@ local function allowFree(level, updown)   -- the controller: the ways it is bein
 end
 
 -- turning: the same way as the nearest object, or square to it
+-- the turns that would set one of my long sides against (or flush with) one of its long sides
+local function turnsToMeet(me, nb, maxTurn)
+    local out = {}
+    for i = 1, math.min(#me.edges, 6) do
+        local F = me.edges[i]
+        if F.len >= 0.25 or i == 1 then
+            for j = 1, math.min(#nb.edges, 6) do
+                local E = nb.edges[j]
+                if E.len >= 0.25 or j == 1 then
+                    local aF, aE = F.ang, E.ang
+                    for _, target in ipairs({ aE + math.pi, aE }) do
+                        local d = wrap(target - aF)
+                        if math.abs(d) <= maxTurn then out[#out + 1] = { d = d, F = F, E = E } end
+                    end
+                end
+            end
+        end
+    end
+    table.sort(out, function(a, b) return math.abs(a.d) < math.abs(b.d) end)
+    return out
+end
+
 local function turnSnap(hd)
     if not (S.osnap and S.sel and S.known and S.target) then return hd, nil end
     local best, bd = nil, SNAP_REACH + 4
@@ -730,11 +888,18 @@ local function turnSnap(hd)
         end
     end
     if not best then return hd, nil end
+    local me = worldShape(S.sel.item, S.target.pos, hd, S.target.scale)
+    local nb = placedShape(best)
+    if #me.edges > 0 and #nb.edges > 0 then
+        local t = turnsToMeet(me, nb, SNAP_TURN)
+        if t[1] then return wrap(hd + t[1].d), { { o = best, nb = nb, kind = "turn" } } end
+        if math.abs(wrap(hd - (best.heading or 0)) - round(wrap(hd - (best.heading or 0)), math.pi / 2)) > SNAP_TURN then return hd, nil end
+    end
     local bh = best.heading or 0
     local rel = wrap(hd - bh)
     local k = round(rel, math.pi / 2)
     if math.abs(rel - k) > SNAP_TURN then return hd, nil end
-    return wrap(bh + k), { { o = best, nb = worldBox(best.item, best.position, bh, best.scale or 1), kind = "turn" } }
+    return wrap(bh + k), { { o = best, nb = worldShape(best.item, best.position, bh, best.scale or 1), kind = "turn" } }
 end
 
 -- snapping must never get in the way of moving: on a fault the place is left as it was (said once in the log)
@@ -749,27 +914,49 @@ end
 -- had when the move began, so pulling it away again gives that turn back.
 local function alignSnap(pos, base, scale, allow)
     local p1, g1 = objSnap(pos, base, scale, allow)
-    if not (S.osnap and S.sel and S.known) then return p1, base, g1 end
+    if not (S.osnap and S.sel and S.known and S.itemBox[S.sel.item]) then return p1, base, g1 end
+    -- already meeting something side to side (flat, not just a corner): stays as it is
+    for _, q in ipairs(g1 or {}) do
+        if q.kind == "touch" and q.n and math.abs(q.n.y) < 0.5 and not q.corner then return p1, base, g1 end
+    end
+    local me = worldShape(S.sel.item, pos, base, scale)
+    if #me.edges == 0 then return p1, base, g1 end
     local near = {}
     for id, o in pairs(S.known) do
         if id ~= S.sel.id and S.itemBox[o.item] then
-            local rel = wrap(base - (o.heading or 0))
-            local k = round(rel, math.pi / 2)
-            if math.abs(rel - k) > 1e-3 then
-                local b = S.itemBox[o.item]
-                local d = len(o.position - pos) - len((b[2] - b[1]) * (o.scale or 1)) / 2
-                if d < SNAP_REACH + 2 then near[#near + 1] = { o = o, d = d, hd = wrap((o.heading or 0) + k) } end
-            end
+            local b = S.itemBox[o.item]
+            local d = len(o.position - pos) - len((b[2] - b[1]) * (o.scale or 1)) / 2
+            if d < SNAP_REACH + 2 then near[#near + 1] = { o = o, d = d } end
         end
     end
     table.sort(near, function(a, b) return a.d < b.d end)
-    for i = 1, math.min(#near, 3) do
+    local tries, tried = 0, {}
+    local thr = clamp(S.cam.dist * 0.03, 0.12, 0.5)
+    for i = 1, math.min(#near, 2) do
         local n = near[i]
-        local p2, g2 = objSnap(pos, n.hd, scale, allow)
-        for _, q in ipairs(g2 or {}) do
-            if q.o.id == n.o.id and q.kind == "touch" then
-                table.insert(g2, { o = n.o, nb = q.nb, kind = "turn" })
-                return p2, n.hd, g2
+        local nb = placedShape(n.o)
+        for _, tm in ipairs(turnsToMeet(me, nb, math.rad(90))) do
+            local d, F, E = tm.d, tm.F, tm.E
+            -- would that turn bring my side up to theirs? (where my side's middle goes when it turns about the point)
+            local v = (F.a + F.b) * 0.5 - pos
+            local cd, sd = math.cos(d), math.sin(d)
+            local m = pos + V(v.x * cd + v.z * sd, 0, -v.x * sd + v.z * cd)
+            local dist, along = dot(m - E.a, E.n), dot(m - E.a, E.e)
+            local close = math.abs(dist) <= thr + 0.05 and along > -F.len / 2 - SNAP_TOUCH and along < E.len + F.len / 2 + SNAP_TOUCH
+            local seen = false
+            for _, q in ipairs(tried) do if math.abs(q - d) < 0.003 then seen = true break end end
+            if close and not seen and math.abs(d) > 1e-3 then
+                tried[#tried + 1] = d
+                tries += 1
+                if tries > 6 then break end
+                local hd = wrap(base + d)
+                local p2, g2 = objSnap(pos, hd, scale, allow)
+                for _, q in ipairs(g2 or {}) do
+                    if q.o.id == n.o.id and q.kind == "touch" and q.rank == 0 and not q.corner then
+                        table.insert(g2, { o = n.o, nb = q.nb, kind = "turn" })
+                        return p2, hd, g2
+                    end
+                end
             end
         end
     end
@@ -836,7 +1023,7 @@ end
 
 local function tightenJob(job, me, objs)
     local p = me.position
-    local myBox = worldBox(me.item, p, me.heading or 0, me.scale or 1)
+    local myBox = worldShape(me.item, p, me.heading or 0, me.scale or 1)
     local function ray(q, top, bottom, nbPos)
         if S.tRays >= TIGHT_RAYS or os.clock() - S.tT0 > 0.002 then coroutine.yield() end
         S.tRays += 1
@@ -852,10 +1039,12 @@ local function tightenJob(job, me, objs)
     for _, tc in ipairs(job.touches) do
         local nbo = objs[tc.id]
         if nbo and S.itemBox[nbo.item] ~= nil and not (S.exact[me.item] and S.exact[nbo.item]) then
-            local n = vnorm(V(tc.n.x, 0, tc.n.z))
+            local n = norm(V(tc.n.x, 0, tc.n.z))
             local tg = V(-n.z, 0, n.x)
-            local nb = worldBox(nbo.item, nbo.position, nbo.heading or 0, nbo.scale or 1)
-            local mc, nc = cornersOf(myBox), cornersOf(nb)
+            local nb = worldShape(nbo.item, nbo.position, nbo.heading or 0, nbo.scale or 1)
+            local mc, nc = myBox.pts, nb.pts
+            if #mc == 0 then mc = cornersOf(myBox) end
+            if #nc == 0 then nc = cornersOf(nb) end
             local function span(cs, ax)
                 local lo, hi = math.huge, -math.huge
                 for _, c in ipairs(cs) do local v = dot(c - p, ax); lo = math.min(lo, v); hi = math.max(hi, v) end
@@ -1963,6 +2152,27 @@ end)
 -- ---------------------------------------------------------------- drawing the handles
 local function colourOf(base, hot) return hot and YELLOW or base end
 
+-- an outline as it stands: round its base, round its top, and up its corners
+local COS25 = math.cos(math.rad(25))
+local function drawShape(d, sh, col, th)
+    local pts = sh.pts
+    local n = #pts
+    if n < 3 then return false end
+    local base, up = UP * (sh.ylo - sh.p.y), UP * (sh.yhi - sh.ylo)
+    for i = 1, n do
+        local a, b = pts[i] + base, pts[i % n + 1] + base
+        d:world_line(a, b, { colour = col, thickness = th })
+        d:world_line(a + up, b + up, { colour = col, thickness = th })
+    end
+    for i = 1, n do
+        local a, b, c = pts[(i - 2) % n + 1], pts[i], pts[i % n + 1]
+        if n <= 8 or dot(norm(b - a), norm(c - b)) < COS25 then
+            d:world_line(b + base, b + base + up, { colour = col, thickness = th })
+        end
+    end
+    return true
+end
+
 reskate.on("draw", function(d)
     if not S.open then return end
     S.size = d:size()
@@ -2106,7 +2316,9 @@ reskate.on("draw", function(d)
             if not seen[id] then
                 seen[id] = true
                 local nc = cornersOf(gd.nb)
-                if #nc == 8 then
+                if drawShape(d, gd.nb, "#35e0ff", 3) then
+                    -- drawn
+                elseif #nc == 8 then
                     for _, e in ipairs(BOX_EDGES) do d:world_line(nc[e[1] + 1], nc[e[2] + 1], { colour = "#35e0ff", thickness = 3 }) end
                 else
                     local q = gd.nb.p
@@ -2123,8 +2335,11 @@ reskate.on("draw", function(d)
     if S.boxCorners and S.mode ~= 3 then
         local c = S.boxCorners
         local col = (S.dirty or (S.drag and S.drag.moved) or not lastApplied()) and "#ffe066" or "#ffffff66"
-        for _, e in ipairs(BOX_EDGES) do
-            d:world_line(c[e[1]], c[e[2]], { colour = col, thickness = 2 })
+        local sh = S.itemBox[S.sel.item] and worldShape(S.sel.item, p, t.heading, t.scale) or nil
+        if not (sh and drawShape(d, sh, col, 2)) then
+            for _, e in ipairs(BOX_EDGES) do
+                d:world_line(c[e[1]], c[e[2]], { colour = col, thickness = 2 })
+            end
         end
     end
 end)
