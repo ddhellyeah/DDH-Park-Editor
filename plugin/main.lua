@@ -2523,8 +2523,10 @@ local function padEditor(sec)
         S.cam.yaw -= rx * 2.4 * sec
         S.cam.pitch = clamp(S.cam.pitch + ry * 1.6 * sec, -1.45, 1.45)
         local _, f2 = camBasis()
+        -- (keeping where the left stick is flying it: the goal moves with the view)
+        local ahead = (S.cam.goal or S.cam.target) - S.cam.target
         S.cam.target = cpos + f2 * S.cam.dist
-        S.cam.goal = S.cam.target
+        S.cam.goal = S.cam.target + ahead
     end
 
     local _, f, r = camBasis()
