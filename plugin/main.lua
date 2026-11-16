@@ -156,6 +156,10 @@ local function scan()
             reskate.log("Quick Drop helper: copy made " .. fmt(o))
             if ec.tilt then S.tilt[o.id] = { x = ec.tilt.x, z = ec.tilt.z }; S.tiltSaveDue = true end
             S.expectCopy = nil
+            if ec.grab and S.open then
+                select(o)
+                if S.startGrab then S.startGrab(); if S.grab then S.grab.fresh = true end end
+            end
         elseif #fresh == 1 then
             local o = fresh[1]
             reskate.log("Quick Drop helper: new object " .. fmt(o))
@@ -1834,8 +1838,8 @@ local function oldPanel(ui)
         ui:info("Left stick", "fly (holding: move it)")
         ui:info("A", "pick up what the cross is on / put down")
         ui:info("B", "cancel (back where it was) / close")
-        ui:info("X", "drop a copy, keep holding")
-        ui:info("Y twice", "remove it")
+        ui:info("X", "copy (holding: drop a copy)")
+        ui:info("Y twice", "remove (what the cross is on)")
         ui:info("RT / LT", "raise / lower")
         ui:info("LB / RB", "turn (holding)")
         ui:info("D-pad up / down", "size (holding) / zoom")
@@ -2080,8 +2084,8 @@ local function newPanel(ui)
         ui:info("Left stick", "fly (holding: move it)")
         ui:info("A", "pick up what the cross is on / put down")
         ui:info("B", "cancel (back where it was) / close")
-        ui:info("X", "drop a copy, keep holding")
-        ui:info("Y twice", "remove it")
+        ui:info("X", "copy (holding: drop a copy)")
+        ui:info("Y twice", "remove (what the cross is on)")
         ui:info("RT / LT", "raise / lower")
         ui:info("LB / RB", "turn (holding)")
         ui:info("D-pad up / down", "size (holding) / zoom")
@@ -2341,6 +2345,7 @@ local function startGrab()
     S.cam.goal = t.pos
     say("Holding " .. titleOf(S.sel.item) .. ".  A: put down   B: cancel   X: copy")
 end
+S.startGrab = startGrab
 local function endHoldMove()
     if S.padRaw then armTighten(S.guides) end
     S.padRaw, S.guides, S.snapLock = nil, nil, nil
@@ -2356,6 +2361,22 @@ local function cancelGrab()
     local g = S.grab
     S.grab = nil
     S.padRaw, S.guides, S.snapLock, S.tighten = nil, nil, nil, nil
+    if g and g.fresh and S.sel and S.sel.id == g.id then
+        -- a copy just made: cancelling takes it away again
+        S.dirty = false
+        letGo(g.id)
+        local ok, why = reskate.objects.remove(g.id)
+        if ok then
+            S.tilt[g.id] = nil
+            S.tiltSaveDue = true
+            select(nil)
+            S.lastScan = -1e9
+            say("Cancelled: copy taken away.")
+        else
+            say("Copy not taken away: " .. tostring(why), true)
+        end
+        return
+    end
     if g and S.sel and S.sel.id == g.id then
         S.target = { pos = g.pos, heading = g.heading, scale = g.scale }
         S.tilt[g.id] = g.tilt
@@ -2371,6 +2392,10 @@ local function copyHeld()
     if not (S.sel and t) then return end
     S.copyQ = { item = S.sel.item, pos = t.pos, heading = t.heading, scale = t.scale, tilt = S.tilt[S.sel.id], until_ = S.clock + 3000 }
 end
+-- X in free view: a copy of the object under the cross, in the same place, picked up to be moved away
+local function copyAimed(o)
+    S.copyQ = { item = o.item, pos = o.position, heading = o.heading or 0, scale = o.scale or 1, tilt = S.tilt[o.id], until_ = S.clock + 3000, grab = true }
+end
 local function copyTick()
     local q = S.copyQ
     if not q then return end
@@ -2383,30 +2408,31 @@ local function copyTick()
     table.insert(tries, S.clock)
     local ok, why = reskate.objects.place(q.item, q.pos, q.heading, q.scale)
     if ok then
-        S.expectCopy = { item = q.item, pos = q.pos, tilt = q.tilt and { x = q.tilt.x, z = q.tilt.z } or nil }
+        S.expectCopy = { item = q.item, pos = q.pos, tilt = q.tilt and { x = q.tilt.x, z = q.tilt.z } or nil, grab = q.grab }
         S.copyQ = nil
         S.lastScan = -1e9
-        say("Copy made. Move on and press X for another.")
+        say(q.grab and "Copy made: you're holding it." or "Copy made. Move on and press X for another.")
     elseif not BUSY[why] then
         S.copyQ = nil
         say("No copy: " .. tostring(why), true)
     end
 end
 -- Y twice: remove it
-local function deletePress()
-    if not S.sel then return end
-    local id = S.sel.id
+local function deletePress(o)
+    o = o or (S.sel and { id = S.sel.id, item = S.sel.item })
+    if not o then say("Aim the cross at an object, then Y twice.") return end
+    local id = o.id
     if S.delAsk and S.delAsk.id == id and S.clock - S.delAsk.at < 2500 then
         S.delAsk = nil
-        local name = titleOf(S.sel.item)
-        S.grab = nil
-        endHoldMove()
+        local name = titleOf(o.item)
+        if S.grab and S.grab.id == id then S.grab = nil; endHoldMove() end
         letGo(id)
         local ok, why = reskate.objects.remove(id)
         if ok then
             S.tilt[id] = nil
             S.tiltSaveDue = true
-            select(nil)
+            if S.sel and S.sel.id == id then select(nil) end
+            S.aim = nil
             S.lastScan = -1e9
             say("Removed " .. name .. ".")
         else
@@ -2414,7 +2440,7 @@ local function deletePress()
         end
     else
         S.delAsk = { id = id, at = S.clock }
-        say("Press Y again to remove " .. titleOf(S.sel.item) .. ".")
+        say("Press Y again to remove " .. titleOf(o.item) .. ".")
     end
 end
 
@@ -2446,7 +2472,11 @@ local function padEditor(sec)
         undo(); t = S.target; holding = false
     end
     if padPress("rs", p.rs) and t then S.cam.goal = t.pos end
-    if padPress("y", p.y) then deletePress(); t = S.target; holding = S.grab ~= nil end
+    if padPress("y", p.y) then
+        -- holding: the held one; free: the one under the cross (or the picked one)
+        if holding then deletePress() else deletePress(S.aim) end
+        t = S.target; holding = S.grab ~= nil
+    end
     if padPress("a", p.a) then
         if holding then
             placeGrab(); holding = false
@@ -2457,7 +2487,9 @@ local function padEditor(sec)
         end
     end
     if padPress("x", p.x) then
-        if holding then copyHeld() else say("Pick it up first (A), then X makes copies.") end
+        if holding then copyHeld()
+        elseif S.aim then copyAimed(S.aim)
+        else say("Aim the cross at an object, then X copies it.") end
     end
     if not holding then
         if padStep("left", p.left) then pickNext(-1) t = S.target end
@@ -2867,7 +2899,7 @@ reskate.on("draw", function(d)
             if S.aim then
                 local so = placedSolid(S.aim)
                 drawShape(d, so.shape or so, "#ffffff", 3, so.xf)
-                d:text(c + V(14, 14, 0), titleOf(S.aim.item) .. "  (A)", { size = 16, colour = "#ffffff", shadow = true })
+                d:text(c + V(14, 14, 0), titleOf(S.aim.item) .. "   A pick up   X copy   Y remove", { size = 16, colour = "#ffffff", shadow = true })
             end
         end
     end
