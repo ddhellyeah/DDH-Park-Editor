@@ -297,7 +297,7 @@ end
 -- Sizes known before any measuring: the Object Maker's objects (sizes.lua beside this file, measured from their
 -- models: item = { wide, high, deep }, standing on its base, centred), then every object this plugin has
 -- measured before (kept between launches, so each item is measured once).
-S.exact, S.saved = {}, {}
+S.exact, S.saved, S.exactBox = {}, {}, {}
 local function loadSizes()
     local ok, t = pcall(function() return require("sizes") end)
     local n, m = 0, 0
@@ -305,6 +305,7 @@ local function loadSizes()
         for item, d in pairs(t) do
             if type(d) == "table" and tonumber(d[1]) and tonumber(d[2]) and tonumber(d[3]) then
                 S.itemBox[item] = { V(-d[1] / 2, 0, -d[3] / 2), V(d[1] / 2, d[2], d[3] / 2) }
+                S.exactBox[item] = S.itemBox[item]
                 S.exact[item] = true
                 n += 1
             end
@@ -313,7 +314,7 @@ local function loadSizes()
     local ok2, st = pcall(reskate.storage.get, "sizes")
     if ok2 and type(st) == "table" then
         for item, d in pairs(st) do
-            if not S.exact[item] and type(d) == "table" and #d == 6 then
+            if type(d) == "table" and #d == 6 then
                 S.itemBox[item] = { V(d[1], d[2], d[3]), V(d[4], d[5], d[6]) }
                 S.saved[item] = d
                 m += 1
@@ -327,17 +328,17 @@ do
     if not ok then reskate.log("Quick Drop helper: snap: sizes not loaded: " .. tostring(err)) end
 end
 local function r3(x) return math.floor(x * 1000 + 0.5) / 1000 end
-local function saveSize(item, a, b)
-    if S.exact[item] then return end
+local function saveSize(item, a, b, fitted)
+    if S.exact[item] and not fitted then return end
     S.saved[item] = { r3(a.x), r3(a.y), r3(a.z), r3(b.x), r3(b.y), r3(b.z) }
     local ok, err = pcall(reskate.storage.set, "sizes", S.saved)
     if not ok then boxLog("size not kept: " .. tostring(err)) end
 end
 local function forgetSize(item)
-    if S.exact[item] then return false end
+    if S.exact[item] and not S.saved[item] then return false end
     S.saved[item] = nil
     pcall(reskate.storage.set, "sizes", S.saved)
-    S.itemBox[item], S.boxTries[item], S.boxNext[item] = nil, nil, nil
+    S.itemBox[item], S.boxTries[item], S.boxNext[item] = S.exactBox[item], nil, nil
     if S.measure and S.measure.o.item == item then S.measure = nil end
     return true
 end
@@ -762,6 +763,27 @@ local function armTighten(guides)
     end
 end
 
+-- moves one side of an item's outline by delta metres outward (world direction d), when d is square to it
+local function fitSide(o, d, delta)
+    if math.abs(delta) < 0.001 or math.abs(delta) > 0.1 then return end
+    local b = S.itemBox[o.item]
+    if not b then return end
+    local h, sc = o.heading or 0, o.scale or 1
+    if sc <= 0 then sc = 1 end
+    local ax, az = V(math.cos(h), 0, -math.sin(h)), V(math.sin(h), 0, math.cos(h))
+    local lo, hi = b[1], b[2]
+    local cx, cz, k = dot(d, ax), dot(d, az), delta / sc
+    if cx > 0.999 then hi = V(hi.x + k, hi.y, hi.z)
+    elseif cx < -0.999 then lo = V(lo.x - k, lo.y, lo.z)
+    elseif cz > 0.999 then hi = V(hi.x, hi.y, hi.z + k)
+    elseif cz < -0.999 then lo = V(lo.x, lo.y, lo.z - k)
+    else return end
+    if hi.x - lo.x < 0.02 or hi.z - lo.z < 0.02 then return end
+    S.itemBox[o.item] = { lo, hi }
+    saveSize(o.item, lo, hi, true)
+    boxLog(string.format("outline of %s fitted %+.0f mm", titleOf(o.item), delta * 1000))
+end
+
 local function tightenJob(job, me, objs)
     local p = me.position
     local myBox = worldBox(me.item, p, me.heading or 0, me.scale or 1)
@@ -795,7 +817,7 @@ local function tightenJob(job, me, objs)
             local _, s0 = span(mc, n)
             local top = p.y + math.max(myBox.hi.y, (nbo.position.y - p.y) + nb.hi.y) + 3
             local bottom = math.min(p.y + myBox.lo.y, nbo.position.y + nb.lo.y) - 1
-            local gaps = {}
+            local gaps, edges = {}, {}
             if u1 - u0 > 0.04 then
                 for _, f in ipairs({ 0.08, 0.3, 0.5, 0.7, 0.92 }) do
                     local u = u0 + (u1 - u0) * f
@@ -827,9 +849,18 @@ local function tightenJob(job, me, objs)
                                 if cls(m) == "nb" then d = m else c = m end
                             end
                             gaps[#gaps + 1] = (c + d) / 2 - myEdge
+                            edges[#edges + 1] = { myEdge, (c + d) / 2 }
                         end
                     end
                 end
+            end
+            if #edges >= 2 then
+                -- the outlines are moved onto the real sides found, so they show (and snap by) the objects
+                local mine, theirs = -math.huge, math.huge
+                for _, e in ipairs(edges) do mine = math.max(mine, e[1]); theirs = math.min(theirs, e[2]) end
+                local nlo = span(nc, n)
+                fitSide(me, n, mine - s0)
+                fitSide(nbo, n * -1, nlo - theirs)
             end
             if #gaps >= 2 then
                 local g = math.huge
@@ -1064,7 +1095,7 @@ local function oldPanel(ui)
     if sn ~= nil then S.snap = sn end
     local ob = ui:toggle("osnap", "Snap to objects (T)", S.osnap)
     if ob ~= nil then S.osnap = ob end
-    if S.osnap and S.sel and S.itemBox[S.sel.item] and not S.exact[S.sel.item] then
+    if S.osnap and S.sel and S.itemBox[S.sel.item] and (S.saved[S.sel.item] or not S.exact[S.sel.item]) then
         if ui:button("remeasure", "Measure it again") then
             forgetSize(S.sel.item)
             say("Measuring " .. titleOf(S.sel.item) .. " again: keep it still a moment")
