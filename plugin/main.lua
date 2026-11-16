@@ -229,7 +229,8 @@ end
 
 local function markUndo()
     if S.target then
-        table.insert(S.undo, { id = S.sel.id, pos = S.target.pos, heading = S.target.heading, scale = S.target.scale })
+        local tl = S.tilt[S.sel.id]
+        table.insert(S.undo, { id = S.sel.id, pos = S.target.pos, heading = S.target.heading, scale = S.target.scale, tilt = tl and { x = tl.x, z = tl.z } or nil })
         if #S.undo > 100 then table.remove(S.undo, 1) end
     end
 end
@@ -242,6 +243,8 @@ local function undo()
     end
     if S.sel and S.sel.id == u.id then
         S.target = { pos = u.pos, heading = u.heading, scale = u.scale }
+        S.tilt[u.id] = u.tilt
+        S.tiltSaveDue = true
         S.dirty = true
     end
 end
@@ -581,7 +584,8 @@ local function learnNear()
     local moving = (S.drag and S.drag.moved) or S.padMoving or S.dirty
     local best, bd = nil, 30
     for _, o in pairs(S.known) do
-        if S.itemBox[o.item] == nil and S.clock >= (S.boxNext[o.item] or 0) then
+        local tl = S.tilt[o.id]
+        if S.itemBox[o.item] == nil and S.clock >= (S.boxNext[o.item] or 0) and not (tl and (math.abs(tl.x) > 1e-4 or math.abs(tl.z) > 1e-4)) then
             local d = len(o.position - S.target.pos)
             local mine = S.sel and o.id == S.sel.id
             if d < bd and not (mine and (moving or d > 0.05)) then best, bd = o, d end
@@ -685,13 +689,15 @@ local COS1 = math.cos(math.rad(1))
 -- Returns the place, and what it snapped to (a list of { o, nb, kind }) or nil.
 local function objSnap(pos, heading, scale, allow)
     if not (S.osnap and S.sel and S.known) then return pos, nil end
+    if S.tilt[S.sel.id] and (math.abs(S.tilt[S.sel.id].x) > 1e-4 or math.abs(S.tilt[S.sel.id].z) > 1e-4) then return pos, nil end
     local thr = clamp(S.cam.dist * 0.03, 0.12, 0.5)
     local me = worldShape(S.sel.item, pos, heading, scale)
     local mc = cornersOf(me)
     local reach = SNAP_REACH + len(me.hi - me.lo)
     local near = {}
     for id, o in pairs(S.known) do
-        if id ~= S.sel.id then
+        local tl = S.tilt[id]
+        if id ~= S.sel.id and not (tl and (math.abs(tl.x) > 1e-4 or math.abs(tl.z) > 1e-4)) then
             local d = len(o.position - pos)
             local b = S.itemBox[o.item]
             if d < reach + (b and len((b[2] - b[1]) * (o.scale or 1)) or 0) then near[#near + 1] = { o = o, d = d } end
@@ -975,6 +981,175 @@ local function turnTo(hd)
     return hd, nil
 end
 
+-- ---------------------------------------------------------------- tilting
+-- The game keeps only a turn about up for a placed object. To tilt one (forward, or to the side), this plugin
+-- holds it with the game's object physics, fixed in place and still skateable, and gives it its full turn.
+-- The game never saves that, so the plugin keeps every tilt itself (per map, by the object's item and place) and
+-- puts it back whenever the park is loaded. While an object is moved, turned or sized it is let go (the game
+-- shows it flat for that moment), and tilted again once the game has it in its new place. Offline only, and at
+-- most 32 tilted objects at once (the game's limit for one plugin).
+S.tilt, S.held, S.tiltWhy, S.tiltAt, S.tiltSrc = {}, {}, nil, {}, {}
+local MAX_HELD = 32
+local function qmul(a, b)
+    return { a[4] * b[1] + a[1] * b[4] + a[2] * b[3] - a[3] * b[2],
+             a[4] * b[2] - a[1] * b[3] + a[2] * b[4] + a[3] * b[1],
+             a[4] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[4],
+             a[4] * b[4] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3] }
+end
+local function qconj(q) return { -q[1], -q[2], -q[3], q[4] } end
+local function qrot(q, v)
+    local r = qmul(qmul(q, { v.x, v.y, v.z, 0 }), qconj(q))
+    return V(r[1], r[2], r[3])
+end
+local function qaxis(ax, a) local s2 = math.sin(a / 2); return { ax.x * s2, ax.y * s2, ax.z * s2, math.cos(a / 2) } end
+-- the whole turn of an object: its turn about up, then its tilt about its own x and z
+local function fullTurn(heading, tl)
+    local q = qaxis(V(0, 1, 0), heading)
+    if tl then q = qmul(q, qmul(qaxis(V(1, 0, 0), tl.x), qaxis(V(0, 0, 1), tl.z))) end
+    return q
+end
+local function tilted(id)
+    local tl = id and S.tilt[id]
+    return tl ~= nil and (math.abs(tl.x) > 1e-4 or math.abs(tl.z) > 1e-4)
+end
+-- a point of an object turned with its tilt, about the object's point
+local function tiltPoint(p, heading, tl, q)
+    local rel = qmul(fullTurn(heading, tl), qconj(qaxis(V(0, 1, 0), heading)))
+    return p + qrot(rel, q - p)
+end
+local function heldCount() local n = 0; for _ in pairs(S.held) do n += 1 end; return n end
+local function letGo(id)
+    if S.held[id] then
+        pcall(reskate.objects.physics, id, nil)
+        S.held[id] = nil
+    end
+end
+-- holds an object (if not yet) and gives it its tilt; o is the object as placed
+local function holdTilted(o)
+    local tl = S.tilt[o.id]
+    local h = S.held[o.id]
+    if not h then
+        if S.clock < (S.tiltAt[o.id] or 0) then return end
+        if heldCount() >= MAX_HELD then S.tiltWhy = "at most 32 tilted objects at once" return end
+        local ok, r1, r2 = pcall(reskate.objects.physics, o.id, { dynamic = false, surface = true })
+        if not ok or r1 == false then
+            local why = tostring(ok and (r2 or "refused") or r1)
+            S.tiltAt[o.id] = S.clock + 2000
+            if S.tiltWhy ~= why then reskate.log("Quick Drop helper: tilt: the game won't hold " .. titleOf(o.item) .. ": " .. why) end
+            S.tiltWhy = why
+            return
+        end
+        local ok2, m = pcall(reskate.objects.motion, o.id)
+        if not (ok2 and type(m) == "table" and m.position and m.rotation) then
+            pcall(reskate.objects.physics, o.id, nil)
+            S.tiltAt[o.id] = S.clock + 2000
+            return
+        end
+        local r = m.rotation
+        h = { off = m.position - o.position, q0 = { r.x or r[1], r.y or r[2], r.z or r[3], r.w or r[4] }, at = -1e9, pos = o.position, heading = o.heading or 0 }
+        S.held[o.id] = h
+        S.tiltWhy = nil
+    end
+    if S.clock - h.at < 260 then return end
+    local q = fullTurn(o.heading or 0, tl)
+    local rel = qmul(q, qconj(h.q0))
+    local at = o.position + qrot(rel, h.off)
+    local key = string.format("%.5f %.5f %.5f %.5f", q[1], q[2], q[3], q[4])
+    if h.key == key then return end
+    local ok, r1, r2 = pcall(reskate.objects.pose, o.id, at, q)
+    h.at = S.clock
+    if ok and r1 ~= false then
+        h.key = key
+    elseif not h.warned then
+        h.warned = true
+        reskate.log("Quick Drop helper: tilt: the game refused the turn for " .. titleOf(o.item) .. ": " .. tostring(ok and r2 or r1))
+    end
+end
+
+-- kept tilts: storage "tilts" = { [map] = { { item, x, y, z, turn, tilt x, tilt z }, ... } }
+local function mapName()
+    local ok, l = pcall(function() return reskate.level and reskate.level.current() end)
+    return (ok and type(l) == "table" and l.name) or S.level or "?"
+end
+local function loadTilts()
+    local ok, t = pcall(reskate.storage.get, "tilts")
+    S.tiltStore = (ok and type(t) == "table") and t or {}
+end
+local function saveTilts()
+    S.tiltStore = S.tiltStore or {}
+    local map = mapName()
+    local keep = {}
+    local mine = {}
+    for _, e in pairs(S.tiltSrc) do mine[e] = true end
+    -- tilts of objects not on the map right now stay as they were (the ones of objects here are written anew)
+    for _, e in ipairs(S.tiltStore[map] or {}) do
+        local found = mine[e] == true
+        for _, o in pairs(S.known or {}) do
+            if o.item == e[1] and math.abs(o.position.x - e[2]) < 0.02 and math.abs(o.position.y - e[3]) < 0.02 and math.abs(o.position.z - e[4]) < 0.02 then found = true break end
+        end
+        if not found then keep[#keep + 1] = e end
+    end
+    S.tiltSrc = {}
+    for id, tl in pairs(S.tilt) do
+        local o = S.known and S.known[id]
+        if o and tilted(id) then
+            S.tiltSrc[id] = { o.item, r3(o.position.x), r3(o.position.y), r3(o.position.z), math.floor((o.heading or 0) * 1e5 + 0.5) / 1e5,
+                math.floor(tl.x * 1e5 + 0.5) / 1e5, math.floor(tl.z * 1e5 + 0.5) / 1e5 }
+            keep[#keep + 1] = S.tiltSrc[id]
+        end
+    end
+    while #keep > 600 do table.remove(keep, 1) end
+    S.tiltStore[map] = keep
+    local ok, err = pcall(reskate.storage.set, "tilts", S.tiltStore)
+    if not ok then reskate.log("Quick Drop helper: tilt: not kept: " .. tostring(err)) end
+end
+-- the kept tilts of the objects on this map
+local function matchTilts()
+    if not (S.known and S.tiltStore) then return end
+    for _, e in ipairs(S.tiltStore[mapName()] or {}) do
+        for id, o in pairs(S.known) do
+            if not S.tilt[id] and o.item == e[1] and math.abs(o.position.x - e[2]) < 0.02 and math.abs(o.position.y - e[3]) < 0.02
+                and math.abs(o.position.z - e[4]) < 0.02 and math.abs(wrap((o.heading or 0) - e[5])) < 0.01 then
+                S.tilt[id] = { x = e[6], z = e[7] }
+                S.tiltSrc[id] = e
+                break
+            end
+        end
+    end
+end
+
+-- every tick: the picked object is let go while it is being moved; every other tilted object is held tilted
+local function tiltTick()
+    if not S.tiltStore then loadTilts() end
+    if S.clock - (S.tiltMatchAt or -1e9) > 1000 then
+        S.tiltMatchAt = S.clock
+        matchTilts()
+        -- objects gone from the park: forget them
+        for id in pairs(S.held) do if not (S.known and S.known[id]) then S.held[id] = nil end end
+        for id in pairs(S.tilt) do if S.known and not S.known[id] then S.tilt[id] = nil end end
+    end
+    -- levelled again: let go
+    for id in pairs(S.held) do if not tilted(id) then letGo(id) end end
+    for id, tl in pairs(S.tilt) do
+        local o = S.known and S.known[id]
+        local mine = S.sel and S.sel.id == id
+        local busy = mine and (S.dirty or ((S.drag and S.drag.moved) and S.drag.kind ~= "tilt") or S.padMoving or not lastApplied())
+        if not tilted(id) or not o or busy then
+            if S.held[id] then letGo(id) end
+            if busy then S.tiltSaveDue = true end
+        else
+            local h = S.held[id]
+            -- the game moved it (by us or by Quick Drop): hold it again from where it is now
+            if h and (len(h.pos - o.position) > 1e-4 or math.abs(wrap(h.heading - (o.heading or 0))) > 1e-5) then letGo(id); h = nil end
+            holdTilted(o)
+        end
+    end
+    if S.tiltSaveDue and not S.dirty and not S.drag and lastApplied() and S.clock - S.lastSend > 600 then
+        S.tiltSaveDue = false
+        saveTilts()
+    end
+end
+
 -- ---------------------------------------------------------------- closing the last gap
 -- Sizes are boxes (rounded, measured, or from a copy of the project), so two objects that "touch" can still be
 -- a few millimetres apart, or into each other. After a snap that touched, once the game has put the object
@@ -1237,6 +1412,7 @@ reskate.on("level_loaded", function()
     S.boxTries, S.boxNext = {}, {}
     S.measure = nil
     S.bpNames = nil
+    S.held, S.tilt, S.tiltAt, S.tiltSrc, S.level = {}, {}, {}, {}, nil
 end)
 
 -- typing exact numbers: a text box with "X Y Z turn size"; change any of them
@@ -1320,7 +1496,14 @@ local function oldPanel(ui)
             if not S.sliding then markUndo(); S.sliding = true end
             t.heading = wrap(math.rad(ty)); S.dirty = true
         end
-        ui:note("X and Z (tilt): the game only turns placed objects about Y.")
+        local tl = S.tilt[S.sel.id] or { x = 0, z = 0 }
+        local tx = num("tx", "Tilt X", math.deg(tl.x), -180, 180, "%.1f°")
+        local tz = num("tz", "Tilt Z", math.deg(tl.z), -180, 180, "%.1f°")
+        if tx or tz then
+            if not S.sliding then markUndo(); S.sliding = true end
+            S.tilt[S.sel.id] = { x = tx and math.rad(tx) or tl.x, z = tz and math.rad(tz) or tl.z }
+            S.tiltSaveDue = true
+        end
         local sz = num("sz", "Size", t.scale, 0.1, 10, "%.2f×")
         if sz then
             if not S.sliding then markUndo(); S.sliding = true end
@@ -1345,6 +1528,7 @@ local function oldPanel(ui)
     if ui:button("undo", "Undo (Ctrl+Z)") then undo() end
     if ui:button("straight", "Straighten and size 1") and S.target then
         markUndo(); S.target.heading = round(S.target.heading, math.pi / 2); S.target.scale = 1; S.dirty = true
+        if S.tilt[S.sel.id] then S.tilt[S.sel.id] = nil; S.tiltSaveDue = true end
     end
     if ui:button("focus", "Look at it (F)") and S.target then S.cam.goal = S.target.pos end
     local miss = S.missing or {}
@@ -1511,6 +1695,9 @@ local function newPanel(ui)
         numBox(ui, "py", "Y", t.pos.y, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, v, t.pos.z); S.dirty = true end)
         numBox(ui, "pz", "Z", t.pos.z, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, t.pos.y, v); S.dirty = true end)
         numBox(ui, "ry", "Turn", math.deg(t.heading), "%.1f", function(v) markUndo(); t.heading = wrap(math.rad(v)); S.dirty = true end)
+        local tl = S.tilt[S.sel.id] or { x = 0, z = 0 }
+        numBox(ui, "tx", "Tilt X", math.deg(tl.x), "%.1f", function(v) markUndo(); S.tilt[S.sel.id] = { x = wrap(math.rad(v)), z = tl.z }; S.tiltSaveDue = true end)
+        numBox(ui, "tz", "Tilt Z", math.deg(tl.z), "%.1f", function(v) markUndo(); S.tilt[S.sel.id] = { x = tl.x, z = wrap(math.rad(v)) }; S.tiltSaveDue = true end)
         numBox(ui, "sz", "Size", t.scale, "%.2f", function(v) markUndo(); t.scale = clamp(v, 0.1, 10); S.dirty = true end)
         ui:heading("Nudge")
         local ss = ui:buttons("stepsize", { "Fine", "Normal", "Big" }, S.stepSize)
@@ -1528,10 +1715,24 @@ local function newPanel(ui)
             if n2 == 2 then t.heading = wrap(t.heading + math.rad(st.deg)) end
             if n2 == 3 then t.scale = clamp(t.scale - st.size, 0.1, 10) end
             if n2 == 4 then t.scale = clamp(t.scale + st.size, 0.1, 10) end
-            if n2 == 5 then t.heading = round(t.heading, math.pi / 2) end
+            if n2 == 5 then t.heading = round(t.heading, math.pi / 2); if S.tilt[S.sel.id] then S.tilt[S.sel.id] = nil; S.tiltSaveDue = true end end
             if n2 == 6 then t.scale = 1 end
             S.dirty = true; S.edit = {}
         end
+        local n3 = ui:buttons("nudge3", { "Tilt X -", "Tilt X +", "Tilt Z -", "Tilt Z +", "Level" }, 0)
+        if n3 then
+            markUndo()
+            local tl2 = S.tilt[S.sel.id] or { x = 0, z = 0 }
+            local dd = math.rad(st.deg)
+            if n3 == 1 then tl2 = { x = wrap(tl2.x - dd), z = tl2.z } end
+            if n3 == 2 then tl2 = { x = wrap(tl2.x + dd), z = tl2.z } end
+            if n3 == 3 then tl2 = { x = tl2.x, z = wrap(tl2.z - dd) } end
+            if n3 == 4 then tl2 = { x = tl2.x, z = wrap(tl2.z + dd) } end
+            if n3 == 5 then tl2 = nil end
+            S.tilt[S.sel.id] = tl2
+            S.tiltSaveDue = true
+        end
+        if tilted(S.sel.id) and S.tiltWhy and not S.held[S.sel.id] then ui:note("Tilt can't show: " .. S.tiltWhy) end
     end
 
     -- the handles in the view
@@ -1672,6 +1873,12 @@ local function handleAt(px)
         local pts = sc.ring or {}
         for i = 1, #pts - 1 do
             if pts[i] and pts[i + 1] and segDist(px, pts[i], pts[i + 1]) < 16 then return { kind = "turn" } end
+        end
+        for _, w in ipairs({ "x", "z" }) do
+            local tp = sc["tilt" .. w] or {}
+            for i = 1, #tp - 1 do
+                if tp[i] and tp[i + 1] and segDist(px, tp[i], tp[i + 1]) < 14 then return { kind = "tilt", axis = w } end
+            end
         end
     else
         for i = 1, 8 do
@@ -1959,6 +2166,11 @@ reskate.on("tick", function(dt)
         end
     end
 
+    do
+        local ok, err = pcall(tiltTick)
+        if not ok and not S.tiltWarned then S.tiltWarned = true; reskate.log("Quick Drop helper: tilt: " .. tostring(err), "warn") end
+    end
+
     if not S.open then
         -- quick keys while skating: hold Ctrl
         if reskate.input.allowed() and reskate.input.key("Ctrl") and S.target then
@@ -2051,6 +2263,16 @@ reskate.on("tick", function(dt)
                 elseif h.kind == "size" then
                     h.c0 = S.screen.center
                     h.d0 = math.max(d2(px, h.c0), 12)
+                elseif h.kind == "tilt" then
+                    local c0 = S.screen.center
+                    h.lastA = math.atan2(-(px.y - c0.y), px.x - c0.x)
+                    h.acc = 0
+                    local tl = S.tilt[S.sel.id] or { x = 0, z = 0 }
+                    h.t0 = { x = tl.x, z = tl.z }
+                    local AX = axesFor(t.heading)
+                    local A = h.axis == "x" and AX[1][1] or AX[3][1]
+                    local _, cf = camBasis()
+                    h.sign = dot(cf, A) <= 0 and 1 or -1
                 elseif h.kind == "turn" then
                     local c0 = S.screen.center
                     h.lastA = math.atan2(-(px.y - c0.y), px.x - c0.x)
@@ -2099,6 +2321,20 @@ reskate.on("tick", function(dt)
                         if toObjects then t.pos, t.heading, S.guides = snapTurned(t.pos, g.start.heading, t.scale, allowIn(g.n)) else t.heading = g.start.heading end
                         g.moved = true
                     end
+                elseif g.kind == "tilt" then
+                    local c0 = S.screen.center or g.start.px
+                    if d2(px, c0) > 6 then
+                        local a = math.atan2(-(px.y - c0.y), px.x - c0.x)
+                        g.acc += wrap(a - g.lastA) * g.sign
+                        g.lastA = a
+                        local v = wrap(g.t0[g.axis] + g.acc)
+                        if S.snap then v = round(v, math.rad(reskate.input.key("Shift") and 45 or 15)) end
+                        -- level again (or a quarter turn) when close to it
+                        if toObjects and math.abs(v - round(v, math.pi / 2)) < SNAP_TURN then v = round(v, math.pi / 2) end
+                        local tl = S.tilt[S.sel.id] or { x = 0, z = 0 }
+                        S.tilt[S.sel.id] = { x = g.axis == "x" and v or tl.x, z = g.axis == "z" and v or tl.z }
+                        g.moved = true
+                    end
                 elseif g.kind == "turn" then
                     local c0 = S.screen.center or g.start.px
                     if d2(px, c0) > 6 then
@@ -2119,11 +2355,16 @@ reskate.on("tick", function(dt)
                     g.moved = true
                 end
             end
-            if S.drag and S.drag.moved then S.dirty = true end
+            if S.drag and S.drag.moved and S.drag.kind ~= "tilt" then S.dirty = true end
         elseif not c.left and S.mouse.left and S.drag then
             if S.drag.kind == "click" then clickPick(px) end
             local moved = S.drag.moved
+            local wasTilt = S.drag.kind == "tilt"
             S.drag = nil
+            if wasTilt then
+                if moved then S.tiltSaveDue = true end
+                moved = false
+            end
             if moved and S.osnap and not reskate.input.key("Ctrl") then armTighten(S.guides) end
             S.guides = nil
             local st = S.dragStats
@@ -2154,20 +2395,21 @@ local function colourOf(base, hot) return hot and YELLOW or base end
 
 -- an outline as it stands: round its base, round its top, and up its corners
 local COS25 = math.cos(math.rad(25))
-local function drawShape(d, sh, col, th)
+local function drawShape(d, sh, col, th, xf)
     local pts = sh.pts
     local n = #pts
     if n < 3 then return false end
+    xf = xf or function(v) return v end
     local base, up = UP * (sh.ylo - sh.p.y), UP * (sh.yhi - sh.ylo)
     for i = 1, n do
         local a, b = pts[i] + base, pts[i % n + 1] + base
-        d:world_line(a, b, { colour = col, thickness = th })
-        d:world_line(a + up, b + up, { colour = col, thickness = th })
+        d:world_line(xf(a), xf(b), { colour = col, thickness = th })
+        d:world_line(xf(a + up), xf(b + up), { colour = col, thickness = th })
     end
     for i = 1, n do
         local a, b, c = pts[(i - 2) % n + 1], pts[i], pts[i % n + 1]
         if n <= 8 or dot(norm(b - a), norm(c - b)) < COS25 then
-            d:world_line(b + base, b + base + up, { colour = col, thickness = th })
+            d:world_line(xf(b + base), xf(b + base + up), { colour = col, thickness = th })
         end
     end
     return true
@@ -2275,6 +2517,25 @@ reskate.on("draw", function(d)
             if pts[i] and pts[i + 1] then d:line(pts[i], pts[i + 1], { colour = col, thickness = 5 }) end
         end
         S.screen.ring = pts
+        -- the tilt rings: red tips it forward and back (about its x), blue to the side (about its z)
+        local AX = axesFor(t.heading)
+        local tl = S.tilt[S.sel.id] or { x = 0, z = 0 }
+        for _, w in ipairs({ { "x", AX[1], AX[2][1], AX[3][1] }, { "z", AX[3], AX[2][1], AX[1][1] } }) do
+            local key, axc, u, v = w[1], w[2], w[3], w[4]
+            local tp = {}
+            for i = 0, 48 do
+                local a = i / 48 * 2 * math.pi
+                tp[i + 1] = d:world_to_screen(p + (u * math.cos(a) + v * math.sin(a)) * (L * 0.8))
+            end
+            local tcol = colourOf(axc[2], hot("tilt") and (S.drag or S.hover).axis == key)
+            for i = 1, 48 do
+                if tp[i] and tp[i + 1] then d:line(tp[i], tp[i + 1], { colour = tcol, thickness = 4 }) end
+            end
+            S.screen["tilt" .. key] = tp
+        end
+        if math.abs(tl.x) > 1e-4 or math.abs(tl.z) > 1e-4 then
+            d:text(center + V(14, -52, 0), string.format("tilt %.0f°, %.0f°", math.deg(tl.x), math.deg(tl.z)), { size = 16, colour = "#ffffff", shadow = true })
+        end
         local fw = d:world_to_screen(p + V(math.sin(t.heading), 0, math.cos(t.heading)) * L)
         if fw then d:line(center, fw, { colour = col, thickness = 2 }) end
         d:text(center + V(14, -30, 0), string.format("%.0f°", math.deg(t.heading)), { size = 18, colour = "#ffffff", shadow = true })
@@ -2336,7 +2597,10 @@ reskate.on("draw", function(d)
         local c = S.boxCorners
         local col = (S.dirty or (S.drag and S.drag.moved) or not lastApplied()) and "#ffe066" or "#ffffff66"
         local sh = S.itemBox[S.sel.item] and worldShape(S.sel.item, p, t.heading, t.scale) or nil
-        if not (sh and drawShape(d, sh, col, 2)) then
+        local tl = tilted(S.sel.id) and S.tilt[S.sel.id] or nil
+        local xf = tl and function(v) return tiltPoint(p, t.heading, tl, v) end or nil
+        if xf then for i = 0, 7 do c[i] = xf(c[i]) end end
+        if not (sh and drawShape(d, sh, col, 2, xf)) then
             for _, e in ipairs(BOX_EDGES) do
                 d:world_line(c[e[1]], c[e[2]], { colour = col, thickness = 2 })
             end
