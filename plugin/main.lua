@@ -1856,18 +1856,19 @@ local function oldPanel(ui)
         ui:info("D-pad up / down", "size (holding) / zoom")
         ui:info("D-pad left / right", "next object")
         ui:info("Right stick / R3", "turn the view / look at it")
-        ui:info("View / Menu", "undo / steps")
-        ui:info("Hold L3", "fine")
+        ui:info("View / Menu", "undo / Fine-Normal-Big")
+        ui:info("Hold L3", "Fine while held")
     end
     if ui:button("close", "Done (Esc)", true) then closeEditor() end
 end
 
 -- ---------------------------------------------------------------- the new panel (ReSkate 2.1.4 widgets)
 -- step sizes for the steppers: metres, degrees, size
+-- (speed: how fast the controller slides a held object, m/s; fly: how fast the free view flies, times)
 local STEPS = {
-    { m = 0.01, deg = 1, size = 0.01, name = "Fine", mf = "%.2f m", df = "%.0f°", sf = "%.2f×" },
-    { m = 0.1, deg = 15, size = 0.1, name = "Normal", mf = "%.2f m", df = "%.0f°", sf = "%.2f×" },
-    { m = 1, deg = 45, size = 0.5, name = "Big", mf = "%.1f m", df = "%.0f°", sf = "%.1f×" },
+    { m = 0.01, deg = 1, size = 0.01, speed = 0.4, fly = 0.3, name = "Fine", mf = "%.2f m", df = "%.0f°", sf = "%.2f×" },
+    { m = 0.1, deg = 15, size = 0.1, speed = 2.5, fly = 1.0, name = "Normal", mf = "%.2f m", df = "%.0f°", sf = "%.2f×" },
+    { m = 1, deg = 45, size = 0.5, speed = 6.0, fly = 2.5, name = "Big", mf = "%.1f m", df = "%.0f°", sf = "%.1f×" },
 }
 S.stepSize = 2
 S.sec = { move = true, handles = false, objects = true, locked = true, help = false }
@@ -2107,8 +2108,8 @@ local function newPanel(ui)
         ui:info("D-pad up / down", "size (holding) / zoom")
         ui:info("D-pad left / right", "next object")
         ui:info("Right stick / R3", "turn the view / look at it")
-        ui:info("View / Menu", "undo / steps")
-        ui:info("Hold L3", "fine")
+        ui:info("View / Menu", "undo / Fine-Normal-Big")
+        ui:info("Hold L3", "Fine while held")
     end
 end
 
@@ -2647,7 +2648,13 @@ local function padEditor(sec)
         if holding then cancelGrab() else closeEditor() end
         return
     end
-    if padPress("start", p.start) then S.snap = not S.snap; say(S.snap and "Steps on" or "Steps off") end
+    if padPress("start", p.start) then
+        S.stepSize = S.stepSize % #STEPS + 1
+        say("Steps: " .. STEPS[S.stepSize].name)
+    end
+    -- the step size chosen (Fine / Normal / Big); L3 held: Fine
+    local st = STEPS[S.stepSize] or STEPS[2]
+    if p.ls then st = STEPS[1] end
     if padPress("back", p.back) then
         if holding then S.grab = nil; endHoldMove() end
         undo(); t = S.target; holding = false
@@ -2712,7 +2719,7 @@ local function padEditor(sec)
 
     if not holding then
         -- free: the left stick flies the view, RT / LT raise and lower it, D-pad up / down zoom
-        local sp = math.max(S.cam.dist, 3) * (fine and 0.3 or 1.0) * sec
+        local sp = math.max(S.cam.dist, 3) * st.fly * sec
         if lx ~= 0 or ly ~= 0 or up ~= 0 then
             S.cam.goal = (S.cam.goal or S.cam.target) + (ff * ly + rr * lx) * sp + V(0, up * sp * 0.6, 0)
         end
@@ -2735,7 +2742,7 @@ local function padEditor(sec)
 
     if S.snap then
         S.padRaw = nil
-        local step = fine and 0.05 or 0.25
+        local step = st.m
         local function nudge(key, on, v)
             if padStep(key, on) then begin(); t.pos += v * step; S.cam.goal = (S.cam.goal or S.cam.target) + v * step end
         end
@@ -2745,8 +2752,8 @@ local function padEditor(sec)
         if p.ly > 0.5 or p.ly < -0.5 or p.lx > 0.5 or p.lx < -0.5 or math.abs(up) > 0.5 then active = true end
     elseif lx ~= 0 or ly ~= 0 or up ~= 0 then
         begin()
-        local sp = (fine and 0.4 or 2.5) * sec
-        local mv = (ff * ly + rr * lx) * sp + V(0, up * (fine and 0.25 or 1.5) * sec, 0)
+        local sp = st.speed * sec
+        local mv = (ff * ly + rr * lx) * sp + V(0, up * st.speed * 0.6 * sec, 0)
         -- where the stick has taken it, and from that where it snaps to: the stick can always pull it free again
         if not S.padRaw then
             S.padHd0 = t.heading
@@ -2764,15 +2771,15 @@ local function padEditor(sec)
         S.padRaw = nil
     end
 
-    -- turn: bumpers, 15 degrees (L3 held: 1)
-    local tstep = math.rad(fine and 1 or 15)
+    -- turn: bumpers, by the step size (Fine 1°, Normal 15°, Big 45°)
+    local tstep = math.rad(st.deg)
     if padStep("lb", p.lb) then begin(); t.heading = wrap(round(t.heading + tstep, tstep)) end
     if padStep("rb", p.rb) then begin(); t.heading = wrap(round(t.heading - tstep, tstep)) end
     if p.lb or p.rb then active = true end
     if (p.lb or p.rb) and S.padRaw then S.padHd0 = t.heading end
 
-    -- size: D-pad up / down, 0.1 (L3 held: 0.01)
-    local sstep = fine and 0.01 or 0.1
+    -- size: D-pad up / down, by the step size
+    local sstep = st.size
     if padStep("up", p.up) then begin(); t.scale = clamp(round(t.scale + sstep, sstep), 0.1, 10) end
     if padStep("down", p.down) then begin(); t.scale = clamp(round(t.scale - sstep, sstep), 0.1, 10) end
     if p.up or p.down then active = true end
@@ -3102,7 +3109,7 @@ reskate.on("draw", function(d)
     if S.padUsedAt and S.clock - S.padUsedAt < 15000 then
         local c = V(S.size.x / 2, S.size.y / 2, 0)
         if S.grab then
-            d:text(c + V(-170, 150, 0), "A put down    B cancel    X copy", { size = 18, colour = "#ffffff", shadow = true })
+            d:text(c + V(-170, 150, 0), "A put down    B cancel    X copy    Menu: " .. (STEPS[S.stepSize] or STEPS[2]).name, { size = 18, colour = "#ffffff", shadow = true })
         else
             d:circle(c, 8, { colour = "#ffffffcc", thickness = 2 })
             d:line(c - V(16, 0, 0), c - V(10, 0, 0), { colour = "#ffffffcc", thickness = 2 })
