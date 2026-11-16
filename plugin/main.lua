@@ -1273,6 +1273,55 @@ local function tiltTick()
     end
 end
 
+-- ---------------------------------------------------------------- the park as a park mod (tilts and all)
+-- Online, the game won't let a plugin hold objects, so tilts made here can't show there. A park mod can: it lists
+-- every object with its whole turn, and in multiplayer the host loads it (Build > Park mods) for everyone. The
+-- plugin may only write in its own data folder, so the park mod is made there and the folder opened, to be copied
+-- into ReSkate's Mods folder. Park mods are only for the game's own maps.
+local MAP_KEYS = { { "bam_levelroot", "bam" }, { "isle_of_grom", "grom" }, { "dingolevel_mpr", "mpr" },
+    { "sdm_int_001", "stadium_1" }, { "sdm_int_002", "stadium_2" }, { "ftue", "ftue" } }
+local function parkKey(name)
+    local l = string.lower(tostring(name or ""))
+    for _, k in ipairs(MAP_KEYS) do if string.find(l, k[1], 1, true) then return k[2] end end
+    return nil
+end
+local function r6(x) return math.floor(x * 1e6 + 0.5) / 1e6 end
+local function saveParkMod()
+    local key = parkKey(mapName())
+    if not key then return false, "park mods only work on the game's own maps (San Vansterdam, Grom, Mega Resort, the stadiums)" end
+    local list = reskate.objects.list()
+    if #list == 0 then return false, "there are no objects on this map" end
+    local objs, scales, n = {}, {}, 0
+    for _, o in ipairs(list) do
+        n += 1
+        local q = fullTurn(o.heading or 0, tiltOf(o.id))
+        objs[#objs + 1] = { id = n, item = o.item, position = { r6(o.position.x), r6(o.position.y), r6(o.position.z) },
+            rotation = { r6(q[1]), r6(q[2]), r6(q[3]), r6(q[4]) } }
+        if math.abs((o.scale or 1) - 1) > 1e-4 then scales[tostring(n)] = r6(o.scale or 1) end
+    end
+    local park = { format = "reskate-park", schema_version = 1, revision = 1, maps = { [key] = objs } }
+    if next(scales) then park.object_scales = { [key] = scales } end
+    local folder = "park mods/DDH Park " .. key
+    local man = { name = "DDH Park " .. key, author = "DDH", version_number = "1.0.0", website_url = "",
+        description = "Saved from the DDH Park Editor (with tilts).", dependencies = {} }
+    local ok1, why1 = reskate.files.write(folder .. "/manifest.json", reskate.json.encode(man, true))
+    if not ok1 then return false, tostring(why1) end
+    local ok2, why2 = reskate.files.write(folder .. "/parks/" .. key .. ".park.json", reskate.json.encode(park, true))
+    if not ok2 then return false, tostring(why2) end
+    pcall(reskate.files.reveal, "park mods")
+    reskate.log(string.format("Quick Drop helper: saved %d objects as the park mod \"DDH Park %s\" (in the plugin's data folder, park mods)", n, key))
+    return true, n, key
+end
+local function saveParkModSay()
+    local ok, done, n, key = pcall(saveParkMod)
+    if not ok then say("Not saved: " .. tostring(done), true) return end
+    if done then
+        say(string.format("Saved %d objects. Copy the folder \"DDH Park %s\" (just opened) into ReSkate's Mods folder, then Build > Park mods > Load. Online, the host loads it.", n, key), true)
+    else
+        say("Not saved: " .. tostring(n), true)
+    end
+end
+
 -- ---------------------------------------------------------------- closing the last gap
 -- Sizes are boxes (rounded, measured, or from a copy of the project), so two objects that "touch" can still be
 -- a few millimetres apart, or into each other. After a snap that touched, once the game has put the object
@@ -1628,6 +1677,7 @@ local function oldPanel(ui)
             S.tiltSaveDue = true
         end
         if tilted(S.sel.id) and S.tiltWhy and not S.held[S.sel.id] then ui:note("Tilt waits: " .. S.tiltWhy) end
+        if ui:button("parkmod", "Save as park mod (for online)") then saveParkModSay() end
         local sz = num("sz", "Size", t.scale, 0.1, 10, "%.2f×")
         if sz then
             if not S.sliding then markUndo(); S.sliding = true end
@@ -1857,6 +1907,7 @@ local function newPanel(ui)
             S.tiltSaveDue = true
         end
         if tilted(S.sel.id) and S.tiltWhy and not S.held[S.sel.id] then ui:note("Tilt waits: " .. S.tiltWhy) end
+        if ui:button("parkmod", "Save as park mod (for online)") then saveParkModSay() end
     end
 
     -- the handles in the view
