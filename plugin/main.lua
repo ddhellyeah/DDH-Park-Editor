@@ -294,6 +294,30 @@ local function boxLog(text)
     if S.boxLogged < 40 then S.boxLogged += 1; reskate.log("Quick Drop helper: snap: " .. text) end
 end
 
+-- Sizes the game does not give: the Object Maker's objects, measured from their models (sizes.lua beside this
+-- file: item = { wide, high, deep } in metres, standing on its base, centred sideways).
+local function loadSizes()
+    local t = nil
+    local ok, got = pcall(function() return require("sizes") end)
+    if ok and type(got) == "table" then t = got end
+    if not t and reskate.package and reskate.package.read_json then
+        ok, got = pcall(reskate.package.read_json, "plugin/sizes.json")
+        if ok and type(got) == "table" then t = got end
+    end
+    local n = 0
+    for item, d in pairs(t or {}) do
+        if type(d) == "table" and tonumber(d[1]) and tonumber(d[2]) and tonumber(d[3]) then
+            S.itemBox[item] = { V(-d[1] / 2, 0, -d[3] / 2), V(d[1] / 2, d[2], d[3] / 2) }
+            n += 1
+        end
+    end
+    reskate.log(string.format("Quick Drop helper: snap: %d object sizes loaded", n))
+end
+do
+    local ok, err = pcall(loadSizes)
+    if not ok then reskate.log("Quick Drop helper: snap: sizes not loaded: " .. tostring(err)) end
+end
+
 -- one try at finding out how big this object's item is: a ray down onto it, later tries also across it
 local function learnBox(o)
     local item = o.item
