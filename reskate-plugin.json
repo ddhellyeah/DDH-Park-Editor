@@ -11,6 +11,8 @@
         "ui.screen",
         "world.entities",
         "throwdowns",
-        "storage"
+        "storage",
+        "objects.physics",
+        "files"
     ]
 }
