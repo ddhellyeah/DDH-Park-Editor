@@ -85,7 +85,7 @@ end
 local function select(o, blueprint)
     S.handleLen = nil
     S.edit = {}
-    S.guides, S.padRaw, S.tighten = nil, nil, nil
+    S.guides, S.padRaw, S.tighten, S.snapLock = nil, nil, nil, nil
     if not o then S.sel, S.target, S.dirty = nil, nil, false return end
     S.sel = { id = o.id, item = o.item, bp = blueprint, pos0 = o.position, h0 = o.heading or 0 }
     if S.open and S.cam.goal then S.cam.goal = o.position end
@@ -797,19 +797,30 @@ local function objSnap(pos, heading, scale, allow, tl)
         if id ~= S.sel.id then
             local d = len(o.position - pos)
             local b = S.itemBox[o.item]
-            if d < reach + (b and len((b[2] - b[1]) * (o.scale or 1)) or 0) then near[#near + 1] = { o = o, d = d } end
+            if d < reach + (b and len((b[2] - b[1]) * (o.scale or 1)) or 0) then
+                -- how far apart the two really are (their boxes as they stand), and the one it is snapped to
+                -- counts as a little closer so it does not flick between two
+                local nb = placedSolid(o)
+                local gap = (me.x0 and nb.x0) and apart3(me, nb) or d
+                if id == S.snapLock then gap -= math.max(0.05, thr * 0.5) end
+                near[#near + 1] = { o = o, d = d, gap = gap, nb = nb }
+            end
         end
     end
-    table.sort(near, function(a, b) return a.d < b.d end)
+    -- the closest first
+    table.sort(near, function(a, b)
+        if math.abs(a.gap - b.gap) > 1e-4 then return a.gap < b.gap end
+        return a.d < b.d
+    end)
     local cands = {}
     local reachT = thr + SNAP_TOUCH
     for i = 1, math.min(#near, SNAP_MAX) do
         local o = near[i].o
-        local nb = placedSolid(o)
+        local nb = near[i].nb
         local function add(axis, m, kind, rank, n, corner)
             if math.abs(m) > thr then return end
             local mv, dir = allow(axis, m)
-            if mv then cands[#cands + 1] = { mv = mv, dir = dir, cost = len(mv), rank = rank, o = o, nb = nb, kind = kind, n = n, corner = corner } end
+            if mv then cands[#cands + 1] = { mv = mv, dir = dir, cost = len(mv), rank = rank, o = o, nb = nb, kind = kind, n = n, corner = corner, near = i } end
         end
         if #me.faces > 0 and #nb.faces > 0 then
             -- faces near enough to matter (lining up from further off: only the long ones)
@@ -909,6 +920,8 @@ local function objSnap(pos, heading, scale, allow, tl)
     end
     if #cands == 0 then return pos, nil end
     table.sort(cands, function(a, b)
+        -- the closest object first, then: face to face, lining up, corners; then the smallest move
+        if a.near ~= b.near then return a.near < b.near end
         if a.rank ~= b.rank then return a.rank < b.rank end
         if math.abs(a.cost - b.cost) > 1e-4 then return a.cost < b.cost end
         -- the same move: face to face before corner to face
@@ -1007,7 +1020,10 @@ end
 -- snapping must never get in the way of moving: on a fault the place is left as it was (said once in the log)
 local function snapTo(pos, heading, scale, allow)
     local ok, p, g = pcall(objSnap, pos, heading, scale, allow)
-    if ok then return p, g end
+    if ok then
+        S.snapLock = (g and g[1] and g[1].o) and g[1].o.id or nil
+        return p, g
+    end
     if not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(p), "warn") end
     return pos, nil
 end
@@ -1111,7 +1127,10 @@ local function alignSnap(pos, base, scale, allow, baseTilt)
 end
 local function snapTurned(pos, base, scale, allow, baseTilt)
     local ok, p, h, g, tl = pcall(alignSnap, pos, base, scale, allow, baseTilt)
-    if ok then return p, h, g, tl end
+    if ok then
+        S.snapLock = (g and g[1] and g[1].o) and g[1].o.id or nil
+        return p, h, g, tl
+    end
     if not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(p), "warn") end
     return pos, base, nil, baseTilt
 end
@@ -2288,7 +2307,7 @@ local function padEditor(sec)
         S.cam.goal = (S.cam.goal or S.cam.target) + mv
         S.cam.target += mv
     else
-        if S.padRaw then armTighten(S.guides); S.guides = nil end
+        if S.padRaw then armTighten(S.guides); S.guides = nil; S.snapLock = nil end
         S.padRaw = nil
     end
 
@@ -2546,6 +2565,7 @@ reskate.on("tick", function(dt)
             if S.drag.kind == "click" then clickPick(px) end
             local moved = S.drag.moved
             local wasTilt = S.drag.kind == "tilt"
+            S.snapLock = nil
             S.drag = nil
             if wasTilt then
                 if moved then S.tiltSaveDue = true end
