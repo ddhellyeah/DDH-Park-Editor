@@ -121,7 +121,12 @@ end
 local function scan()
     local list = reskate.objects.list()
     local now = {}
-    for _, o in ipairs(list) do now[o.id] = o end
+    for _, o in ipairs(list) do
+        -- an object held tilted: where it was placed (not where its tilted body is)
+        local h = S.held and S.held[o.id]
+        if h then o = { id = o.id, item = o.item, position = h.pos, heading = h.heading, scale = o.scale } end
+        now[o.id] = o
+    end
     if S.known == nil then
         reskate.log(string.format("Quick Drop helper: %d park objects on this map.", #list))
         pcall(findMissing)
@@ -1184,6 +1189,8 @@ local function holdTilted(o)
     local h = S.held[o.id]
     if not h then
         if S.clock < (S.tiltAt[o.id] or 0) then return end
+        -- where it is placed now, from the game (it is not held yet, so that is its placed spot)
+        for _, q in ipairs(reskate.objects.list()) do if q.id == o.id then o = q break end end
         if heldCount() >= MAX_HELD then S.tiltWhy = "at most 32 tilted objects at once" return end
         local ok, r1, r2 = pcall(reskate.objects.physics, o.id, { dynamic = false, surface = true })
         if not ok or r1 == false then
@@ -1210,14 +1217,17 @@ local function holdTilted(o)
             return
         end
         local r = m.rotation
-        h = { off = m.position - o.position, q0 = { r.x or r[1], r.y or r[2], r.z or r[3], r.w or r[4] }, at = -1e9, pos = o.position, heading = o.heading or 0 }
+        h = { off = m.position - o.position, q0 = { r.x or r[1], r.y or r[2], r.z or r[3], r.w or r[4] }, at = -1e9, pos = o.position, heading = o.heading or 0,
+            rev = m.edit_revision, gen = m.generation, checkAt = S.clock }
+        S.tiltGrabs = (S.tiltGrabs or 0) + 1
+        if S.tiltGrabs <= 30 then reskate.log(string.format("Quick Drop helper: tilt: holding %s (%d)", titleOf(o.item), S.tiltGrabs)) end
         S.held[o.id] = h
         S.tiltWhy = nil
     end
     if S.clock - h.at < 320 then return end
-    local q = fullTurn(o.heading or 0, tl)
+    local q = fullTurn(h.heading, tl)
     local rel = qmul(q, qconj(h.q0))
-    local at = o.position + qrot(rel, h.off)
+    local at = h.pos + qrot(rel, h.off)
     local key = string.format("%.5f %.5f %.5f %.5f", q[1], q[2], q[3], q[4])
     if h.key == key then return end
     local ok, r1, r2 = pcall(reskate.objects.pose, o.id, at, q)
@@ -1304,9 +1314,20 @@ local function tiltTick()
             if busy then S.tiltSaveDue = true end
         else
             local h = S.held[id]
-            -- the game moved it (by us or by Quick Drop): hold it again from where it is now
-            if h and (len(h.pos - o.position) > 1e-4 or math.abs(wrap(h.heading - (o.heading or 0))) > 1e-5) then letGo(id); h = nil end
-            holdTilted(o)
+            -- really changed by the game (Quick Drop, the park editor, replaced): hold it again from its new place
+            if h and S.clock - h.checkAt > 500 then
+                h.checkAt = S.clock
+                local ok, m = pcall(reskate.objects.motion, id)
+                if ok and type(m) == "table" and ((h.rev ~= nil and m.edit_revision ~= h.rev) or (h.gen ~= nil and m.generation ~= h.gen)) then
+                    reskate.log("Quick Drop helper: tilt: " .. titleOf(o.item) .. " was changed by the game: holding it again")
+                    letGo(id); h = nil
+                elseif ok and m == nil then
+                    -- no longer held (the game let go: a menu, the park editor, a level change)
+                    S.held[id] = nil; h = nil
+                end
+            end
+            if h then holdTilted({ id = id, item = o.item, position = h.pos, heading = h.heading, scale = o.scale })
+            else holdTilted(o) end
         end
     end
     if S.tiltSaveDue and not S.dirty and not S.drag and lastApplied() and S.clock - S.lastSend > 600 then
