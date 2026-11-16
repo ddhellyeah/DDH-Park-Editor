@@ -125,7 +125,10 @@ local function scan()
     for _, o in ipairs(list) do
         -- an object held tilted: where it was placed (not where its tilted body is)
         local h = S.held and S.held[o.id]
-        if h then o = { id = o.id, item = o.item, position = h.pos, heading = h.heading, scale = o.scale } end
+        if h then
+            h.reported, h.reportedHeading = o.position, o.heading
+            o = { id = o.id, item = o.item, position = h.pos, heading = h.heading, scale = o.scale }
+        end
         now[o.id] = o
     end
     if S.known == nil then
@@ -1242,6 +1245,8 @@ local function holdTilted(o)
     h.at = S.clock
     if ok and r1 ~= false then
         h.key = key
+        h.posed = at
+        h.ref = nil   -- where the game reports it is learnt again once it has settled
     elseif not h.warned and not string.find(tostring(ok and r2 or r1), "rate limit", 1, true) then
         -- (too soon after the last one: simply tried again a moment later)
         h.warned = true
@@ -1325,13 +1330,27 @@ local function tiltTick()
             -- really changed by the game (Quick Drop, the park editor, replaced): hold it again from its new place
             if h and S.clock - h.checkAt > 500 then
                 h.checkAt = S.clock
-                local ok, m = pcall(reskate.objects.motion, id)
-                if ok and type(m) == "table" and ((h.rev ~= nil and m.edit_revision ~= h.rev) or (h.gen ~= nil and m.generation ~= h.gen)) then
-                    reskate.log("Quick Drop helper: tilt: " .. titleOf(o.item) .. " was changed by the game: holding it again")
+                -- moved by something else (Quick Drop): the game reports it neither where it was placed nor
+                -- where it was put tilted
+                local rp = h.reported
+                -- a held object stands still: once settled, where the game reports it stays the same
+                if rp and not h.ref and h.key and S.clock - h.at > 400 then h.ref = rp end
+                if rp and h.ref and len(rp - h.ref) > 0.05 and len(rp - h.pos) > 0.05 then
+                    reskate.log(string.format("Quick Drop helper: tilt: %s was moved (to %.2f, %.2f, %.2f): holding it again", titleOf(o.item), rp.x, rp.y, rp.z))
                     letGo(id); h = nil
-                elseif ok and m == nil then
-                    -- no longer held (the game let go: a menu, the park editor, a level change)
-                    S.held[id] = nil; h = nil
+                else
+                    -- no longer held (the game let go: a level change, the plugin stopping): only after it says so
+                    -- three times running (it can miss a read now and then)
+                    local ok, m = pcall(reskate.objects.motion, id)
+                    if ok and m == nil then
+                        h.gone = (h.gone or 0) + 1
+                        if h.gone >= 3 then
+                            reskate.log("Quick Drop helper: tilt: the game let go of " .. titleOf(o.item) .. ": holding it again")
+                            S.held[id] = nil; h = nil
+                        end
+                    else
+                        h.gone = 0
+                    end
                 end
             end
             if h then holdTilted({ id = id, item = o.item, position = h.pos, heading = h.heading, scale = o.scale })
