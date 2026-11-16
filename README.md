@@ -18,7 +18,8 @@ Works with skate.'s own Quick Drop. Drop objects as normal, then press **F6** to
 
 **Controller** (Xbox or PlayStation), like Quick Drop: **LB+RB** opens it.
 - Not holding anything: the left stick flies around freely, **RT / LT** up / down, **D-pad up / down** zoom, **D-pad left / right** next object. The cross in the middle shows which object **A** picks up
-- **A** picks it up, **A** again puts it down. **B** cancels (it goes back where it was); with nothing held **B** closes
+- **A** with nothing under the cross opens the **add window**: pictures of every Quick Drop object by category (LB / RB). **A** adds the chosen one where the cross is and hands it to you to move (**B** right away takes it back). Mouse: the panel's **Add object** button, click a picture.
+- **A** on an object picks it up, **A** again puts it down. **B** cancels (it goes back where it was); with nothing held **B** closes
 - Holding: left stick moves it, **RT / LT** raise / lower, **LB / RB** turn (15°), **D-pad up / down** size; it snaps to objects (keep pushing to go past)
 - **X**: not holding, copies the object the cross is on and hands you the copy (**B** right away takes the copy back); holding, drops a copy where it is (tilt and all) and keeps the original in hand. **Y** twice removes the object the cross is on (or the one held)
 - Right stick: not holding, looks around where the view stands (like Quick Drop); holding, circles round the object. (Controls: "Invert look up/down" and "left/right" switches), **R3** looks at the object, **View** undo, **Menu** steps on / off, hold **L3** for fine (1°, 0.01, slow)
