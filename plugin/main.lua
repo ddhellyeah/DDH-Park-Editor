@@ -85,7 +85,7 @@ end
 local function select(o, blueprint)
     S.handleLen = nil
     S.edit = {}
-    S.guides, S.padRaw = nil, nil
+    S.guides, S.padRaw, S.tighten = nil, nil, nil
     if not o then S.sel, S.target, S.dirty = nil, nil, false return end
     S.sel = { id = o.id, item = o.item, bp = blueprint, pos0 = o.position, h0 = o.heading or 0 }
     if S.open and S.cam.goal then S.cam.goal = o.position end
@@ -598,14 +598,19 @@ local function objSnap(pos, heading, scale, allow)
                 if v > mhi[k] then mhi[k] = v end
             end
         end
-        local gap = {}
-        for k = 1, 3 do gap[k] = math.max(0, mlo[k] - nhi[k], nlo[k] - mhi[k]) end
+        local gap, ov = {}, {}
+        for k = 1, 3 do
+            gap[k] = math.max(0, mlo[k] - nhi[k], nlo[k] - mhi[k])
+            ov[k] = math.min(mhi[k], nhi[k]) - math.max(mlo[k], nlo[k])   -- how far the two overlap along it
+        end
         for k = 1, 3 do
             local g = math.max(gap[k % 3 + 1], gap[(k + 1) % 3 + 1])   -- how far apart the two are sideways
             local opts = {}
+            -- a real side against side (they overlap across the other two ways), not just corner to corner
+            local face = math.min(ov[k % 3 + 1], ov[(k + 1) % 3 + 1]) > 0.02
             if g <= SNAP_TOUCH then
-                opts[#opts + 1] = { nhi[k] - mlo[k], "touch" }
-                opts[#opts + 1] = { nlo[k] - mhi[k], "touch" }
+                opts[#opts + 1] = { nhi[k] - mlo[k], "touch", axes[k] * -1 }
+                opts[#opts + 1] = { nlo[k] - mhi[k], "touch", axes[k] }
             end
             if g <= SNAP_REACH then
                 opts[#opts + 1] = { nlo[k] - mlo[k], "level" }
@@ -614,13 +619,18 @@ local function objSnap(pos, heading, scale, allow)
             for _, op in ipairs(opts) do
                 if math.abs(op[1]) <= thr then
                     local mv, dir = allow(axes[k], op[1])
-                    if mv then cands[#cands + 1] = { mv = mv, dir = dir, cost = len(mv), o = o, nb = nb, kind = op[2] } end
+                    -- sides that really meet come first, then lining up, then corners that only just meet
+                    local rank = (op[2] == "touch" and face) and 0 or (op[2] == "level" and 1 or 2)
+                    if mv then cands[#cands + 1] = { mv = mv, dir = dir, cost = len(mv), rank = rank, o = o, nb = nb, kind = op[2], n = op[3] } end
                 end
             end
         end
     end
     if #cands == 0 then return pos, nil end
-    table.sort(cands, function(a, b) return a.cost < b.cost end)
+    table.sort(cands, function(a, b)
+        if a.rank ~= b.rank then return a.rank < b.rank end
+        return a.cost < b.cost
+    end)
     -- the nearest snap, then others that go squarely across it (so each one stays exact)
     local picked, out = {}, pos
     for _, c in ipairs(cands) do
@@ -726,6 +736,149 @@ local function turnTo(hd)
     if ok then return h, g end
     if not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(h), "warn") end
     return hd, nil
+end
+
+-- ---------------------------------------------------------------- closing the last gap
+-- Sizes are boxes (rounded, measured, or from a copy of the project), so two objects that "touch" can still be
+-- a few millimetres apart, or into each other. After a snap that touched, once the game has put the object
+-- there, rays straight down across each seam find where the two objects really end, and the picked object is
+-- moved by the smallest gap found so the two meet. Works the same for any object the rays can hit.
+local TIGHT_RAYS = 24
+local function armTighten(guides)
+    local list = {}
+    for _, g in ipairs(guides or {}) do
+        if g.kind == "touch" and g.n and math.abs(g.n.y) < 0.5 then
+            local dup = false
+            for _, q in ipairs(list) do
+                if q.id == g.o.id and dot(q.n, g.n) > 0.9 then dup = true end
+            end
+            if not dup then list[#list + 1] = { id = g.o.id, n = g.n } end
+        end
+    end
+    if #list > 0 and S.sel then
+        S.tighten = { id = S.sel.id, touches = list, at = S.clock, pass = 1 }
+    else
+        S.tighten = nil
+    end
+end
+
+local function tightenJob(job, me, objs)
+    local p = me.position
+    local myBox = worldBox(me.item, p, me.heading or 0, me.scale or 1)
+    local function ray(q, top, bottom, nbPos)
+        if S.tRays >= TIGHT_RAYS or os.clock() - S.tT0 > 0.002 then coroutine.yield() end
+        S.tRays += 1
+        local ok, hit = pcall(reskate.world.pick, V(q.x, top, q.z), V(q.x, bottom, q.z))
+        if not ok then coroutine.yield(); S.tRays += 1; ok, hit = pcall(reskate.world.pick, V(q.x, top, q.z), V(q.x, bottom, q.z)) end
+        local ho = ok and type(hit) == "table" and hit.object or nil
+        if not (ho and ho.position) then return nil end
+        if len(ho.position - p) < 0.01 then return "me" end
+        if len(ho.position - nbPos) < 0.01 then return "nb" end
+        return nil
+    end
+    local corr, said = V(0, 0, 0), {}
+    for _, tc in ipairs(job.touches) do
+        local nbo = objs[tc.id]
+        if nbo and S.itemBox[nbo.item] ~= nil then
+            local n = vnorm(V(tc.n.x, 0, tc.n.z))
+            local tg = V(-n.z, 0, n.x)
+            local nb = worldBox(nbo.item, nbo.position, nbo.heading or 0, nbo.scale or 1)
+            local mc, nc = cornersOf(myBox), cornersOf(nb)
+            local function span(cs, ax)
+                local lo, hi = math.huge, -math.huge
+                for _, c in ipairs(cs) do local v = dot(c - p, ax); lo = math.min(lo, v); hi = math.max(hi, v) end
+                return lo, hi
+            end
+            local a1, b1 = span(mc, tg)
+            local a2, b2 = span(nc, tg)
+            local u0, u1 = math.max(a1, a2), math.min(b1, b2)
+            local _, s0 = span(mc, n)
+            local top = p.y + math.max(myBox.hi.y, (nbo.position.y - p.y) + nb.hi.y) + 3
+            local bottom = math.min(p.y + myBox.lo.y, nbo.position.y + nb.lo.y) - 1
+            local gaps = {}
+            if u1 - u0 > 0.04 then
+                for _, f in ipairs({ 0.08, 0.3, 0.5, 0.7, 0.92 }) do
+                    local u = u0 + (u1 - u0) * f
+                    local function at(sv) return p + tg * u + n * sv end
+                    local function cls(sv) return ray(at(sv), top, bottom, nbo.position) end
+                    -- a point on the picked object, near its side
+                    local a = nil
+                    for _, w in ipairs({ 0.04, 0.12, 0.3 }) do
+                        if cls(s0 - w) == "me" then a = s0 - w break end
+                    end
+                    local b = s0 + 0.35
+                    if a and cls(b) ~= "me" then
+                        for _ = 1, 12 do
+                            if b - a <= 0.0015 then break end
+                            local m = (a + b) / 2
+                            if cls(m) == "me" then a = m else b = m end
+                        end
+                        local myEdge = (a + b) / 2
+                        -- a point on the other object, past the seam
+                        local d = nil
+                        for _, w in ipairs({ 0.01, 0.05, 0.15, 0.35 }) do
+                            if cls(myEdge + w) == "nb" then d = myEdge + w break end
+                        end
+                        if d then
+                            local c = myEdge
+                            for _ = 1, 12 do
+                                if d - c <= 0.0015 then break end
+                                local m = (c + d) / 2
+                                if cls(m) == "nb" then d = m else c = m end
+                            end
+                            gaps[#gaps + 1] = (c + d) / 2 - myEdge
+                        end
+                    end
+                end
+            end
+            if #gaps >= 2 then
+                local g = math.huge
+                for _, v in ipairs(gaps) do g = math.min(g, v) end
+                local mm = {}
+                for _, v in ipairs(gaps) do mm[#mm + 1] = string.format("%.0f", v * 1000) end
+                if math.abs(g) > 0.0015 and g < 0.35 then
+                    corr += n * g
+                    said[#said + 1] = string.format("%s %.0f mm (seam %s mm)", titleOf(nbo.item), g * 1000, table.concat(mm, ","))
+                end
+            end
+        end
+    end
+    return corr, said
+end
+
+local function stepTighten()
+    local j = S.tighten
+    if not j then return end
+    if not (S.sel and S.sel.id == j.id and S.target and S.osnap) then S.tighten = nil return end
+    if (S.drag and S.drag.moved) or S.padMoving then S.tighten = nil return end
+    if not j.co then
+        if S.dirty or S.clock - j.at < 350 or not lastApplied() then return end
+        local objs = {}
+        for _, o in ipairs(reskate.objects.list()) do objs[o.id] = o end
+        local me = objs[j.id]
+        if not me or len(me.position - S.target.pos) > 0.002 then return end
+        j.co = coroutine.create(tightenJob)
+        j.me, j.objs = me, objs
+    end
+    S.tRays, S.tT0 = 0, os.clock()
+    local ok, corr, said = coroutine.resume(j.co, j, j.me, j.objs)
+    if not ok then
+        S.tighten = nil
+        boxLog("closing the gap failed: " .. tostring(corr))
+        return
+    end
+    if coroutine.status(j.co) ~= "dead" then return end
+    if corr and len(corr) > 0.0015 and len(corr) < 0.4 then
+        S.target.pos += corr
+        S.dirty = true
+        S.lastSend = math.min(S.lastSend, S.clock - 250)
+        boxLog("closed the gap: " .. table.concat(said, "; "))
+        if j.pass < 2 then
+            S.tighten = { id = j.id, touches = j.touches, at = S.clock, pass = j.pass + 1 }
+            return
+        end
+    end
+    S.tighten = nil
 end
 
 local function clickPick(px)
@@ -1476,7 +1629,7 @@ local function padEditor(sec)
         S.cam.goal = (S.cam.goal or S.cam.target) + mv
         S.cam.target += mv
     else
-        if S.padRaw then S.guides = nil end
+        if S.padRaw then armTighten(S.guides); S.guides = nil end
         S.padRaw = nil
     end
 
@@ -1589,6 +1742,8 @@ reskate.on("tick", function(dt)
     do
         local ok, err = pcall(learnNear)
         if not ok and not S.learnWarned then S.learnWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(err), "warn") end
+        ok, err = pcall(stepTighten)
+        if not ok then S.tighten = nil; if not S.tightWarned then S.tightWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(err), "warn") end end
     end
     do
         local ok, err = pcall(padEditor, sec)
@@ -1698,6 +1853,7 @@ reskate.on("tick", function(dt)
             if S.drag.kind == "click" then clickPick(px) end
             local moved = S.drag.moved
             S.drag = nil
+            if moved and S.osnap and not reskate.input.key("Ctrl") then armTighten(S.guides) end
             S.guides = nil
             local st = S.dragStats
             if st and moved then
