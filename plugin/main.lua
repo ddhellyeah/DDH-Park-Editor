@@ -684,6 +684,43 @@ local function snapTo(pos, heading, scale, allow)
     if not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(p), "warn") end
     return pos, nil
 end
+-- Moving with a turn: when the picked object comes to meet a nearby object that is turned differently, it
+-- takes that object's turn (or the nearest quarter turn of it) so the two sides meet flat. base is the turn it
+-- had when the move began, so pulling it away again gives that turn back.
+local function alignSnap(pos, base, scale, allow)
+    local p1, g1 = objSnap(pos, base, scale, allow)
+    if not (S.osnap and S.sel and S.known) then return p1, base, g1 end
+    local near = {}
+    for id, o in pairs(S.known) do
+        if id ~= S.sel.id and S.itemBox[o.item] then
+            local rel = wrap(base - (o.heading or 0))
+            local k = round(rel, math.pi / 2)
+            if math.abs(rel - k) > 1e-3 then
+                local b = S.itemBox[o.item]
+                local d = len(o.position - pos) - len((b[2] - b[1]) * (o.scale or 1)) / 2
+                if d < SNAP_REACH + 2 then near[#near + 1] = { o = o, d = d, hd = wrap((o.heading or 0) + k) } end
+            end
+        end
+    end
+    table.sort(near, function(a, b) return a.d < b.d end)
+    for i = 1, math.min(#near, 3) do
+        local n = near[i]
+        local p2, g2 = objSnap(pos, n.hd, scale, allow)
+        for _, q in ipairs(g2 or {}) do
+            if q.o.id == n.o.id and q.kind == "touch" then
+                table.insert(g2, { o = n.o, nb = q.nb, kind = "turn" })
+                return p2, n.hd, g2
+            end
+        end
+    end
+    return p1, base, g1
+end
+local function snapTurned(pos, base, scale, allow)
+    local ok, p, h, g = pcall(alignSnap, pos, base, scale, allow)
+    if ok then return p, h, g end
+    if not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(p), "warn") end
+    return pos, base, nil
+end
 local function turnTo(hd)
     local ok, h, g = pcall(turnSnap, hd)
     if ok then return h, g end
@@ -1433,8 +1470,9 @@ local function padEditor(sec)
         local sp = (fine and 0.4 or 2.5) * sec
         local mv = (ff * ly + rr * lx) * sp + V(0, up * (fine and 0.25 or 1.5) * sec, 0)
         -- where the stick has taken it, and from that where it snaps to: the stick can always pull it free again
+        if not S.padRaw then S.padHd0 = t.heading end
         S.padRaw = (S.padRaw or t.pos) + mv
-        t.pos, S.guides = snapTo(S.padRaw, t.heading, t.scale, allowFree(lx ~= 0 or ly ~= 0, up ~= 0))
+        t.pos, t.heading, S.guides = snapTurned(S.padRaw, S.padHd0 or t.heading, t.scale, allowFree(lx ~= 0 or ly ~= 0, up ~= 0))
         S.cam.goal = (S.cam.goal or S.cam.target) + mv
         S.cam.target += mv
     else
@@ -1447,6 +1485,7 @@ local function padEditor(sec)
     if padStep("lb", p.lb) then begin(); t.heading = wrap(round(t.heading + tstep, tstep)) end
     if padStep("rb", p.rb) then begin(); t.heading = wrap(round(t.heading - tstep, tstep)) end
     if p.lb or p.rb then active = true end
+    if (p.lb or p.rb) and S.padRaw then S.padHd0 = t.heading end
 
     -- size: D-pad up / down, 0.1 (X held: 0.01)
     local sstep = fine and 0.01 or 0.1
@@ -1616,7 +1655,7 @@ reskate.on("tick", function(dt)
                     if S.snap then along = round(along, step) end
                     local way = axesFor(g.start.heading)[g.axis][1]
                     t.pos = g.start.pos + way * along
-                    if toObjects then t.pos, S.guides = snapTo(t.pos, t.heading, t.scale, allowAlong(way)) end
+                    if toObjects then t.pos, t.heading, S.guides = snapTurned(t.pos, g.start.heading, t.scale, allowAlong(way)) else t.heading = g.start.heading end
                     g.moved = true
                 elseif g.kind == "plane" then
                     local o, d = rayAt(px)
@@ -1631,7 +1670,7 @@ reskate.on("tick", function(dt)
                             off = o2
                         end
                         t.pos = g.start.pos + off
-                        if toObjects then t.pos, S.guides = snapTo(t.pos, t.heading, t.scale, allowIn(g.n)) end
+                        if toObjects then t.pos, t.heading, S.guides = snapTurned(t.pos, g.start.heading, t.scale, allowIn(g.n)) else t.heading = g.start.heading end
                         g.moved = true
                     end
                 elseif g.kind == "turn" then
