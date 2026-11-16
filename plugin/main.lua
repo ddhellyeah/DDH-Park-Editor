@@ -311,10 +311,11 @@ local function loadSizes()
             end
         end
     end
-    local ok2, st = pcall(reskate.storage.get, "sizes")
+    pcall(reskate.storage.set, "sizes", nil)   -- older, coarser measurements: measured again
+    local ok2, st = pcall(reskate.storage.get, "sizes2")
     if ok2 and type(st) == "table" then
         for item, d in pairs(st) do
-            if type(d) == "table" and #d == 6 then
+            if not S.exact[item] and type(d) == "table" and #d == 6 then
                 S.itemBox[item] = { V(d[1], d[2], d[3]), V(d[4], d[5], d[6]) }
                 S.saved[item] = d
                 m += 1
@@ -328,18 +329,65 @@ do
     if not ok then reskate.log("Quick Drop helper: snap: sizes not loaded: " .. tostring(err)) end
 end
 local function r3(x) return math.floor(x * 1000 + 0.5) / 1000 end
-local function saveSize(item, a, b, fitted)
-    if S.exact[item] and not fitted then return end
+local function saveSize(item, a, b)
+    if S.exact[item] then return end
     S.saved[item] = { r3(a.x), r3(a.y), r3(a.z), r3(b.x), r3(b.y), r3(b.z) }
-    local ok, err = pcall(reskate.storage.set, "sizes", S.saved)
+    local ok, err = pcall(reskate.storage.set, "sizes2", S.saved)
     if not ok then boxLog("size not kept: " .. tostring(err)) end
 end
 local function forgetSize(item)
-    if S.exact[item] and not S.saved[item] then return false end
+    if S.exact[item] then return false end
     S.saved[item] = nil
-    pcall(reskate.storage.set, "sizes", S.saved)
+    pcall(reskate.storage.set, "sizes2", S.saved)
     S.itemBox[item], S.boxTries[item], S.boxNext[item] = S.exactBox[item], nil, nil
     if S.measure and S.measure.o.item == item then S.measure = nil end
+    return true
+end
+
+-- The exact way for objects of the game and other mods: their model, found among the game's loaded models by
+-- the item's name, and the box the game gives for that model.
+S.bpNames, S.meshBox = nil, {}
+local function modelNames()
+    if S.bpNames then return S.bpNames end
+    S.bpNames = {}
+    if not (reskate.entities and reskate.entities.blueprints) then return S.bpNames end
+    local t0, seen, own = os.clock(), {}, {}
+    for _, prefix in ipairs({ "Items/", "" }) do
+        local ok, list = pcall(reskate.entities.blueprints, prefix ~= "" and prefix or nil, true)
+        if ok and type(list) == "table" then
+            for _, nm in ipairs(list) do
+                if not seen[nm] then
+                    seen[nm] = true
+                    S.bpNames[#S.bpNames + 1] = nm
+                    if #own < 8 and string.find(string.lower(nm), "own_", 1, true) then own[#own + 1] = nm end
+                end
+            end
+        end
+    end
+    boxLog(string.format("%d models loaded (%.0f ms)%s", #S.bpNames, (os.clock() - t0) * 1000,
+        #own > 0 and (", such as " .. table.concat(own, " | ")) or ""))
+    return S.bpNames
+end
+local function tryNamed(o)
+    local key = string.lower(o.item)
+    local short = string.gsub(key, "_+%d+$", "")
+    short = string.gsub(short, "_+$", "")
+    -- its own name first; else its name without the number, when only one model has it
+    local best, alt, alts = nil, nil, 0
+    for _, nm in ipairs(modelNames()) do
+        local l = string.lower(nm)
+        if string.find(l, key, 1, true) then best = nm break end
+        if #short > 8 and string.find(l, short, 1, true) then alt = nm; alts += 1 end
+    end
+    if not best and alts == 1 then best = alt end
+    if not best then return false end
+    local ok, a, b = pcall(reskate.entities.bounds, best)
+    if ok and type(a) == "table" and a.min then a, b = a.min, a.max end
+    if not (ok and a and b) then return false end
+    S.itemBox[o.item] = { a, b }
+    S.meshBox[o.item] = true
+    S.exact[o.item] = true
+    boxLog(string.format("%s: model %s, %.4f x %.4f x %.4f m", titleOf(o.item), best, b.x - a.x, b.y - a.y, b.z - a.z))
     return true
 end
 
@@ -354,8 +402,8 @@ local function tryBlueprint(o)
     if ok2 and type(a) == "table" and a.min then a, b = a.min, a.max end
     if not (ok2 and a and b) then return false end
     S.itemBox[o.item] = { a, b }
-    saveSize(o.item, a, b)
-    boxLog(string.format("%s is %.2f x %.2f x %.2f m", titleOf(o.item), b.x - a.x, b.y - a.y, b.z - a.z))
+    S.exact[o.item] = true
+    boxLog(string.format("%s is %.4f x %.4f x %.4f m", titleOf(o.item), b.x - a.x, b.y - a.y, b.z - a.z))
     return true
 end
 
@@ -449,8 +497,8 @@ local function measureJob(o, others)
             a, b = b, b + sign * step
             more += 1
         end
-        for _ = 1, 16 do
-            if math.abs(b - a) <= 0.003 then break end
+        for _ = 1, 20 do
+            if math.abs(b - a) <= 0.0005 then break end
             local m = (a + b) / 2
             if test(m) then a = m else b = m end
         end
@@ -513,7 +561,7 @@ local function stepMeasure()
         if not stillThere(o, now) then S.boxNext[o.item] = S.clock + 800 return end
         S.itemBox[o.item] = { lo, hi }
         saveSize(o.item, lo, hi)
-        boxLog(string.format("%s measured: %.2f x %.2f x %.2f m (%d rays)", titleOf(o.item), hi.x - lo.x, hi.y - lo.y, hi.z - lo.z, rays or 0))
+        boxLog(string.format("%s measured: %.4f x %.4f x %.4f m (%d rays)", titleOf(o.item), hi.x - lo.x, hi.y - lo.y, hi.z - lo.z, rays or 0))
     end
 end
 
@@ -533,6 +581,7 @@ local function learnNear()
         end
     end
     if not best then return end
+    if tryNamed(best) then return end
     if tryBlueprint(best) then return end
     local others = {}
     for id, q in pairs(S.known) do
@@ -765,7 +814,8 @@ end
 
 -- moves one side of an item's outline by delta metres outward (world direction d), when d is square to it
 local function fitSide(o, d, delta)
-    if math.abs(delta) < 0.001 or math.abs(delta) > 0.1 then return end
+    if S.exact[o.item] then return end
+    if math.abs(delta) < 0.0005 or math.abs(delta) > 0.1 then return end
     local b = S.itemBox[o.item]
     if not b then return end
     local h, sc = o.heading or 0, o.scale or 1
@@ -780,7 +830,7 @@ local function fitSide(o, d, delta)
     else return end
     if hi.x - lo.x < 0.02 or hi.z - lo.z < 0.02 then return end
     S.itemBox[o.item] = { lo, hi }
-    saveSize(o.item, lo, hi, true)
+    saveSize(o.item, lo, hi)
     boxLog(string.format("outline of %s fitted %+.0f mm", titleOf(o.item), delta * 1000))
 end
 
@@ -801,7 +851,7 @@ local function tightenJob(job, me, objs)
     local corr, said = V(0, 0, 0), {}
     for _, tc in ipairs(job.touches) do
         local nbo = objs[tc.id]
-        if nbo and S.itemBox[nbo.item] ~= nil then
+        if nbo and S.itemBox[nbo.item] ~= nil and not (S.exact[me.item] and S.exact[nbo.item]) then
             local n = vnorm(V(tc.n.x, 0, tc.n.z))
             local tg = V(-n.z, 0, n.x)
             local nb = worldBox(nbo.item, nbo.position, nbo.heading or 0, nbo.scale or 1)
@@ -830,8 +880,8 @@ local function tightenJob(job, me, objs)
                     end
                     local b = s0 + 0.35
                     if a and cls(b) ~= "me" then
-                        for _ = 1, 12 do
-                            if b - a <= 0.0015 then break end
+                        for _ = 1, 14 do
+                            if b - a <= 0.0005 then break end
                             local m = (a + b) / 2
                             if cls(m) == "me" then a = m else b = m end
                         end
@@ -843,8 +893,8 @@ local function tightenJob(job, me, objs)
                         end
                         if d then
                             local c = myEdge
-                            for _ = 1, 12 do
-                                if d - c <= 0.0015 then break end
+                            for _ = 1, 14 do
+                                if d - c <= 0.0005 then break end
                                 local m = (c + d) / 2
                                 if cls(m) == "nb" then d = m else c = m end
                             end
@@ -867,7 +917,7 @@ local function tightenJob(job, me, objs)
                 for _, v in ipairs(gaps) do g = math.min(g, v) end
                 local mm = {}
                 for _, v in ipairs(gaps) do mm[#mm + 1] = string.format("%.0f", v * 1000) end
-                if math.abs(g) > 0.0015 and g < 0.35 then
+                if math.abs(g) > 0.0005 and g < 0.35 then
                     corr += n * g
                     said[#said + 1] = string.format("%s %.0f mm (seam %s mm)", titleOf(nbo.item), g * 1000, table.concat(mm, ","))
                 end
@@ -899,7 +949,7 @@ local function stepTighten()
         return
     end
     if coroutine.status(j.co) ~= "dead" then return end
-    if corr and len(corr) > 0.0015 and len(corr) < 0.4 then
+    if corr and len(corr) > 0.0005 and len(corr) < 0.4 then
         S.target.pos += corr
         S.dirty = true
         S.lastSend = math.min(S.lastSend, S.clock - 250)
@@ -997,6 +1047,7 @@ reskate.on("level_loaded", function()
     for k, v in pairs(S.itemBox) do if v == false then S.itemBox[k] = nil end end
     S.boxTries, S.boxNext = {}, {}
     S.measure = nil
+    S.bpNames = nil
 end)
 
 -- typing exact numbers: a text box with "X Y Z turn size"; change any of them
@@ -1095,7 +1146,7 @@ local function oldPanel(ui)
     if sn ~= nil then S.snap = sn end
     local ob = ui:toggle("osnap", "Snap to objects (T)", S.osnap)
     if ob ~= nil then S.osnap = ob end
-    if S.osnap and S.sel and S.itemBox[S.sel.item] and (S.saved[S.sel.item] or not S.exact[S.sel.item]) then
+    if S.osnap and S.sel and S.itemBox[S.sel.item] and not S.exact[S.sel.item] then
         if ui:button("remeasure", "Measure it again") then
             forgetSize(S.sel.item)
             say("Measuring " .. titleOf(S.sel.item) .. " again: keep it still a moment")
