@@ -63,7 +63,7 @@ local S = {
     open = false, mode = 1, snap = false,
     -- snapping to other objects: on or off, each item's size once known ({ low corner, high corner }, false when
     -- the game gives none), and what the picked object is snapped to right now (drawn in the view)
-    osnap = true, itemBox = {}, boxTries = {}, boxNext = {}, boxLogged = 0, guides = nil,
+    osnap = true, itemBox = {}, boxTries = {}, boxNext = {}, boxLogged = 0, guides = nil, measure = nil, mRays = 0, mT0 = 0,
     cam = { target = V(0, 0, 0), yaw = 0, pitch = -0.4, dist = 10, fov = 60 },
     mouse = { pos = nil, left = false }, drag = nil, hover = nil,
     screen = {}, proj = nil, size = V(1920, 1080, 0),
@@ -294,85 +294,251 @@ local function boxLog(text)
     if S.boxLogged < 40 then S.boxLogged += 1; reskate.log("Quick Drop helper: snap: " .. text) end
 end
 
--- Sizes the game does not give: the Object Maker's objects, measured from their models (sizes.lua beside this
--- file: item = { wide, high, deep } in metres, standing on its base, centred sideways).
+-- Sizes known before any measuring: the Object Maker's objects (sizes.lua beside this file, measured from their
+-- models: item = { wide, high, deep }, standing on its base, centred), then every object this plugin has
+-- measured before (kept between launches, so each item is measured once).
+S.exact, S.saved = {}, {}
 local function loadSizes()
-    local t = nil
-    local ok, got = pcall(function() return require("sizes") end)
-    if ok and type(got) == "table" then t = got end
-    if not t and reskate.package and reskate.package.read_json then
-        ok, got = pcall(reskate.package.read_json, "plugin/sizes.json")
-        if ok and type(got) == "table" then t = got end
-    end
-    local n = 0
-    for item, d in pairs(t or {}) do
-        if type(d) == "table" and tonumber(d[1]) and tonumber(d[2]) and tonumber(d[3]) then
-            S.itemBox[item] = { V(-d[1] / 2, 0, -d[3] / 2), V(d[1] / 2, d[2], d[3] / 2) }
-            n += 1
+    local ok, t = pcall(function() return require("sizes") end)
+    local n, m = 0, 0
+    if ok and type(t) == "table" then
+        for item, d in pairs(t) do
+            if type(d) == "table" and tonumber(d[1]) and tonumber(d[2]) and tonumber(d[3]) then
+                S.itemBox[item] = { V(-d[1] / 2, 0, -d[3] / 2), V(d[1] / 2, d[2], d[3] / 2) }
+                S.exact[item] = true
+                n += 1
+            end
         end
     end
-    reskate.log(string.format("Quick Drop helper: snap: %d object sizes loaded", n))
+    local ok2, st = pcall(reskate.storage.get, "sizes")
+    if ok2 and type(st) == "table" then
+        for item, d in pairs(st) do
+            if not S.exact[item] and type(d) == "table" and #d == 6 then
+                S.itemBox[item] = { V(d[1], d[2], d[3]), V(d[4], d[5], d[6]) }
+                S.saved[item] = d
+                m += 1
+            end
+        end
+    end
+    reskate.log(string.format("Quick Drop helper: snap: %d sizes from the Object Maker, %d measured before", n, m))
 end
 do
     local ok, err = pcall(loadSizes)
     if not ok then reskate.log("Quick Drop helper: snap: sizes not loaded: " .. tostring(err)) end
 end
-
--- one try at finding out how big this object's item is: a ray down onto it, later tries also across it
-local function learnBox(o)
-    local item = o.item
-    local tries = (S.boxTries[item] or 0) + 1
-    S.boxTries[item] = tries
-    S.boxNext[item] = S.clock + 1500
-    local p = o.position
-    local rays = { { p + V(0, 6, 0), p - V(0, 1, 0) } }
-    if tries > 1 then
-        table.insert(rays, { p + V(8, 0.3, 0), p + V(-8, 0.3, 0) })
-        table.insert(rays, { p + V(0, 0.3, 8), p + V(0, 0.3, -8) })
-        table.insert(rays, { p + V(-8, 0.3, 0), p + V(8, 0.3, 0) })
-        table.insert(rays, { p + V(0, 0.3, -8), p + V(0, 0.3, 8) })
-    end
-    local why = "no ray found it"
-    for _, r in ipairs(rays) do
-        local ok, hit = pcall(reskate.world.pick, r[1], r[2])
-        local ho = ok and type(hit) == "table" and hit.object or nil
-        if ho and ho.position and len(ho.position - p) < 0.5 then
-            if ho.blueprint then
-                local ok2, a, b = false, nil, nil
-                if reskate.entities then ok2, a, b = pcall(reskate.entities.bounds, ho.blueprint) end
-                if ok2 and type(a) == "table" and a.min then a, b = a.min, a.max end
-                if ok2 and a and b then
-                    S.itemBox[item] = { a, b }
-                    boxLog(string.format("%s is %.2f x %.2f x %.2f m", titleOf(item), b.x - a.x, b.y - a.y, b.z - a.z))
-                    return true
-                end
-                why = "the game gave no size for its model"
-            else
-                why = "the game named no model for it"
-            end
-        end
-    end
-    if tries >= 3 then
-        S.itemBox[item] = false
-        boxLog(string.format("no size for %s (%s): it snaps by its own point", titleOf(item), why))
-    end
-    return false
+local function r3(x) return math.floor(x * 1000 + 0.5) / 1000 end
+local function saveSize(item, a, b)
+    if S.exact[item] then return end
+    S.saved[item] = { r3(a.x), r3(a.y), r3(a.z), r3(b.x), r3(b.y), r3(b.z) }
+    local ok, err = pcall(reskate.storage.set, "sizes", S.saved)
+    if not ok then boxLog("size not kept: " .. tostring(err)) end
+end
+local function forgetSize(item)
+    if S.exact[item] then return false end
+    S.saved[item] = nil
+    pcall(reskate.storage.set, "sizes", S.saved)
+    S.itemBox[item], S.boxTries[item], S.boxNext[item] = nil, nil, nil
+    if S.measure and S.measure.o.item == item then S.measure = nil end
+    return true
 end
 
--- now and then, while the editor is open: the size of one more item near the picked object
+-- the quick way: the box of the model the game names for it (the game names none for Quick Drop objects)
+local function tryBlueprint(o)
+    local p = o.position
+    local ok, hit = pcall(reskate.world.pick, p + V(0, 6, 0), p - V(0, 1, 0))
+    local ho = ok and type(hit) == "table" and hit.object or nil
+    if not (ho and ho.position and ho.blueprint and len(ho.position - p) < 0.5) then return false end
+    local ok2, a, b = false, nil, nil
+    if reskate.entities then ok2, a, b = pcall(reskate.entities.bounds, ho.blueprint) end
+    if ok2 and type(a) == "table" and a.min then a, b = a.min, a.max end
+    if not (ok2 and a and b) then return false end
+    S.itemBox[o.item] = { a, b }
+    saveSize(o.item, a, b)
+    boxLog(string.format("%s is %.2f x %.2f x %.2f m", titleOf(o.item), b.x - a.x, b.y - a.y, b.z - a.z))
+    return true
+end
+
+-- Measuring an object the game gives no size for: rays straight down onto it. First a coarse grid to find
+-- roughly where it is, then each of its four sides is closed in on to a few millimetres. Runs a few rays a
+-- tick (the game allows 64), as a coroutine that waits for the next tick when its share is used.
+local RAYS_A_TICK = 32
+local function measureJob(o, others)
+    local p, h = o.position, o.heading or 0
+    local ax, az = V(math.cos(h), 0, -math.sin(h)), V(math.sin(h), 0, math.cos(h))
+    local top, rays = 20, 0
+    local ylo, yhi = math.huge, -math.huge
+    -- the height where a ray down at (x, z), in the object's own directions, meets this object; nil when it
+    -- meets something else or nothing
+    local function ray(x, z)
+        if S.mRays >= RAYS_A_TICK or os.clock() - S.mT0 > 0.0025 then coroutine.yield() end
+        S.mRays += 1
+        rays += 1
+        local q = p + ax * x + az * z
+        local ok, hit = pcall(reskate.world.pick, q + UP * top, q - UP * 3)
+        if not ok then   -- the tick's rays were used up by something else: once more next tick
+            coroutine.yield()
+            S.mRays += 1
+            hit = reskate.world.pick(q + UP * top, q - UP * 3)
+        end
+        local ho = type(hit) == "table" and hit.object or nil
+        if not (ho and ho.position and hit.position) then return nil end
+        local d = len(ho.position - p)
+        if d >= 0.5 then return nil end
+        for _, q2 in ipairs(others) do
+            if len(ho.position - q2) < d then return nil end
+        end
+        local y = hit.position.y - p.y
+        if y < ylo then ylo = y end
+        if y > yhi then yhi = y end
+        return y
+    end
+    -- the coarse grid: 13 x 13 rays about its point; wider while it reaches the rim
+    local step, hits = 0.5, {}
+    local function coarse()
+        hits = {}
+        for i = -6, 6 do
+            for j = -6, 6 do
+                if ray(i * step, j * step) then hits[#hits + 1] = { i, j } end
+            end
+        end
+        return #hits
+    end
+    local found = false
+    for _, from in ipairs({ 20, 8, 4 }) do   -- from well above; from lower when a roof is in the way
+        top = from
+        if coarse() > 0 then found = true break end
+    end
+    if not found then return nil, "no ray from above reached it" end
+    while step < 8 do
+        local rim = false
+        for _, ht in ipairs(hits) do
+            if math.abs(ht[1]) == 6 or math.abs(ht[2]) == 6 then rim = true break end
+        end
+        if not rim then break end
+        step *= 2
+        if coarse() == 0 then return nil, "lost it while measuring" end
+    end
+    local imin, imax, jmin, jmax = math.huge, -math.huge, math.huge, -math.huge
+    for _, ht in ipairs(hits) do
+        imin, imax = math.min(imin, ht[1]), math.max(imax, ht[1])
+        jmin, jmax = math.min(jmin, ht[2]), math.max(jmax, ht[2])
+    end
+    -- where to look along a side: first where the grid met it on that line, then evenly across
+    local function along(lo, hi, index, value, other)
+        local out = {}
+        for _, ht in ipairs(hits) do
+            if ht[index] == value then out[#out + 1] = ht[other] * step end
+        end
+        for k = 0, 23 do out[#out + 1] = lo + (hi - lo) * k / 23 end
+        return out
+    end
+    -- closing in on one side: a is on the object, a step further out is (most likely) off it
+    local function side(a, sign, list, isX)
+        local function test(v)
+            for _, w in ipairs(list) do
+                local y
+                if isX then y = ray(v, w) else y = ray(w, v) end
+                if y then return true end
+            end
+            return false
+        end
+        local b = a + sign * step
+        local more = 0
+        while more < 4 and test(b) do
+            a, b = b, b + sign * step
+            more += 1
+        end
+        for _ = 1, 16 do
+            if math.abs(b - a) <= 0.003 then break end
+            local m = (a + b) / 2
+            if test(m) then a = m else b = m end
+        end
+        return (a + b) / 2
+    end
+    local zl, zh = jmin * step - step, jmax * step + step
+    local x1 = side(imax * step, 1, along(zl, zh, 1, imax, 2), true)
+    local x0 = side(imin * step, -1, along(zl, zh, 1, imin, 2), true)
+    local z1 = side(jmax * step, 1, along(x0, x1, 2, jmax, 1), false)
+    local z0 = side(jmin * step, -1, along(x0, x1, 2, jmin, 1), false)
+    -- a last look across the top for its height
+    for i = 0, 6 do
+        for j = 0, 6 do
+            ray(x0 + (x1 - x0) * (i + 0.5) / 7, z0 + (z1 - z0) * (j + 0.5) / 7)
+        end
+    end
+    local sc = o.scale or 1
+    if sc <= 0 then sc = 1 end
+    return V(x0, math.min(0, ylo), z0) * (1 / sc), V(x1, math.max(yhi, 0.02), z1) * (1 / sc), rays
+end
+
+local function measureFailed(item, why)
+    local tries = (S.boxTries[item] or 0) + 1
+    S.boxTries[item] = tries
+    if tries >= 2 then
+        S.itemBox[item] = false
+        boxLog(string.format("no size for %s (%s): it snaps by its own point", titleOf(item), tostring(why)))
+    else
+        S.boxNext[item] = S.clock + 2000
+    end
+end
+
+local function stillThere(o, list)
+    local cur = list[o.id]
+    return cur ~= nil and len(cur.position - o.position) < 1e-3 and math.abs(wrap((cur.heading or 0) - (o.heading or 0))) < 1e-4
+        and math.abs((cur.scale or 1) - (o.scale or 1)) < 1e-4
+end
+
+-- one tick's worth of the measuring under way
+local function stepMeasure()
+    local m = S.measure
+    local o = m.o
+    local mine = S.sel and o.id == S.sel.id
+    -- it has to stand still while it is measured: otherwise later, when it does
+    if not stillThere(o, S.known) or (mine and ((S.drag and S.drag.moved) or S.padMoving or S.dirty)) then
+        S.measure = nil
+        S.boxNext[o.item] = S.clock + 800
+        return
+    end
+    S.mRays, S.mT0 = 0, os.clock()
+    local ok, lo, hi, rays = coroutine.resume(m.co, o, m.others)
+    if not ok then
+        S.measure = nil
+        measureFailed(o.item, lo)
+    elseif coroutine.status(m.co) == "dead" then
+        S.measure = nil
+        if not lo then measureFailed(o.item, hi) return end
+        local now = {}
+        for _, q in ipairs(reskate.objects.list()) do now[q.id] = q end
+        if not stillThere(o, now) then S.boxNext[o.item] = S.clock + 800 return end
+        S.itemBox[o.item] = { lo, hi }
+        saveSize(o.item, lo, hi)
+        boxLog(string.format("%s measured: %.2f x %.2f x %.2f m (%d rays)", titleOf(o.item), hi.x - lo.x, hi.y - lo.y, hi.z - lo.z, rays or 0))
+    end
+end
+
+-- while the editor is open: the size of one more item near the picked object, nearest first
 local function learnNear()
-    if not (S.osnap and S.target and S.known) then return end
+    if not (S.osnap and S.target and S.known) then S.measure = nil return end
+    if S.measure then stepMeasure() return end
     if S.clock - (S.learnAt or -1e9) < 150 then return end
     S.learnAt = S.clock
+    local moving = (S.drag and S.drag.moved) or S.padMoving or S.dirty
     local best, bd = nil, 30
     for _, o in pairs(S.known) do
         if S.itemBox[o.item] == nil and S.clock >= (S.boxNext[o.item] or 0) then
             local d = len(o.position - S.target.pos)
-            -- the picked object itself is found where the game last put it
-            if d < bd and not (S.sel and o.id == S.sel.id and d > 0.05) then best, bd = o, d end
+            local mine = S.sel and o.id == S.sel.id
+            if d < bd and not (mine and (moving or d > 0.05)) then best, bd = o, d end
         end
     end
-    if best then learnBox(best) end
+    if not best then return end
+    if tryBlueprint(best) then return end
+    local others = {}
+    for id, q in pairs(S.known) do
+        if id ~= best.id and len(q.position - best.position) < 1 then others[#others + 1] = q.position end
+    end
+    S.measure = { o = best, co = coroutine.create(measureJob), others = others }
+    S.boxNext[best.item] = S.clock + 3000
 end
 
 -- an object's box in the world: its point, its two level directions (up is the third), and how far the box
@@ -609,6 +775,7 @@ reskate.on("level_loaded", function()
     -- sizes stay known; the items the game gave none for get another try on this map
     for k, v in pairs(S.itemBox) do if v == false then S.itemBox[k] = nil end end
     S.boxTries, S.boxNext = {}, {}
+    S.measure = nil
 end)
 
 -- typing exact numbers: a text box with "X Y Z turn size"; change any of them
@@ -707,6 +874,12 @@ local function oldPanel(ui)
     if sn ~= nil then S.snap = sn end
     local ob = ui:toggle("osnap", "Snap to objects (T)", S.osnap)
     if ob ~= nil then S.osnap = ob end
+    if S.osnap and S.sel and S.itemBox[S.sel.item] and not S.exact[S.sel.item] then
+        if ui:button("remeasure", "Measure it again") then
+            forgetSize(S.sel.item)
+            say("Measuring " .. titleOf(S.sel.item) .. " again: keep it still a moment")
+        end
+    end
     ui:separator()
     if ui:button("undo", "Undo (Ctrl+Z)") then undo() end
     if ui:button("straight", "Straighten and size 1") and S.target then
