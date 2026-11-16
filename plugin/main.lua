@@ -61,6 +61,9 @@ local S = {
     sel = nil, target = nil, dirty = false, lastSend = 0, undo = {},
     -- the editor
     open = false, mode = 1, snap = false,
+    -- snapping to other objects: on or off, each item's size once known ({ low corner, high corner }, false when
+    -- the game gives none), and what the picked object is snapped to right now (drawn in the view)
+    osnap = true, itemBox = {}, boxTries = {}, boxNext = {}, boxLogged = 0, guides = nil,
     cam = { target = V(0, 0, 0), yaw = 0, pitch = -0.4, dist = 10, fov = 60 },
     mouse = { pos = nil, left = false }, drag = nil, hover = nil,
     screen = {}, proj = nil, size = V(1920, 1080, 0),
@@ -82,6 +85,7 @@ end
 local function select(o, blueprint)
     S.handleLen = nil
     S.edit = {}
+    S.guides, S.padRaw = nil, nil
     if not o then S.sel, S.target, S.dirty = nil, nil, false return end
     S.sel = { id = o.id, item = o.item, bp = blueprint, pos0 = o.position, h0 = o.heading or 0 }
     if S.open and S.cam.goal then S.cam.goal = o.position end
@@ -276,6 +280,227 @@ local function planeHit(o, d, at, n)
     return o + d * t
 end
 
+-- ---------------------------------------------------------------- snapping to other objects
+-- The game says where a placed object is, how it is turned and its size factor, but not how big it is. Its size
+-- comes from the box of its model (reskate.entities.bounds of the blueprint a ray finds on it), remembered per
+-- item. An object with no known size snaps by its own point only.
+local UP = V(0, 1, 0)
+local SNAP_REACH = 4     -- metres past the boxes within which sides line up
+local SNAP_TOUCH = 0.5   -- metres apart sideways at most for two sides to meet
+local SNAP_MAX = 12      -- nearest objects looked at
+local SNAP_TURN = math.rad(5)
+
+local function boxLog(text)
+    if S.boxLogged < 40 then S.boxLogged += 1; reskate.log("Quick Drop helper: snap: " .. text) end
+end
+
+-- one try at finding out how big this object's item is: a ray down onto it, later tries also across it
+local function learnBox(o)
+    local item = o.item
+    local tries = (S.boxTries[item] or 0) + 1
+    S.boxTries[item] = tries
+    S.boxNext[item] = S.clock + 1500
+    local p = o.position
+    local rays = { { p + V(0, 6, 0), p - V(0, 1, 0) } }
+    if tries > 1 then
+        table.insert(rays, { p + V(8, 0.3, 0), p + V(-8, 0.3, 0) })
+        table.insert(rays, { p + V(0, 0.3, 8), p + V(0, 0.3, -8) })
+        table.insert(rays, { p + V(-8, 0.3, 0), p + V(8, 0.3, 0) })
+        table.insert(rays, { p + V(0, 0.3, -8), p + V(0, 0.3, 8) })
+    end
+    local why = "no ray found it"
+    for _, r in ipairs(rays) do
+        local ok, hit = pcall(reskate.world.pick, r[1], r[2])
+        local ho = ok and type(hit) == "table" and hit.object or nil
+        if ho and ho.position and len(ho.position - p) < 0.5 then
+            if ho.blueprint then
+                local ok2, a, b = false, nil, nil
+                if reskate.entities then ok2, a, b = pcall(reskate.entities.bounds, ho.blueprint) end
+                if ok2 and type(a) == "table" and a.min then a, b = a.min, a.max end
+                if ok2 and a and b then
+                    S.itemBox[item] = { a, b }
+                    boxLog(string.format("%s is %.2f x %.2f x %.2f m", titleOf(item), b.x - a.x, b.y - a.y, b.z - a.z))
+                    return true
+                end
+                why = "the game gave no size for its model"
+            else
+                why = "the game named no model for it"
+            end
+        end
+    end
+    if tries >= 3 then
+        S.itemBox[item] = false
+        boxLog(string.format("no size for %s (%s): it snaps by its own point", titleOf(item), why))
+    end
+    return false
+end
+
+-- now and then, while the editor is open: the size of one more item near the picked object
+local function learnNear()
+    if not (S.osnap and S.target and S.known) then return end
+    if S.clock - (S.learnAt or -1e9) < 150 then return end
+    S.learnAt = S.clock
+    local best, bd = nil, 30
+    for _, o in pairs(S.known) do
+        if S.itemBox[o.item] == nil and S.clock >= (S.boxNext[o.item] or 0) then
+            local d = len(o.position - S.target.pos)
+            -- the picked object itself is found where the game last put it
+            if d < bd and not (S.sel and o.id == S.sel.id and d > 0.05) then best, bd = o, d end
+        end
+    end
+    if best then learnBox(best) end
+end
+
+-- an object's box in the world: its point, its two level directions (up is the third), and how far the box
+-- reaches along each from the point
+local function worldBox(item, pos, heading, scale)
+    local b = S.itemBox[item]
+    local lo, hi = V(0, 0, 0), V(0, 0, 0)
+    if b then lo, hi = b[1] * scale, b[2] * scale end
+    local ch, sh = math.cos(heading), math.sin(heading)
+    return { p = pos, ax = V(ch, 0, -sh), az = V(sh, 0, ch), lo = lo, hi = hi, sized = b and true or false }
+end
+
+local function cornersOf(bx)
+    if not bx.sized then return { bx.p } end
+    local c = {}
+    for i = 0, 7 do
+        local x = (i % 2 == 0) and bx.lo.x or bx.hi.x
+        local y = (math.floor(i / 2) % 2 == 0) and bx.lo.y or bx.hi.y
+        local z = (i < 4) and bx.lo.z or bx.hi.z
+        c[i + 1] = bx.p + bx.ax * x + UP * y + bx.az * z
+    end
+    return c
+end
+
+-- Moves pos so the picked object's box meets or lines up with the boxes of the objects near it.
+-- allow(direction, metres) answers how such a move may be made for the handle in use: the move as a vector and
+-- the direction it goes along, or nil when that handle cannot go that way.
+-- Returns the place, and what it snapped to (a list of { o, nb, kind }) or nil.
+local function objSnap(pos, heading, scale, allow)
+    if not (S.osnap and S.sel and S.known) then return pos, nil end
+    local thr = clamp(S.cam.dist * 0.03, 0.12, 0.5)
+    local me = worldBox(S.sel.item, pos, heading, scale)
+    local mc = cornersOf(me)
+    local reach = SNAP_REACH + len(me.hi - me.lo)
+    local near = {}
+    for id, o in pairs(S.known) do
+        if id ~= S.sel.id then
+            local d = len(o.position - pos)
+            local b = S.itemBox[o.item]
+            if d < reach + (b and len((b[2] - b[1]) * (o.scale or 1)) or 0) then near[#near + 1] = { o = o, d = d } end
+        end
+    end
+    table.sort(near, function(a, b) return a.d < b.d end)
+    local cands = {}
+    for i = 1, math.min(#near, SNAP_MAX) do
+        local o = near[i].o
+        local nb = worldBox(o.item, o.position, o.heading or 0, o.scale or 1)
+        local axes = { nb.ax, UP, nb.az }
+        local nlo, nhi = { nb.lo.x, nb.lo.y, nb.lo.z }, { nb.hi.x, nb.hi.y, nb.hi.z }
+        -- the picked object's box, measured along this object's directions
+        local mlo, mhi = { math.huge, math.huge, math.huge }, { -math.huge, -math.huge, -math.huge }
+        for _, c in ipairs(mc) do
+            local rel = c - nb.p
+            for k = 1, 3 do
+                local v = dot(rel, axes[k])
+                if v < mlo[k] then mlo[k] = v end
+                if v > mhi[k] then mhi[k] = v end
+            end
+        end
+        local gap = {}
+        for k = 1, 3 do gap[k] = math.max(0, mlo[k] - nhi[k], nlo[k] - mhi[k]) end
+        for k = 1, 3 do
+            local g = math.max(gap[k % 3 + 1], gap[(k + 1) % 3 + 1])   -- how far apart the two are sideways
+            local opts = {}
+            if g <= SNAP_TOUCH then
+                opts[#opts + 1] = { nhi[k] - mlo[k], "touch" }
+                opts[#opts + 1] = { nlo[k] - mhi[k], "touch" }
+            end
+            if g <= SNAP_REACH then
+                opts[#opts + 1] = { nlo[k] - mlo[k], "level" }
+                opts[#opts + 1] = { nhi[k] - mhi[k], "level" }
+            end
+            for _, op in ipairs(opts) do
+                if math.abs(op[1]) <= thr then
+                    local mv, dir = allow(axes[k], op[1])
+                    if mv then cands[#cands + 1] = { mv = mv, dir = dir, cost = len(mv), o = o, nb = nb, kind = op[2] } end
+                end
+            end
+        end
+    end
+    if #cands == 0 then return pos, nil end
+    table.sort(cands, function(a, b) return a.cost < b.cost end)
+    -- the nearest snap, then others that go squarely across it (so each one stays exact)
+    local picked, out = {}, pos
+    for _, c in ipairs(cands) do
+        local ok = true
+        for _, q in ipairs(picked) do
+            if math.abs(dot(c.dir, q.dir)) > 0.05 then ok = false break end
+        end
+        if ok then
+            picked[#picked + 1] = c
+            out = out + c.mv
+            if #picked == 3 then break end
+        end
+    end
+    return out, picked
+end
+
+-- how each handle may be moved by a snap
+local function allowAlong(d)   -- an arrow: only along it
+    return function(ax, m)
+        local c = dot(ax, d)
+        if math.abs(c) < 0.5 then return nil end
+        return d * (m / c), d
+    end
+end
+local function allowIn(n)      -- a square: only across its plane
+    return function(ax, m)
+        if math.abs(dot(ax, n)) > 0.05 then return nil end
+        return ax * m, ax
+    end
+end
+local function allowFree(level, updown)   -- the controller: the ways it is being moved right now
+    return function(ax, m)
+        local vertical = math.abs(ax.y) > 0.5
+        if (vertical and not updown) or (not vertical and not level) then return nil end
+        return ax * m, ax
+    end
+end
+
+-- turning: the same way as the nearest object, or square to it
+local function turnSnap(hd)
+    if not (S.osnap and S.sel and S.known and S.target) then return hd, nil end
+    local best, bd = nil, SNAP_REACH + 4
+    for id, o in pairs(S.known) do
+        if id ~= S.sel.id then
+            local d = len(o.position - S.target.pos)
+            if d < bd then best, bd = o, d end
+        end
+    end
+    if not best then return hd, nil end
+    local bh = best.heading or 0
+    local rel = wrap(hd - bh)
+    local k = round(rel, math.pi / 2)
+    if math.abs(rel - k) > SNAP_TURN then return hd, nil end
+    return wrap(bh + k), { { o = best, nb = worldBox(best.item, best.position, bh, best.scale or 1), kind = "turn" } }
+end
+
+-- snapping must never get in the way of moving: on a fault the place is left as it was (said once in the log)
+local function snapTo(pos, heading, scale, allow)
+    local ok, p, g = pcall(objSnap, pos, heading, scale, allow)
+    if ok then return p, g end
+    if not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(p), "warn") end
+    return pos, nil
+end
+local function turnTo(hd)
+    local ok, h, g = pcall(turnSnap, hd)
+    if ok then return h, g end
+    if not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(h), "warn") end
+    return hd, nil
+end
+
 local function clickPick(px)
     local o, d = rayAt(px)
     local hit = reskate.world.pick(o, o + d * 300)
@@ -355,7 +580,12 @@ reskate.on("action", function(name)
 end)
 reskate.on("screen_closed", function(title) if title == TITLE and S.open then S.open = false; S.drag = nil; padCaptureOff(); reskate.camera.release() end end)
 reskate.on("unload", function() padCaptureOff(); if S.open then reskate.camera.release() end end)
-reskate.on("level_loaded", function() S.listKey = nil; S.known = nil; S.blocked = nil; S.missing = nil; S.confirmRemove = nil; select(nil) end)
+reskate.on("level_loaded", function()
+    S.listKey = nil; S.known = nil; S.blocked = nil; S.missing = nil; S.confirmRemove = nil; select(nil)
+    -- sizes stay known; the items the game gave none for get another try on this map
+    for k, v in pairs(S.itemBox) do if v == false then S.itemBox[k] = nil end end
+    S.boxTries, S.boxNext = {}, {}
+end)
 
 -- typing exact numbers: a text box with "X Y Z turn size"; change any of them
 local TYPE_ID = "ddh_type"
@@ -451,6 +681,8 @@ local function oldPanel(ui)
     if m and m ~= S.mode then S.mode = m end
     local sn = ui:toggle("snap", "Steps: 0.25 m, 15°, 0.1 (G)", S.snap)
     if sn ~= nil then S.snap = sn end
+    local ob = ui:toggle("osnap", "Snap to objects (T)", S.osnap)
+    if ob ~= nil then S.osnap = ob end
     ui:separator()
     if ui:button("undo", "Undo (Ctrl+Z)") then undo() end
     if ui:button("straight", "Straighten and size 1") and S.target then
@@ -646,11 +878,13 @@ local function newPanel(ui)
 
     -- the handles in the view
     local modes = { "Move (W)", "Turn (E)", "Size (R)" }
-    if section(ui, "handles", "Handles", modes[S.mode] .. (S.snap and "  |  snap" or "")) then
+    if section(ui, "handles", "Handles", modes[S.mode] .. (S.snap and "  |  steps" or "") .. (S.osnap and "  |  objects" or "")) then
         local m = ui:buttons("mode", modes, S.mode)
         if m and m ~= S.mode then S.mode = m end
-        local sn = ui:toggle("snap", "Snap (G)", S.snap)
+        local sn = ui:toggle("snap", "Steps (G)", S.snap)
         if sn ~= nil then S.snap = sn end
+        local ob = ui:toggle("osnap", "Snap to objects (T)", S.osnap)
+        if ob ~= nil then S.osnap = ob end
     end
 
     -- every object in the park
@@ -709,7 +943,9 @@ local function newPanel(ui)
         ui:info("Scroll", "zoom")
         ui:info("Arrows, PgUp, PgDn", "fly the view")
         ui:info("W / E / R", "move / turn / size handles")
-        ui:info("G", "snap")
+        ui:info("G", "steps")
+        ui:info("T", "snap to objects")
+        ui:info("Hold Ctrl", "no snapping while dragging")
         ui:info("F", "look at it")
         ui:info("Ctrl+Z", "undo")
         ui:info("Shift", "bigger steps")
@@ -986,6 +1222,7 @@ local function padEditor(sec)
     local up = p.rt - p.lt
     if math.abs(up) < 0.15 then up = 0 end
     if S.snap then
+        S.padRaw = nil
         local step = fine and 0.05 or 0.25
         local function nudge(key, on, v)
             if padStep(key, on) then begin(); t.pos += v * step; S.cam.goal = (S.cam.goal or S.cam.target) + v * step end
@@ -998,9 +1235,14 @@ local function padEditor(sec)
         begin()
         local sp = (fine and 0.4 or 2.5) * sec
         local mv = (ff * ly + rr * lx) * sp + V(0, up * (fine and 0.25 or 1.5) * sec, 0)
-        t.pos += mv
+        -- where the stick has taken it, and from that where it snaps to: the stick can always pull it free again
+        S.padRaw = (S.padRaw or t.pos) + mv
+        t.pos, S.guides = snapTo(S.padRaw, t.heading, t.scale, allowFree(lx ~= 0 or ly ~= 0, up ~= 0))
         S.cam.goal = (S.cam.goal or S.cam.target) + mv
         S.cam.target += mv
+    else
+        if S.padRaw then S.guides = nil end
+        S.padRaw = nil
     end
 
     -- turn: bumpers, 15 degrees (X held: 1)
@@ -1093,6 +1335,7 @@ reskate.on("tick", function(dt)
     if press("E") then S.mode = 2 end
     if press("R") then S.mode = 3 end
     if press("G") then S.snap = not S.snap end
+    if press("T") then S.osnap = not S.osnap; say(S.osnap and "Snap to objects on" or "Snap to objects off") end
     if press("F") and S.target then S.cam.goal = S.target.pos end
     if press("Z") and ctrl then undo() end
     do -- the view: arrows and PageUp / PageDown slide it
@@ -1106,6 +1349,10 @@ reskate.on("tick", function(dt)
         if reskate.input.key("PageUp") then mv += V(0, 1, 0) end
         if reskate.input.key("PageDown") then mv -= V(0, 1, 0) end
         S.cam.goal = (S.cam.goal or S.cam.target) + mv * sp
+    end
+    do
+        local ok, err = pcall(learnNear)
+        if not ok and not S.learnWarned then S.learnWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(err), "warn") end
     end
     do
         local ok, err = pcall(padEditor, sec)
@@ -1165,10 +1412,14 @@ reskate.on("tick", function(dt)
                 end
             elseif t then
                 local step = reskate.input.key("Shift") and 1 or 0.25
+                local toObjects = S.osnap and not reskate.input.key("Ctrl")
+                S.guides = nil
                 if g.kind == "axis" then
                     local along = ((px.x - g.start.px.x) * g.dir.x + (px.y - g.start.px.y) * g.dir.y) / g.ppm
                     if S.snap then along = round(along, step) end
-                    t.pos = g.start.pos + axesFor(g.start.heading)[g.axis][1] * along
+                    local way = axesFor(g.start.heading)[g.axis][1]
+                    t.pos = g.start.pos + way * along
+                    if toObjects then t.pos, S.guides = snapTo(t.pos, t.heading, t.scale, allowAlong(way)) end
                     g.moved = true
                 elseif g.kind == "plane" then
                     local o, d = rayAt(px)
@@ -1183,6 +1434,7 @@ reskate.on("tick", function(dt)
                             off = o2
                         end
                         t.pos = g.start.pos + off
+                        if toObjects then t.pos, S.guides = snapTo(t.pos, t.heading, t.scale, allowIn(g.n)) end
                         g.moved = true
                     end
                 elseif g.kind == "turn" then
@@ -1193,6 +1445,7 @@ reskate.on("tick", function(dt)
                         g.lastA = a
                         local hd = g.start.heading + g.acc
                         if S.snap then hd = round(hd, math.rad(reskate.input.key("Shift") and 45 or 15)) end
+                        if toObjects then hd, S.guides = turnTo(hd) end
                         t.heading = wrap(hd)
                         g.moved = true
                     end
@@ -1209,6 +1462,7 @@ reskate.on("tick", function(dt)
             if S.drag.kind == "click" then clickPick(px) end
             local moved = S.drag.moved
             S.drag = nil
+            S.guides = nil
             local st = S.dragStats
             if st and moved then
                 S.dragStats = nil
@@ -1269,7 +1523,10 @@ reskate.on("draw", function(d)
             bx = (ok and a and b) and { a, b } or false
             S.boundsCache[S.sel.bp] = bx
         end
+        -- the same size serves snapping
+        if bx and S.itemBox[S.sel.item] == nil then S.itemBox[S.sel.item] = bx end
     end
+    if not bx and S.itemBox[S.sel.item] then bx = S.itemBox[S.sel.item] end
     if bx then
         local lo, hi = bx[1], bx[2]
         local ext = math.max(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z) * t.scale
@@ -1366,6 +1623,28 @@ reskate.on("draw", function(d)
         d:text(center + V(14, -30, 0), string.format("%.2f×", t.scale), { size = 18, colour = "#ffffff", shadow = true })
     end
     d:circle(center, 4, { colour = "#ffffff", fill = true })
+    -- what it is snapped to: that object's box (or its point), and how
+    if S.guides then
+        local WORDS = { touch = "touching", level = "lined up", turn = "same turn" }
+        local seen = {}
+        for _, gd in ipairs(S.guides) do
+            local id = gd.o.id
+            if not seen[id] then
+                seen[id] = true
+                local nc = cornersOf(gd.nb)
+                if #nc == 8 then
+                    for _, e in ipairs(BOX_EDGES) do d:world_line(nc[e[1] + 1], nc[e[2] + 1], { colour = "#35e0ff", thickness = 3 }) end
+                else
+                    local q = gd.nb.p
+                    d:world_line(q - V(0.4, 0, 0), q + V(0.4, 0, 0), { colour = "#35e0ff", thickness = 3 })
+                    d:world_line(q - V(0, 0, 0.4), q + V(0, 0, 0.4), { colour = "#35e0ff", thickness = 3 })
+                    d:world_line(q, q + V(0, 0.8, 0), { colour = "#35e0ff", thickness = 3 })
+                end
+                local sp = d:world_to_screen(gd.nb.p)
+                if sp then d:text(sp + V(10, -12, 0), WORDS[gd.kind] or "snap", { size = 16, colour = "#35e0ff", shadow = true }) end
+            end
+        end
+    end
     -- the object's box where it is going: shows at once while the game catches up
     if S.boxCorners and S.mode ~= 3 then
         local c = S.boxCorners
