@@ -292,6 +292,7 @@ local SNAP_REACH = 4     -- metres past the boxes within which sides line up
 local SNAP_TOUCH = 0.5   -- metres apart sideways at most for two sides to meet
 local SNAP_MAX = 12      -- nearest objects looked at
 local SNAP_TURN = math.rad(5)
+local HEIGHT_FIT = 1.0   -- metres up or down at most that an object goes to take the height of one it meets
 
 local function boxLog(text)
     if S.boxLogged < 40 then S.boxLogged += 1; reskate.log("Quick Drop helper: snap: " .. text) end
@@ -817,10 +818,10 @@ local function objSnap(pos, heading, scale, allow, tl)
     for i = 1, math.min(#near, SNAP_MAX) do
         local o = near[i].o
         local nb = near[i].nb
-        local function add(axis, m, kind, rank, n, corner)
+        local function add(axis, m, kind, rank, n, corner, fit)
             if math.abs(m) > thr then return end
             local mv, dir = allow(axis, m)
-            if mv then cands[#cands + 1] = { mv = mv, dir = dir, cost = len(mv), rank = rank, o = o, nb = nb, kind = kind, n = n, corner = corner, near = i } end
+            if mv then cands[#cands + 1] = { mv = mv, dir = dir, cost = len(mv), rank = rank, o = o, nb = nb, kind = kind, n = n, corner = corner, near = i, fit = fit } end
         end
         if #me.faces > 0 and #nb.faces > 0 then
             -- faces near enough to matter (lining up from further off: only the long ones)
@@ -847,7 +848,9 @@ local function objSnap(pos, heading, scale, allow, tl)
                                     -- facing each other: they meet
                                     local g = math.max(0, -ovu, -ovv)
                                     if g <= SNAP_TOUCH then
-                                        add(E.n, -dline, "touch", (ovu > 0.02 and ovv > 0.02) and 0 or 2, E.n * -1)
+                                        -- (side to side: how to take its height, bottoms level or tops level)
+                                        local fit = (F.side and E.side) and { v = E.v, bottom = 0 - v0, top = E.vlen - v1 } or nil
+                                        add(E.n, -dline, "touch", (ovu > 0.02 and ovv > 0.02) and 0 or 2, E.n * -1, nil, fit)
                                         -- and their edges line up, both ways across the face
                                         if ovu > -SNAP_TOUCH and ovv > -SNAP_TOUCH then
                                             add(E.u, 0 - u0, "level", 1); add(E.u, E.ulen - u1, "level", 1)
@@ -929,6 +932,18 @@ local function objSnap(pos, heading, scale, allow, tl)
     end)
     -- the nearest snap, then others that go squarely across it (so each one stays exact)
     local picked, out = {}, pos
+    -- meeting something side to side: it takes that object's height too (bottoms level, or tops level when that
+    -- is less of a move), whichever handle moves it, so the two fit together
+    local first = cands[1]
+    if first and first.kind == "touch" and first.fit and not first.corner then
+        local f = first.fit
+        local m = math.abs(f.bottom) <= math.abs(f.top) and f.bottom or f.top
+        if math.abs(m) > 1e-4 and math.abs(m) <= HEIGHT_FIT then
+            local c = { mv = f.v * m, dir = f.v, cost = math.abs(m), rank = 1, o = first.o, nb = first.nb, kind = "level", near = first.near }
+            picked[1] = c
+            out = out + c.mv
+        end
+    end
     for _, c in ipairs(cands) do
         local ok = true
         for _, q in ipairs(picked) do
@@ -940,6 +955,14 @@ local function objSnap(pos, heading, scale, allow, tl)
             if #picked == 3 then break end
         end
     end
+    -- (the height only goes with the meeting: if that could not be done this way, nor is the height)
+    if picked[1] and picked[1].kind == "level" and first and picked[1].o == first.o and picked[1].dir == (first.fit and first.fit.v) then
+        local met = false
+        for k = 2, #picked do if picked[k] == first then met = true end end
+        if not met then out = out - picked[1].mv; table.remove(picked, 1) end
+    end
+    -- what it snapped to first: the object it meets
+    if picked[1] and picked[1].kind == "level" and picked[2] and picked[2].kind == "touch" then picked[1], picked[2] = picked[2], picked[1] end
     return out, picked
 end
 
