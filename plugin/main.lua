@@ -124,7 +124,7 @@ local function scan()
     local now = {}
     for _, o in ipairs(list) do
         -- an object held tilted: where it was placed (not where its tilted body is)
-        local h = S.held and S.held[o.id]
+        local h = S.tiltHeld and S.tiltHeld[o.id]
         if h then
             h.reported, h.reportedHeading = o.position, o.heading
             o = { id = o.id, item = o.item, position = h.pos, heading = h.heading, scale = o.scale }
@@ -651,7 +651,8 @@ local function cornersOf(bx)
 end
 
 -- turns with tilt (see tilting, further on)
-S.tilt, S.held, S.tiltWhy, S.tiltAt, S.tiltSrc = {}, {}, nil, {}, {}
+S.tilt, S.tiltHeld, S.tiltWhy, S.tiltAt, S.tiltSrc = {}, {}, nil, {}, {}
+S.held = S.held or {}
 local MAX_HELD = 32
 local function qmul(a, b)
     return { a[4] * b[1] + a[1] * b[4] + a[2] * b[3] - a[3] * b[2],
@@ -1196,17 +1197,17 @@ end
 -- puts it back whenever the park is loaded. While an object is moved, turned or sized it is let go (the game
 -- shows it flat for that moment), and tilted again once the game has it in its new place. Offline only, and at
 -- most 32 tilted objects at once (the game's limit for one plugin).
-local function heldCount() local n = 0; for _ in pairs(S.held) do n += 1 end; return n end
+local function heldCount() local n = 0; for _ in pairs(S.tiltHeld) do n += 1 end; return n end
 local function letGo(id)
-    if S.held[id] then
+    if S.tiltHeld[id] then
         pcall(reskate.objects.physics, id, nil)
-        S.held[id] = nil
+        S.tiltHeld[id] = nil
     end
 end
 -- holds an object (if not yet) and gives it its tilt; o is the object as placed
 local function holdTilted(o)
     local tl = S.tilt[o.id]
-    local h = S.held[o.id]
+    local h = S.tiltHeld[o.id]
     if not h then
         if S.clock < (S.tiltAt[o.id] or 0) then return end
         -- where it is placed now, from the game (it is not held yet, so that is its placed spot)
@@ -1241,7 +1242,7 @@ local function holdTilted(o)
             rev = m.edit_revision, gen = m.generation, checkAt = S.clock }
         S.tiltGrabs = (S.tiltGrabs or 0) + 1
         if S.tiltGrabs <= 30 then reskate.log(string.format("Quick Drop helper: tilt: holding %s (%d)", titleOf(o.item), S.tiltGrabs)) end
-        S.held[o.id] = h
+        S.tiltHeld[o.id] = h
         S.tiltWhy = nil
     end
     if S.clock - h.at < 320 then return end
@@ -1322,20 +1323,20 @@ local function tiltTick()
         S.tiltMatchAt = S.clock
         matchTilts()
         -- objects gone from the park: forget them
-        for id in pairs(S.held) do if not (S.known and S.known[id]) then S.held[id] = nil end end
+        for id in pairs(S.tiltHeld) do if not (S.known and S.known[id]) then S.tiltHeld[id] = nil end end
         for id in pairs(S.tilt) do if S.known and not S.known[id] then S.tilt[id] = nil end end
     end
     -- levelled again: let go
-    for id in pairs(S.held) do if not tilted(id) then letGo(id) end end
+    for id in pairs(S.tiltHeld) do if not tilted(id) then letGo(id) end end
     for id, tl in pairs(S.tilt) do
         local o = S.known and S.known[id]
         local mine = S.sel and S.sel.id == id
         local busy = mine and (S.dirty or ((S.drag and S.drag.moved) and S.drag.kind ~= "tilt") or S.padMoving or not lastApplied())
         if not tilted(id) or not o or busy then
-            if S.held[id] then letGo(id) end
+            if S.tiltHeld[id] then letGo(id) end
             if busy then S.tiltSaveDue = true end
         else
-            local h = S.held[id]
+            local h = S.tiltHeld[id]
             -- really changed by the game (Quick Drop, the park editor, replaced): hold it again from its new place
             if h and S.clock - h.checkAt > 500 then
                 h.checkAt = S.clock
@@ -1355,7 +1356,7 @@ local function tiltTick()
                         h.gone = (h.gone or 0) + 1
                         if h.gone >= 3 then
                             reskate.log("Quick Drop helper: tilt: the game let go of " .. titleOf(o.item) .. ": holding it again")
-                            S.held[id] = nil; h = nil
+                            S.tiltHeld[id] = nil; h = nil
                         end
                     else
                         h.gone = 0
@@ -1657,6 +1658,7 @@ local function openEditor()
 end
 
 local function closeEditor()
+    S.picker = nil
     if not S.open then return end
     if S.typing then S.typing = false; pcall(reskate.ui.close_dialog, "ddh_type") end
     S.drag = nil
@@ -1683,7 +1685,7 @@ reskate.on("level_loaded", function()
     S.boxTries, S.boxNext = {}, {}
     S.measure = nil
     S.bpNames = nil
-    S.held, S.tilt, S.tiltAt, S.tiltSrc, S.level = {}, {}, {}, {}, nil
+    S.tiltHeld, S.tilt, S.tiltAt, S.tiltSrc, S.level = {}, {}, {}, {}, nil
 end)
 
 -- typing exact numbers: a text box with "X Y Z turn size"; change any of them
@@ -1775,7 +1777,7 @@ local function oldPanel(ui)
             S.tilt[S.sel.id] = { x = tx and math.rad(tx) or tl.x, z = tz and math.rad(tz) or tl.z }
             S.tiltSaveDue = true
         end
-        if tilted(S.sel.id) and S.tiltWhy and not S.held[S.sel.id] then ui:note("Tilt waits: " .. S.tiltWhy) end
+        if tilted(S.sel.id) and S.tiltWhy and not S.tiltHeld[S.sel.id] then ui:note("Tilt waits: " .. S.tiltWhy) end
         if ui:button("parkmod", "Save as park mod (for online)") then saveParkModSay() end
         local sz = num("sz", "Size", t.scale, 0.1, 10, "%.2f×")
         if sz then
@@ -1963,9 +1965,10 @@ local function newPanel(ui)
         ui:card("Nothing picked", "Click an object or pick one in the list")
     end
     if S.msg ~= "" and S.clock < S.msgUntil then ui:note(S.msg) end
-    local b = ui:buttons("top", { "Undo", "Look at it" }, 0)
+    local b = ui:buttons("top", { "Undo", "Look at it", "Add object" }, 0)
     if b == 1 then undo() end
     if b == 2 and t then S.cam.goal = t.pos end
+    if b == 3 and S.openPicker then S.openPicker() end
     if ui:button("close", "Done (Esc)", true) then closeEditor() end
 
     -- exact numbers: click a box and type; nudge buttons below
@@ -2012,7 +2015,7 @@ local function newPanel(ui)
             S.tilt[S.sel.id] = tl2
             S.tiltSaveDue = true
         end
-        if tilted(S.sel.id) and S.tiltWhy and not S.held[S.sel.id] then ui:note("Tilt waits: " .. S.tiltWhy) end
+        if tilted(S.sel.id) and S.tiltWhy and not S.tiltHeld[S.sel.id] then ui:note("Tilt waits: " .. S.tiltWhy) end
         if ui:button("parkmod", "Save as park mod (for online)") then saveParkModSay() end
     end
 
@@ -2457,6 +2460,170 @@ local function deletePress(o)
     end
 end
 
+
+-- ---------------------------------------------------------------- the add window (A with nothing under the cross)
+-- A grid of every Quick Drop object, with pictures of the Object Maker's ones (thumbs.lua: sheets of 4 x 4 in
+-- plugin/thumbs), by category. A places the chosen one where the cross is and hands it over to be moved.
+local THUMBS = {}
+do
+    local ok, t = pcall(function() return require("thumbs") end)
+    if ok and type(t) == "table" then THUMBS = t end
+end
+local PICK_COLS, PICK_ROWS = 6, 3
+local function pickerTabs()
+    local ok, cat = pcall(reskate.objects.catalog)
+    if not ok or type(cat) ~= "table" then cat = {} end
+    local tabs, byName = {}, {}
+    local mine = { name = "DDH", items = {} }
+    for _, it in ipairs(cat) do
+        if string.find(string.lower(it.key), "bkddh", 1, true) then table.insert(mine.items, it) end
+    end
+    if #mine.items > 0 then tabs[1] = mine end
+    for _, it in ipairs(cat) do
+        local c = tostring(it.category or "Other")
+        if not byName[c] then byName[c] = { name = c, items = {} }; tabs[#tabs + 1] = byName[c] end
+        table.insert(byName[c].items, it)
+    end
+    for _, t in ipairs(tabs) do
+        table.sort(t.items, function(a, b) return tostring(a.title or a.key) < tostring(b.title or b.key) end)
+    end
+    return tabs
+end
+local function openPicker()
+    local tabs = pickerTabs()
+    if #tabs == 0 then say("The game lists no objects to add.", true) return end
+    S.picker = { tabs = tabs, tab = 1, sel = 1, top = 0 }
+    S.padWait = true
+end
+local function closePicker() S.picker = nil; S.padWait = true end
+S.openPicker = openPicker
+-- where the cross is: the ground (or anything) it points at, else in front of the view
+local function crossPoint()
+    local cpos, f = camBasis()
+    local ok, hit = pcall(reskate.world.pick, cpos, cpos + f * 200)
+    if ok and type(hit) == "table" and hit.position and len(hit.position - (cpos + f * 200)) > 0.5 then return hit.position end
+    return S.cam.target
+end
+local function pickerPlace()
+    local pk = S.picker
+    local tab = pk and pk.tabs[pk.tab]
+    local it = tab and tab.items[pk.sel]
+    if not it then return end
+    local at = crossPoint()
+    -- facing the view, as Quick Drop does
+    S.copyQ = { item = it.key, pos = at, heading = wrap(S.cam.yaw + math.pi), scale = 1, until_ = S.clock + 3000, grab = true }
+    closePicker()
+    say("Adding " .. tostring(it.title or it.key) .. "...")
+end
+local function pickerMove(dc, dr)
+    local pk = S.picker
+    local n = #pk.tabs[pk.tab].items
+    if n == 0 then return end
+    local i = pk.sel - 1 + dc + dr * PICK_COLS
+    i = clamp(i, 0, n - 1)
+    pk.sel = i + 1
+    local row = math.floor(i / PICK_COLS)
+    if row < pk.top then pk.top = row end
+    if row >= pk.top + PICK_ROWS then pk.top = row - PICK_ROWS + 1 end
+end
+local function pickerTab(d)
+    local pk = S.picker
+    pk.tab = (pk.tab - 1 + d) % #pk.tabs + 1
+    pk.sel, pk.top = 1, 0
+end
+-- the controller in the window
+local function pickerPad(p)
+    if padPress("b", p.b) then closePicker() return end
+    if padPress("a", p.a) then pickerPlace() return end
+    if padPress("lb", p.lb) then pickerTab(-1) end
+    if padPress("rb", p.rb) then pickerTab(1) end
+    local lx, ly = stick(p.lx, p.ly)
+    if padStep("pl", p.left or lx < -0.5) then pickerMove(-1, 0) end
+    if padStep("pr", p.right or lx > 0.5) then pickerMove(1, 0) end
+    if padStep("pu", p.up or ly > 0.5) then pickerMove(0, -1) end
+    if padStep("pd", p.down or ly < -0.5) then pickerMove(0, 1) end
+end
+-- the mouse in the window: click a picture to add it, scroll the wheel, click outside to close
+local function pickerMouse(c)
+    local pk = S.picker
+    local px = c.position
+    if c.wheel and c.wheel ~= 0 then
+        local n = #pk.tabs[pk.tab].items
+        local rows = math.ceil(n / PICK_COLS)
+        pk.top = clamp(pk.top - c.wheel, 0, math.max(0, rows - PICK_ROWS))
+    end
+    local hov = nil
+    for _, t in ipairs((S.screen and S.screen.pickTiles) or {}) do
+        if px.x >= t.a.x and px.x <= t.b.x and px.y >= t.a.y and px.y <= t.b.y then hov = t end
+    end
+    pk.hover = hov and hov.i or nil
+    if c.left and not S.mouse.left then
+        if hov then
+            if hov.tab then pickerTab(hov.tab - pk.tab) else pk.sel = hov.i; pickerPlace() end
+        else
+            local box = S.screen and S.screen.pickBox
+            if box and not (px.x >= box.a.x and px.x <= box.b.x and px.y >= box.a.y and px.y <= box.b.y) then closePicker() end
+        end
+    end
+end
+local function shortTitle(t, n) t = tostring(t); if #t > n then return string.sub(t, 1, n - 1) .. "…" end return t end
+-- drawing it
+local function drawPicker(d)
+    local pk = S.picker
+    if not pk then return end
+    local W, H = S.size.x, S.size.y
+    local tile, gap = 150, 14
+    local pw = PICK_COLS * tile + (PICK_COLS + 1) * gap
+    local ph = 120 + PICK_ROWS * (tile + 30) + 70
+    local a = V((W - pw) / 2, (H - ph) / 2, 0)
+    local b = a + V(pw, ph, 0)
+    S.screen.pickBox = { a = a, b = b }
+    S.screen.pickTiles = {}
+    d:rect(a, b, { colour = "#101418ee", fill = true, rounding = 10 })
+    d:text(a + V(gap, 12, 0), "ADD OBJECT", { size = 28, colour = "#ffffff", shadow = true })
+    -- the categories
+    local x = a.x + gap
+    for i, t in ipairs(pk.tabs) do
+        local label = string.format("%s (%d)", shortTitle(t.name, 18), #t.items)
+        local w = (d.measure and d:measure(label, { size = 16 }) or V(#label * 9, 16, 0)).x + 20
+        if x + w > b.x - gap then break end
+        local ta, tb = V(x, a.y + 54, 0), V(x + w, a.y + 84, 0)
+        d:rect(ta, tb, { colour = i == pk.tab and "#ffe066" or "#ffffff22", fill = true, rounding = 6 })
+        d:text(ta + V(10, 6, 0), label, { size = 16, colour = i == pk.tab and "#101418" or "#ffffff" })
+        table.insert(S.screen.pickTiles, { a = ta, b = tb, tab = i })
+        x = x + w + 8
+    end
+    -- the pictures
+    local items = pk.tabs[pk.tab].items
+    for r = 0, PICK_ROWS - 1 do
+        for cI = 0, PICK_COLS - 1 do
+            local i = (pk.top + r) * PICK_COLS + cI + 1
+            local it = items[i]
+            if it then
+                local ta = V(a.x + gap + cI * (tile + gap), a.y + 100 + r * (tile + 30), 0)
+                local tb = ta + V(tile, tile, 0)
+                local selected, hovered = i == pk.sel, i == pk.hover
+                d:rect(ta, tb, { colour = selected and "#ffe06655" or (hovered and "#ffffff33" or "#ffffff14"), fill = true, rounding = 8 })
+                local th = THUMBS[it.key]
+                if th then
+                    local u0, v0 = th[2] / 4, th[3] / 4
+                    d:image(string.format("plugin/thumbs/sheet%02d.png", th[1]), ta + V(6, 6, 0), tb - V(6, 6, 0), { uv = { u0, v0, u0 + 0.25, v0 + 0.25 } })
+                else
+                    d:text(ta + V(10, tile / 2 - 10, 0), shortTitle(it.title or it.key, 16), { size = 15, colour = "#ffffffcc" })
+                end
+                if selected then d:rect(ta, tb, { colour = "#ffe066", rounding = 8, thickness = 3 }) end
+                d:text(V(ta.x, tb.y + 4, 0), shortTitle(it.title or it.key, 20), { size = 14, colour = selected and "#ffe066" or "#ffffffcc" })
+                table.insert(S.screen.pickTiles, { a = ta, b = tb, i = i })
+            end
+        end
+    end
+    local rows = math.ceil(#items / PICK_COLS)
+    if rows > PICK_ROWS then
+        d:text(V(b.x - 120, a.y + 18, 0), string.format("%d / %d", pk.top + 1, rows - PICK_ROWS + 1), { size = 16, colour = "#ffffff99" })
+    end
+    d:text(V(a.x + gap, b.y - 40, 0), "A add    B close    LB / RB category    stick / D-pad choose    (mouse: click, wheel)", { size = 16, colour = "#ffffffcc" })
+end
+
 local function padEditor(sec)
     local p = readPad()
     if not p then return end
@@ -2470,6 +2637,7 @@ local function padEditor(sec)
     for k in pairs(PADNAMES) do if p[k] then anyIn = true end end
     if anyIn then S.padUsedAt = S.clock end
 
+    if S.picker then pickerPad(p) return end
     local fine = p.ls
     local t = S.target
     if S.grab and not (S.sel and S.sel.id == S.grab.id) then S.grab = nil end
@@ -2495,8 +2663,15 @@ local function padEditor(sec)
             placeGrab(); holding = false
         else
             local o = S.aim
-            if o and not (S.sel and S.sel.id == o.id) then send(); select(o); t = S.target end
-            if S.sel then startGrab(); holding = true else say("Aim the cross at an object, then A.") end
+            if o then
+                -- the object under the cross: pick it up
+                if not (S.sel and S.sel.id == o.id) then send(); select(o); t = S.target end
+                startGrab(); holding = true
+            else
+                -- nothing under the cross: the add window, like Quick Drop's Add Object
+                openPicker()
+                return
+            end
         end
     end
     if padPress("x", p.x) then
@@ -2676,7 +2851,7 @@ reskate.on("tick", function(dt)
             if press("Left") then ch(function() t.pos -= r * st end) end
             if press("U") then undo() end
         else
-            for _, k in ipairs({ "[", "]", "PageUp", "PageDown", "X", "Z", "Up", "Down", "Right", "Left", "U" }) do S.held[k] = false end
+            for _, k in ipairs({ "[", "]", "PageUp", "PageDown", "X", "Z", "Up", "Down", "Right", "Left", "U" }) do S.tiltHeld[k] = false end
         end
         send()
         return
@@ -2718,6 +2893,11 @@ reskate.on("tick", function(dt)
 
     -- the mouse
     local c = reskate.input.cursor()
+    if c and S.picker then
+        pcall(pickerMouse, c)
+        S.mouse = { pos = c.position, left = c.left }
+        c = nil
+    end
     if c then
         local px = c.position
         local last = S.mouse.pos or px
@@ -2913,6 +3093,11 @@ reskate.on("draw", function(d)
         if math.abs(mx) > 1 and math.abs(my) > 1 then S.proj = V(mx, my, 0) end
     end
     S.screen = {}
+    if S.picker then
+        local ok, err = pcall(drawPicker, d)
+        if not ok then reskate.log("Quick Drop helper: add window: " .. tostring(err), "warn"); S.picker = nil end
+        return
+    end
     -- the controller's aiming cross, and the object it is on (what A picks up)
     if S.padUsedAt and S.clock - S.padUsedAt < 15000 then
         local c = V(S.size.x / 2, S.size.y / 2, 0)
@@ -2924,6 +3109,9 @@ reskate.on("draw", function(d)
             d:line(c + V(10, 0, 0), c + V(16, 0, 0), { colour = "#ffffffcc", thickness = 2 })
             d:line(c - V(0, 16, 0), c - V(0, 10, 0), { colour = "#ffffffcc", thickness = 2 })
             d:line(c + V(0, 10, 0), c + V(0, 16, 0), { colour = "#ffffffcc", thickness = 2 })
+            if not S.aim then
+                d:text(c + V(14, 14, 0), "A add object", { size = 16, colour = "#ffffffaa", shadow = true })
+            end
             if S.aim then
                 local so = placedSolid(S.aim)
                 drawShape(d, so.shape or so, "#ffffff", 3, so.xf)
