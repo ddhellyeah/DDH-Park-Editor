@@ -1778,7 +1778,7 @@ local function openEditor()
 end
 
 local function closeEditor()
-    S.aHold = nil
+    S.aHold, S.yHold = nil, nil
     S.picker = nil
     S.toolsWin = nil
     if not S.open then return end
@@ -1979,6 +1979,7 @@ local function oldPanel(ui)
         ui:info("D-pad up / down", "size (holding) / zoom")
         ui:info("D-pad left / right", "next object (holding: copy in a row)")
         ui:info("Hold A", "select: sweep the cross over objects")
+        ui:info("Y on a selected one", "out of the group (hold Y and sweep for more)")
         ui:info("RB / LB", "group: add or take out / clear")
         ui:info("Right stick / R3", "turn the view / look at it (holding: copy tools)")
         ui:info("Ctrl+click", "group: add or take out")
@@ -2261,6 +2262,7 @@ local function newPanel(ui)
         ui:info("D-pad up / down", "size (holding) / zoom")
         ui:info("D-pad left / right", "next object (holding: copy in a row)")
         ui:info("Hold A", "select: sweep the cross over objects")
+        ui:info("Y on a selected one", "out of the group (hold Y and sweep for more)")
         ui:info("RB / LB", "group: add or take out / clear")
         ui:info("Right stick / R3", "turn the view / look at it (holding: copy tools)")
         ui:info("Ctrl+click", "group: add or take out")
@@ -3344,9 +3346,23 @@ local function padEditor(sec)
         end
     end
     if padPress("y", p.y) then
-        -- holding: the held one; free: the one under the cross (or the picked one)
-        if holding then deletePress() else deletePress(S.aim) end
+        -- holding: the held one (a group: all of it); free, on a group member: out of the group (keep Y down and
+        -- sweep to take more out); free otherwise: the one under the cross
+        if holding then
+            deletePress()
+        elseif S.aim and S.group[S.aim.id] then
+            S.group[S.aim.id] = nil
+            S.gbase = nil
+            S.yHold = { n = 1 }
+        else
+            deletePress(S.aim)
+        end
         t = S.target; holding = S.grab ~= nil
+    end
+    if S.yHold and not p.y then
+        local n = groupCount()
+        say(string.format("Taken out of the group: %d.  Group: %d left.", S.yHold.n, n))
+        S.yHold = nil
     end
     if padPress("a", p.a) then
         if holding then
@@ -3434,6 +3450,12 @@ local function padEditor(sec)
             ah.sweep = true
             if ah.first and S.known and S.known[ah.first] and not S.group[ah.first] then S.group[ah.first] = true; ah.added += 1; S.gbase = nil end
             say("Selecting: move the cross over objects, let go of A when done.")
+        end
+        -- Y held (started on a group member): every member the cross passes over leaves the group
+        if S.yHold and p.y and S.aim and S.group[S.aim.id] then
+            S.group[S.aim.id] = nil
+            S.gbase = nil
+            S.yHold.n += 1
         end
         if ah and ah.sweep and S.aim and not S.group[S.aim.id] then
             S.group[S.aim.id] = true
@@ -3866,7 +3888,7 @@ reskate.on("draw", function(d)
             if S.aim then
                 local so = placedSolid(S.aim)
                 drawShape(d, so.shape or so, "#ffffff", 3, so.xf)
-                d:text(c + V(14, 14, 0), titleOf(S.aim.item) .. "   A pick up   X copy   Y remove   RB " .. (S.group[S.aim.id] and "out of group" or "group"), { size = 16, colour = "#ffffff", shadow = true })
+                d:text(c + V(14, 14, 0), titleOf(S.aim.item) .. (S.group[S.aim.id] and "   A pick up all   X copy all   Y out of group" or "   A pick up   X copy   Y remove   RB group"), { size = 16, colour = "#ffffff", shadow = true })
             end
         end
     end
