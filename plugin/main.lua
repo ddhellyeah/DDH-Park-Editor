@@ -2167,103 +2167,90 @@ local function rebuildList()
     end
 end
 
+local PANEL_TABS = { "Object", "Snapping", "Park", "Help" }
 local function newPanel(ui)
     local t = S.sel and S.target
-    -- what is picked, and the everyday buttons
+    local ng = groupCount()
+    -- what is picked
     if t then
-        ui:card(titleOf(S.sel.item), string.format("%.2f, %.2f, %.2f   |   %.0f°   |   %.2fx", t.pos.x, t.pos.y, t.pos.z, math.deg(t.heading), t.scale))
+        local sub = string.format("%.0f°   ·   size %.2f", math.deg(t.heading), t.scale)
+        if S.group[S.sel.id] and ng > 1 then sub = sub .. string.format("   ·   group of %d", ng) end
+        ui:card(titleOf(S.sel.item), sub)
+    elseif ng > 0 then
+        ui:card(string.format("Group of %d", ng), "Pick one of them up to move them all")
     else
-        ui:card("Nothing picked", "Click an object or pick one in the list")
+        ui:card("Nothing picked", "Click an object (or aim the cross and press A)")
     end
+    -- the park is locked: say so first
+    local miss = S.missing or {}
+    if S.blocked or #miss > 0 then ui:warn(string.format("Park locked: %d object(s) from a missing mod. See Park.", #miss)) end
     if S.msg ~= "" and S.clock < S.msgUntil then ui:note(S.msg) end
-    local b = ui:buttons("top", { "Undo", "Look at it", "Add object" }, 0)
-    if b == 1 then undo() end
-    if b == 2 and t then S.cam.goal = t.pos end
-    if b == 3 and S.openPicker then S.openPicker() end
-    if ui:button("close", "Done (Esc)", true) then closeEditor() end
+    local b = ui:buttons("top", { "Add object", "Undo", "Done" }, 0)
+    if b == 1 and S.openPicker then S.openPicker() end
+    if b == 2 then undo() end
+    if b == 3 then closeEditor() return end
 
-    -- exact numbers: click a box and type; nudge buttons below
+    S.ptab = S.ptab or 1
+    local tb = ui:buttons("ptabs", PANEL_TABS, S.ptab)
+    if tb and PANEL_TABS[tb] then S.ptab = tb end
     local st = STEPS[S.stepSize]
-    if t and section(ui, "move", "Move and turn", "") then
-        numBox(ui, "px", "X", t.pos.x, "%.3f", function(v) markUndo(); t.pos = V(v, t.pos.y, t.pos.z); S.dirty = true end)
-        numBox(ui, "py", "Y", t.pos.y, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, v, t.pos.z); S.dirty = true end)
-        numBox(ui, "pz", "Z", t.pos.z, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, t.pos.y, v); S.dirty = true end)
-        numBox(ui, "ry", "Turn", math.deg(t.heading), "%.1f", function(v) markUndo(); t.heading = wrap(math.rad(v)); S.dirty = true end)
-        local tl = S.tilt[S.sel.id] or { x = 0, z = 0 }
-        numBox(ui, "tx", "Tilt X", math.deg(tl.x), "%.1f", function(v) markUndo(); S.tilt[S.sel.id] = { x = wrap(math.rad(v)), z = tl.z }; S.tiltSaveDue = true end)
-        numBox(ui, "tz", "Tilt Z", math.deg(tl.z), "%.1f", function(v) markUndo(); S.tilt[S.sel.id] = { x = tl.x, z = wrap(math.rad(v)) }; S.tiltSaveDue = true end)
-        numBox(ui, "sz", "Size", t.scale, "%.2f", function(v) markUndo(); t.scale = clamp(v, 0.1, 10); S.dirty = true end)
-        ui:heading("Nudge")
+
+    if S.ptab == 1 then
+        -- ---------------------------------------------------------------- the picked object
+        if not t then
+            ui:note("Nothing picked yet.")
+        else
+            local modes = { "Move", "Turn", "Size" }
+            local m = ui:buttons("mode", modes, S.mode)
+            if m and m ~= S.mode then S.mode = m end
+            ui:heading("Position")
+            numBox(ui, "px", "X", t.pos.x, "%.3f", function(v) markUndo(); t.pos = V(v, t.pos.y, t.pos.z); S.dirty = true end)
+            numBox(ui, "py", "Y (height)", t.pos.y, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, v, t.pos.z); S.dirty = true end)
+            numBox(ui, "pz", "Z", t.pos.z, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, t.pos.y, v); S.dirty = true end)
+            ui:heading("Turn and size")
+            numBox(ui, "ry", "Turn °", math.deg(t.heading), "%.1f", function(v) markUndo(); t.heading = wrap(math.rad(v)); S.dirty = true end)
+            numBox(ui, "sz", "Size", t.scale, "%.2f", function(v) markUndo(); t.scale = clamp(v, 0.1, 10); S.dirty = true end)
+            local tl = S.tilt[S.sel.id] or { x = 0, z = 0 }
+            numBox(ui, "tx", "Tilt forward °", math.deg(tl.x), "%.1f", function(v) markUndo(); S.tilt[S.sel.id] = { x = wrap(math.rad(v)), z = tl.z }; S.tiltSaveDue = true end)
+            numBox(ui, "tz", "Tilt sideways °", math.deg(tl.z), "%.1f", function(v) markUndo(); S.tilt[S.sel.id] = { x = tl.x, z = wrap(math.rad(v)) }; S.tiltSaveDue = true end)
+            if tilted(S.sel.id) and S.tiltWhy and not S.tiltHeld[S.sel.id] then ui:note("Tilt waits: " .. S.tiltWhy) end
+            local q = ui:buttons("quick", { "Straighten", "Size 1", "Look at it" }, 0)
+            if q == 1 then markUndo(); t.heading = round(t.heading, math.pi / 2); if S.tilt[S.sel.id] then S.tilt[S.sel.id] = nil; S.tiltSaveDue = true end; S.dirty = true; S.edit = {} end
+            if q == 2 then markUndo(); t.scale = 1; S.dirty = true; S.edit = {} end
+            if q == 3 then S.cam.goal = t.pos end
+        end
+        ui:heading("Step size")
         local ss = ui:buttons("stepsize", { "Fine", "Normal", "Big" }, S.stepSize)
         if ss and STEPS[ss] then S.stepSize = ss; st = STEPS[ss] end
-        local n = ui:buttons("nudge", { "X -", "X +", "Y -", "Y +", "Z -", "Z +" }, 0)
-        if n then
-            markUndo()
-            local d = ({ V(-1, 0, 0), V(1, 0, 0), V(0, -1, 0), V(0, 1, 0), V(0, 0, -1), V(0, 0, 1) })[n]
-            if d then t.pos = t.pos + d * st.m; S.dirty = true; S.edit = {} end
-        end
-        local n2 = ui:buttons("nudge2", { "Turn -", "Turn +", "Size -", "Size +", "Straighten", "Size 1" }, 0)
-        if n2 then
-            markUndo()
-            if n2 == 1 then t.heading = wrap(t.heading - math.rad(st.deg)) end
-            if n2 == 2 then t.heading = wrap(t.heading + math.rad(st.deg)) end
-            if n2 == 3 then t.scale = clamp(t.scale - st.size, 0.1, 10) end
-            if n2 == 4 then t.scale = clamp(t.scale + st.size, 0.1, 10) end
-            if n2 == 5 then t.heading = round(t.heading, math.pi / 2); if S.tilt[S.sel.id] then S.tilt[S.sel.id] = nil; S.tiltSaveDue = true end end
-            if n2 == 6 then t.scale = 1 end
-            S.dirty = true; S.edit = {}
-        end
-        local n3 = ui:buttons("nudge3", { "Tilt X -", "Tilt X +", "Tilt Z -", "Tilt Z +", "Level" }, 0)
-        if n3 then
-            markUndo()
-            local tl2 = S.tilt[S.sel.id] or { x = 0, z = 0 }
-            local dd = math.rad(st.deg)
-            if n3 == 1 then tl2 = { x = wrap(tl2.x - dd), z = tl2.z } end
-            if n3 == 2 then tl2 = { x = wrap(tl2.x + dd), z = tl2.z } end
-            if n3 == 3 then tl2 = { x = tl2.x, z = wrap(tl2.z - dd) } end
-            if n3 == 4 then tl2 = { x = tl2.x, z = wrap(tl2.z + dd) } end
-            if n3 == 5 then tl2 = nil end
-            S.tilt[S.sel.id] = tl2
-            S.tiltSaveDue = true
-        end
-        if tilted(S.sel.id) and S.tiltWhy and not S.tiltHeld[S.sel.id] then ui:note("Tilt waits: " .. S.tiltWhy) end
-        if ui:button("parkmod", "Save as park mod (for online)") then saveParkModSay() end
-    end
-
-    -- the handles in the view
-    local modes = { "Move (W)", "Turn (E)", "Size (R)" }
-    if section(ui, "handles", "Handles", modes[S.mode] .. (S.snap and "  |  steps" or "") .. (S.osnap and "  |  objects" or "")) then
-        local m = ui:buttons("mode", modes, S.mode)
-        if m and m ~= S.mode then S.mode = m end
-        local sn = ui:toggle("snap", "Steps (G)", S.snap)
-        if sn ~= nil then S.snap = sn end
-        local ob = ui:toggle("osnap", "Snap to objects (T)", S.osnap)
+        ui:note(string.format("%s: %s, %s, size %s", st.name, string.format(st.mf, st.m), string.format(st.df, st.deg), string.format(st.sf, st.size)))
+    elseif S.ptab == 2 then
+        -- ---------------------------------------------------------------- snapping
+        local ob = ui:toggle("osnap", "Snap to objects  (T)", S.osnap)
         if ob ~= nil then S.osnap = ob end
-        ui:info("Snaps to (Tab / L3)", snapLabelP())
-        local sb = ui:buttons("snappick", { "Auto", "Next object", "Off" }, 0)
-        if sb == 1 then S.snapPick = nil; S.snapLock = nil end
-        if sb == 2 and S.cycleSnap then if S.snapPick == "off" then S.snapPick = nil end; S.cycleSnap(); if S.snapPick == nil then S.cycleSnap() end end
-        if sb == 3 then S.snapPick = "off"; S.guides = nil end
-    end
-
-    -- several at once, and copies in rows / circles / grids
-    local ng = groupCount()
-    if section(ui, "many", "Several at once", ng > 0 and string.format("group of %d", ng) or "") then
-        ui:note(ng > 0 and string.format("%d in the group. Moving one moves them all.", ng) or "Ctrl+click (or RB on the controller) to put objects in a group.")
-        local gb = ui:buttons("grp", { "Add / take out picked", "Clear group" }, 0)
-        if gb == 1 and S.sel and S.known and S.known[S.sel.id] and S.toggleGroup then S.toggleGroup(S.known[S.sel.id]) end
-        if gb == 2 and S.clearGroup then S.clearGroup() end
-        if ui:button("tools", "Copy tools (row, circle, grid)") and S.openTools then S.openTools() end
-        ui:heading("Grid snap")
+        if S.osnap then
+            ui:info("Snapping to", snapLabelP())
+            local sb = ui:buttons("snappick", { "Auto", "Next object", "Off" }, S.snapPick == nil and 1 or (S.snapPick == "off" and 3 or 2))
+            if sb == 1 then S.snapPick = nil; S.snapLock = nil end
+            if sb == 2 and S.cycleSnap then if S.snapPick == "off" then S.snapPick = nil end; S.cycleSnap(); if S.snapPick == nil then S.cycleSnap() end end
+            if sb == 3 then S.snapPick = "off"; S.guides = nil end
+            ui:note("Tab or tap L3 to switch while moving.")
+        end
+        ui:heading("Grid")
         local gi = ui:buttons("gridsz", GRID_NAMES_P, S.gridI or 1)
         if gi and gi ~= S.gridI then S.gridI = gi end
-    end
-
-    -- every object in the park
-    rebuildList()
-    local sub = tostring(S.listTotal)
-    if S.search ~= "" or S.listFilter ~= 1 then sub = string.format("%d / %d", S.listMatched or 0, S.listTotal) end
-    if section(ui, "objects", "Objects in this park", sub) then
+        local sn = ui:toggle("snap", "Drag in steps  (G)", S.snap)
+        if sn ~= nil then S.snap = sn end
+    elseif S.ptab == 3 then
+        -- ---------------------------------------------------------------- the park: group, copies, every object
+        ui:heading(ng > 0 and string.format("Group  (%d)", ng) or "Group")
+        local gb = ui:buttons("grp", { "Add / remove picked", "Clear" }, 0)
+        if gb == 1 and S.sel and S.known and S.known[S.sel.id] and S.toggleGroup then S.toggleGroup(S.known[S.sel.id]) end
+        if gb == 2 and S.clearGroup then S.clearGroup() end
+        if ui:button("tools", "Copy tools  (row, circle, grid)") and S.openTools then S.openTools() end
+        rebuildList()
+        local sub = tostring(S.listTotal)
+        if S.search ~= "" or S.listFilter ~= 1 then sub = string.format("%d of %d", S.listMatched or 0, S.listTotal) end
+        ui:heading("Objects  (" .. sub .. ")")
         local q = ui:text("search", "Search", S.search, "")
         if type(q) == "string" and q ~= S.search then S.search = q; S.listKey = nil end
         local f = ui:buttons("filter", { "All", "Near", "DDH" }, S.listFilter)
@@ -2287,62 +2274,48 @@ local function newPanel(ui)
             end
             if (S.listMatched or 0) > 200 then ui:note("First 200 shown.") end
         end
-    end
-
-    -- objects from missing mods
-    local miss = S.missing or {}
-    if (S.blocked or #miss > 0) and section(ui, "locked", "Park locked", string.format("%d missing", #miss)) then
-        ui:warn("The game won't change this park.")
-        if S.blocked and S.blocked ~= "?" then ui:info("Game says", S.blocked) end
-        for i, o in ipairs(miss) do
-            if i > 8 then ui:note(string.format("+%d more", #miss - 8)) break end
-            ui:info(titleOf(o.item), string.format("%.0f, %.0f, %.0f", o.position.x, o.position.y, o.position.z))
-            if ui:button("go" .. i, "Look at it") then S.cam.goal = o.position end
+        if ui:button("parkmod", "Save as park mod (for online)") then saveParkModSay() end
+        if S.blocked or #miss > 0 then
+            ui:heading("Park locked")
+            ui:warn("The game won't change this park.")
+            if S.blocked and S.blocked ~= "?" then ui:info("Game says", S.blocked) end
+            for i, o in ipairs(miss) do
+                if i > 8 then ui:note(string.format("+%d more", #miss - 8)) break end
+                ui:info(titleOf(o.item), string.format("%.0f, %.0f, %.0f", o.position.x, o.position.y, o.position.z))
+                if ui:button("go" .. i, "Look at it") then S.cam.goal = o.position end
+            end
+            ui:note("Fix: Clean out park.exe (game closed)")
+            if ui:button("recheck", "Check again") then
+                S.blocked = nil
+                pcall(findMissing)
+                if #(S.missing or {}) == 0 then say("No missing objects found. Try moving something again.") end
+            end
         end
-        ui:note("Fix: Clean out park.exe (game closed)")
-        if ui:button("recheck", "Check again") then
-            S.blocked = nil
-            pcall(findMissing)
-            if #(S.missing or {}) == 0 then say("No missing objects found. Try moving something again.") end
-        end
-    end
-
-    if section(ui, "help", "Controls", "") then
-        local iy = ui:toggle("invy2", "Invert look up/down (controller)", S.lookInvY or false)
+    else
+        -- ---------------------------------------------------------------- help
+        ui:heading("Controller")
+        local iy = ui:toggle("invy2", "Invert look up / down", S.lookInvY or false)
         if iy ~= nil and iy ~= (S.lookInvY or false) then S.lookInvY = iy; saveLook() end
-        local ix = ui:toggle("invx2", "Invert look left/right (controller)", S.lookInvX or false)
+        local ix = ui:toggle("invx2", "Invert look left / right", S.lookInvX or false)
         if ix ~= nil and ix ~= (S.lookInvX or false) then S.lookInvX = ix; saveLook() end
-        ui:info("Click", "pick an object")
-        ui:info("Drag a handle", "move / turn / size")
-        ui:info("Drag empty space", "turn the view")
-        ui:info("Right-drag", "slide the view")
-        ui:info("Scroll", "zoom")
-        ui:info("Arrows, PgUp, PgDn", "fly the view")
-        ui:info("W / E / R", "move / turn / size handles")
-        ui:info("G", "steps")
-        ui:info("T", "snap to objects")
-        ui:info("Hold Ctrl", "no snapping while dragging")
-        ui:info("F", "look at it")
-        ui:info("Ctrl+Z", "undo")
-        ui:info("Shift", "bigger steps")
-        ui:info("Controller", "LB+RB opens")
-        ui:info("Left stick", "fly (holding: move it)")
-        ui:info("A", "pick up what the cross is on / put down")
-        ui:info("B", "cancel (back where it was) / close")
-        ui:info("X", "copy (holding: drop a copy)")
-        ui:info("Y twice", "remove (what the cross is on)")
-        ui:info("RT / LT", "raise / lower")
-        ui:info("LB / RB", "turn (holding)")
-        ui:info("D-pad up / down", "size (holding) / zoom")
-        ui:info("D-pad left / right", "next object (holding: copy in a row)")
-        ui:info("Hold A", "select: sweep the cross over objects")
-        ui:info("Y on a selected one", "out of the group (hold Y and sweep for more)")
-        ui:info("RB / LB", "group: add or take out / clear")
-        ui:info("Right stick / R3", "turn the view / look at it (holding: copy tools)")
-        ui:info("Ctrl+click", "group: add or take out")
-        ui:info("Tab / tap L3", "snap: auto / one object / off")
-        ui:info("View / Menu", "undo / Fine-Normal-Big")
-        ui:info("Hold L3", "Fine while held")
+        ui:info("LB + RB", "open / close")
+        ui:info("A  /  hold A", "pick up, put down  /  select")
+        ui:info("B", "cancel  /  close")
+        ui:info("X  /  Y twice", "copy  /  remove")
+        ui:info("RB  /  LB", "group add  /  clear")
+        ui:info("Sticks, RT / LT", "move, look, up / down")
+        ui:info("LB / RB (holding)", "turn")
+        ui:info("D-pad (holding)", "size, copy in a row")
+        ui:info("R3 / L3 (holding)", "copy tools / snap target")
+        ui:info("Menu  /  View", "step size  /  undo")
+        ui:heading("Mouse and keys")
+        ui:info("Click  /  Ctrl+click", "pick  /  group")
+        ui:info("Drag a handle", "move, turn, size")
+        ui:info("Drag  /  right-drag", "turn  /  slide the view")
+        ui:info("W  E  R", "move / turn / size handles")
+        ui:info("T  /  Tab  /  G", "snapping / snap target / steps")
+        ui:info("Hold Ctrl", "drag without snapping")
+        ui:info("F  /  Ctrl+Z  /  Esc", "look at it / undo / done")
     end
 end
 
