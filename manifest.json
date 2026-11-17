@@ -1,7 +1,7 @@
 {
     "name": "DDH Park Editor",
     "author": "DDH",
-    "version_number": "2.42.0",
+    "version_number": "2.43.0",
     "website_url": "",
     "description": "Works with Skate's Quick Drop: after you drop an object, press F6 (or LB+RB on a controller) to move, turn and size it with handles like the Object Maker's 3D maker.",
     "dependencies": []

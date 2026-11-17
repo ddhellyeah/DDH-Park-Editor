@@ -194,6 +194,7 @@ local function scan()
             local o = fresh[1]
             reskate.log("Quick Drop helper: new object " .. fmt(o))
             select(o)
+            S.droppedAt = S.clock
             if not S.open then reskate.ui.toast("Dropped " .. titleOf(o.item) .. ". F6: move, turn and size it") end
         elseif #fresh > 1 then
             reskate.log(string.format("Quick Drop helper: %d objects loaded with the park.", #fresh))
@@ -279,6 +280,75 @@ local function send()
 end
 
 local drawShape -- (further on, with the drawing)
+-- the look of what is drawn over the view
+local UI = { bg = "#0d1117e0", bg2 = "#161b22f2", tile = "#ffffff12", tileHot = "#ffffff26", line = "#ffffff22",
+    text = "#f0f3f6", dim = "#f0f3f699", accent = "#ffd34d", accentDim = "#ffd34d33", purple = "#c49bff", orange = "#ffa640", green = "#7dffb0" }
+UI.BTN = { a = { "A", "#3fb950" }, b = { "B", "#f85149" }, x = { "X", "#4c8dff" }, y = { "Y", "#e3b341" } }
+function UI.textW(d, str, size, font)
+    if d.measure then
+        local ok, v = pcall(d.measure, d, str, { size = size, font = font })
+        if ok and type(v) == "vector" then return v.x end
+        if ok and type(v) == "table" and v.x then return v.x end
+    end
+    return #str * size * 0.52
+end
+-- a controller button: A B X Y round in their colours, the rest a small light tag; its width
+function UI.badgeW(d, k) return UI.BTN[k] and 24 or (UI.textW(d, k, 13, "bold") + 14) end
+function UI.badge(d, x, y, k)
+    local b = UI.BTN[k]
+    if b then
+        d:circle(V(x + 12, y, 0), 12, { colour = b[2], fill = true })
+        d:text(V(x + 12, y - 9, 0), b[1], { size = 16, colour = "#0d1117", font = "bold", align = "centre" })
+        return 24
+    end
+    local w = UI.badgeW(d, k)
+    d:rect(V(x, y - 11, 0), V(x + w, y + 11, 0), { colour = "#e6e9ef", fill = true, rounding = 6 })
+    d:text(V(x + w / 2, y - 8, 0), k, { size = 13, colour = "#0d1117", font = "bold", align = "centre" })
+    return w
+end
+-- a row of button prompts ({ button, what }) in a dark pill, centred on x
+function UI.promptRow(d, cx, y, items)
+    local ws, total = {}, 0
+    for i, it in ipairs(items) do
+        ws[i] = { UI.badgeW(d, it[1]), UI.textW(d, it[2], 16) }
+        total += ws[i][1] + 8 + ws[i][2] + (i < #items and 26 or 0)
+    end
+    local x = cx - total / 2
+    d:rect(V(x - 18, y - 22, 0), V(x + total + 18, y + 22, 0), { colour = UI.bg, fill = true, rounding = 22 })
+    for i, it in ipairs(items) do
+        UI.badge(d, x, y, it[1])
+        x += ws[i][1] + 8
+        d:text(V(x, y - 10, 0), it[2], { size = 16, colour = UI.text })
+        x += ws[i][2] + 26
+    end
+end
+-- a small rounded label with a coloured dot; its width
+function UI.chipW(d, str) return UI.textW(d, str, 15) + 30 end
+function UI.chip(d, x, y, str, col)
+    local w = UI.chipW(d, str)
+    d:rect(V(x, y, 0), V(x + w, y + 28, 0), { colour = UI.bg, fill = true, rounding = 14 })
+    d:circle(V(x + 13, y + 14, 0), 4, { colour = col or UI.accent, fill = true })
+    d:text(V(x + 22, y + 5, 0), str, { size = 15, colour = UI.text })
+    return w
+end
+-- a window: dark rounded panel with a title bar
+function UI.panelBox(d, a, b, title)
+    d:rect(a + V(0, 4, 0), b + V(0, 4, 0), { colour = "#00000055", fill = true, rounding = 14 })
+    d:rect(a, b, { colour = UI.bg2, fill = true, rounding = 14 })
+    d:rect(a, V(b.x, a.y + 52, 0), { colour = "#ffffff0a", fill = true, rounding = 14 })
+    d:text(a + V(20, 13, 0), title, { size = 24, colour = UI.text, font = "heading" })
+    d:line(V(a.x + 16, a.y + 52, 0), V(b.x - 16, a.y + 52, 0), { colour = UI.line, thickness = 1 })
+end
+-- button prompts along the bottom of a window
+function UI.footer(d, a, b, items)
+    local x, y = a.x + 20, b.y - 26
+    for _, it in ipairs(items) do
+        local w = UI.badge(d, x, y, it[1])
+        x += w + 7
+        d:text(V(x, y - 9, 0), it[2], { size = 15, colour = UI.dim })
+        x += UI.textW(d, it[2], 15) + 22
+    end
+end
 -- ---------------------------------------------------------------- several objects at once (a group)
 -- RB (or Ctrl+click) puts objects in a group. Picking up one of them takes the rest along: each keeps its place
 -- and turn next to the one held (the leader). While held, the others show as outlines; they are moved once it is
@@ -1769,6 +1839,8 @@ local function openEditor()
         end
     end
     S.cam.goal, S.cam.goalDist = S.cam.target, S.cam.dist
+    -- coming back: nothing picked, unless something was dropped with Quick Drop since leaving
+    if S.sel and S.closedAt and not (S.droppedAt and S.droppedAt > S.closedAt) then send(); select(nil) end
     S.open = true
     S.drag = nil
     S.mouse = { pos = nil, left = false }
@@ -1779,6 +1851,8 @@ end
 
 local function closeEditor()
     S.aHold, S.yHold = nil, nil
+    if S.grab then S.grab = nil end
+    S.closedAt = S.clock
     S.picker = nil
     S.toolsWin = nil
     if not S.open then return end
@@ -3022,47 +3096,49 @@ local function drawTools(d)
     for i, c in ipairs(plan) do
         if i > MAX_COPIES then break end
         if S.itemBox[c.item] then
-            drawShape(d, worldShape(c.item, c.pos, c.heading, c.scale), "#7dffb0", 2)
+            drawShape(d, worldShape(c.item, c.pos, c.heading, c.scale), UI.green, 2)
         else
-            d:world_line(c.pos - V(0.4, 0, 0), c.pos + V(0.4, 0, 0), { colour = "#7dffb0", thickness = 2 })
-            d:world_line(c.pos - V(0, 0, 0.4), c.pos + V(0, 0, 0.4), { colour = "#7dffb0", thickness = 2 })
+            d:world_line(c.pos - V(0.4, 0, 0), c.pos + V(0.4, 0, 0), { colour = UI.green, thickness = 2 })
+            d:world_line(c.pos - V(0, 0, 0.4), c.pos + V(0, 0, 0.4), { colour = UI.green, thickness = 2 })
         end
     end
     local rows = toolsRows()
     W.row = clamp(W.row, 1, #rows)
-    local rh, w = 40, 440
-    local a = V(30, S.size.y * 0.22, 0)
-    local b = a + V(w, 70 + #rows * rh + 40, 0)
+    local rh, w = 44, 420
+    local a = V(32, math.floor(S.size.y * 0.2), 0)
+    local b = a + V(w, 52 + 14 + #rows * rh + 56, 0)
     S.screen.toolsBox = { a = a, b = b }
     S.screen.toolsTiles = {}
-    d:rect(a, b, { colour = "#101418ee", fill = true, rounding = 10 })
-    d:text(a + V(16, 12, 0), "COPY TOOLS", { size = 24, colour = "#ffffff", shadow = true })
-    local xa, xb = b - V(40, 0, 0), b
-    local ca, cb = V(b.x - 40, a.y + 10, 0), V(b.x - 10, a.y + 40, 0)
-    d:text(ca + V(8, 2, 0), "×", { size = 22, colour = "#ffffffaa" })
+    UI.panelBox(d, a, b, "Copy tools")
+    local ca, cb = V(b.x - 44, a.y + 10, 0), V(b.x - 12, a.y + 42, 0)
+    d:text(V((ca.x + cb.x) / 2, ca.y + 4, 0), "×", { size = 22, colour = UI.dim, align = "centre" })
     table.insert(S.screen.toolsTiles, { a = ca, b = cb, close = true })
     for i, r in ipairs(rows) do
-        local ra = V(a.x + 12, a.y + 56 + (i - 1) * rh, 0)
-        local rb = V(b.x - 12, ra.y + rh - 6, 0)
+        local ra = V(a.x + 14, a.y + 62 + (i - 1) * rh, 0)
+        local rb = V(b.x - 14, ra.y + rh - 6, 0)
         local selected = i == W.row
         if r[1] == "make" then
-            d:rect(ra, rb, { colour = selected and "#ffe066" or "#ffffff22", fill = true, rounding = 6 })
+            d:rect(ra, rb, { colour = selected and UI.accent or UI.tileHot, fill = true, rounding = 10 })
             local n = math.min(#plan, MAX_COPIES)
-            d:text(ra + V(12, 7, 0), string.format("Make %d cop%s  (A)", n, n == 1 and "y" or "ies"), { size = 18, colour = selected and "#101418" or "#ffffff" })
+            d:text(V((ra.x + rb.x) / 2, ra.y + 9, 0), string.format("Make %d cop%s", n, n == 1 and "y" or "ies"), { size = 17, colour = selected and "#0d1117" or UI.text, font = "bold", align = "centre" })
             table.insert(S.screen.toolsTiles, { a = ra, b = rb, make = true })
         else
-            d:rect(ra, rb, { colour = selected and "#ffe06633" or "#ffffff10", fill = true, rounding = 6 })
-            d:text(ra + V(12, 7, 0), r[1], { size = 17, colour = "#ffffffcc" })
-            local la, lb2 = V(ra.x + 190, ra.y, 0), V(ra.x + 222, rb.y, 0)
-            local ga, gb = V(rb.x - 32, ra.y, 0), rb
-            d:text(la + V(10, 6, 0), "<", { size = 18, colour = selected and "#ffe066" or "#ffffff88" })
-            d:text(V(ra.x + 232, ra.y + 7, 0), r[2], { size = 17, colour = selected and "#ffe066" or "#ffffff" })
-            d:text(ga + V(10, 6, 0), ">", { size = 18, colour = selected and "#ffe066" or "#ffffff88" })
+            d:rect(ra, rb, { colour = selected and UI.accentDim or UI.tile, fill = true, rounding = 10 })
+            if selected then d:rect(V(ra.x, ra.y + 8, 0), V(ra.x + 3, rb.y - 8, 0), { colour = UI.accent, fill = true, rounding = 2 }) end
+            d:text(ra + V(16, 10, 0), r[1], { size = 16, colour = UI.dim })
+            -- the value between < and >
+            local vx0, vx1 = ra.x + 170, rb.x - 10
+            local la, lb2 = V(vx0, ra.y, 0), V(vx0 + 30, rb.y, 0)
+            local ga, gb = V(vx1 - 30, ra.y, 0), V(vx1, rb.y, 0)
+            local col = selected and UI.accent or UI.dim
+            d:text(V(la.x + 15, ra.y + 8, 0), "<", { size = 20, colour = col, align = "centre" })
+            d:text(V((vx0 + vx1) / 2, ra.y + 10, 0), r[2], { size = 16, colour = selected and UI.text or UI.text, font = selected and "bold" or nil, align = "centre" })
+            d:text(V(ga.x + 15, ra.y + 8, 0), ">", { size = 20, colour = col, align = "centre" })
             table.insert(S.screen.toolsTiles, { a = la, b = lb2, row = i, d = -1 })
             table.insert(S.screen.toolsTiles, { a = ga, b = gb, row = i, d = 1 })
         end
     end
-    d:text(V(a.x + 16, b.y - 32, 0), "D-pad: choose / change    A: make    B: close", { size = 15, colour = "#ffffffaa" })
+    UI.footer(d, a, b, { { "D-pad", "Choose" }, { "a", "Make" }, { "b", "Close" } })
 end
 
 -- the group as it is (and where its followers are going)
@@ -3107,6 +3183,25 @@ local THUMBS = {}
 do
     local ok, t = pcall(function() return require("thumbs") end)
     if ok and type(t) == "table" then THUMBS = t end
+    -- pictures saved by DDH Get Thumbnails (the game's own objects and the rest): sheets of 6 x 6 at 85 px
+    local ok2, g = pcall(function() return require("gthumbs") end)
+    if ok2 and type(g) == "table" then
+        local n = 0
+        for k, v in pairs(g) do
+            if not THUMBS[k] then THUMBS[k] = { v[1], v[2], v[3], g = true }; n += 1 end
+        end
+        reskate.log(string.format("Quick Drop helper: %d more pictures from DDH Get Thumbnails.", n))
+    end
+end
+-- a picture's sheet and its corner and size on it
+function UI.thumbOf(key)
+    local th = THUMBS[key]
+    if not th then return nil end
+    if th.g then
+        local k = 85 / 512
+        return string.format("plugin/thumbs/g%02d.png", th[1]), th[2] * k, th[3] * k, k
+    end
+    return string.format("plugin/thumbs/sheet%02d.png", th[1]), th[2] / 4, th[3] / 4, 0.25
 end
 local PICK_COLS, PICK_ROWS = 6, 3
 local function pickerTabs()
@@ -3221,7 +3316,7 @@ local function pickerMouse(c)
     end
 end
 -- an object with no picture but a known shape: its outline seen from above, filling the tile
-local function drawFootprint(d, item, a, b)
+function UI.drawFootprint(d, item, a, b)
     S.footDrawn = false
     local pts = localOutline(item)
     if not pts or #pts < 3 then return end
@@ -3241,57 +3336,66 @@ local function drawPicker(d)
     local pk = S.picker
     if not pk then return end
     local W, H = S.size.x, S.size.y
-    local tile, gap = 150, 14
-    local pw = PICK_COLS * tile + (PICK_COLS + 1) * gap
-    local ph = 120 + PICK_ROWS * (tile + 30) + 70
-    local a = V((W - pw) / 2, (H - ph) / 2, 0)
+    local tile, gap = 148, 16
+    local pw = PICK_COLS * tile + (PICK_COLS - 1) * gap + 48
+    local ph = 52 + 58 + PICK_ROWS * (tile + 34) + 60
+    local a = V(math.floor((W - pw) / 2), math.floor((H - ph) / 2), 0)
     local b = a + V(pw, ph, 0)
     S.screen.pickBox = { a = a, b = b }
     S.screen.pickTiles = {}
-    d:rect(a, b, { colour = "#101418ee", fill = true, rounding = 10 })
-    d:text(a + V(gap, 12, 0), "ADD OBJECT", { size = 28, colour = "#ffffff", shadow = true })
-    -- the categories
-    local x = a.x + gap
+    d:rect(V(0, 0, 0), V(W, H, 0), { colour = "#00000066", fill = true })
+    UI.panelBox(d, a, b, "Add object")
+    local items = pk.tabs[pk.tab].items
+    local rows = math.ceil(#items / PICK_COLS)
+    d:text(V(b.x - 20, a.y + 17, 0), string.format("%d objects", #items), { size = 15, colour = UI.dim, align = "right" })
+    -- the categories: pills, the chosen one in the accent colour
+    local x = a.x + 20
     for i, t in ipairs(pk.tabs) do
-        local label = string.format("%s (%d)", shortTitle(t.name, 18), #t.items)
-        local w = (d.measure and d:measure(label, { size = 16 }) or V(#label * 9, 16, 0)).x + 20
-        if x + w > b.x - gap then break end
-        local ta, tb = V(x, a.y + 54, 0), V(x + w, a.y + 84, 0)
-        d:rect(ta, tb, { colour = i == pk.tab and "#ffe066" or "#ffffff22", fill = true, rounding = 6 })
-        d:text(ta + V(10, 6, 0), label, { size = 16, colour = i == pk.tab and "#101418" or "#ffffff" })
+        local label = string.format("%s  %d", shortTitle(t.name, 18), #t.items)
+        local w = UI.textW(d, label, 15) + 26
+        if x + w > b.x - 20 then break end
+        local ta, tb = V(x, a.y + 66, 0), V(x + w, a.y + 96, 0)
+        local on = i == pk.tab
+        d:rect(ta, tb, { colour = on and UI.accent or UI.tile, fill = true, rounding = 15 })
+        d:text(ta + V(13, 6, 0), label, { size = 15, colour = on and "#0d1117" or UI.text, font = on and "bold" or nil })
         table.insert(S.screen.pickTiles, { a = ta, b = tb, tab = i })
         x = x + w + 8
     end
     -- the pictures
-    local items = pk.tabs[pk.tab].items
+    local top = a.y + 52 + 58
     for r = 0, PICK_ROWS - 1 do
         for cI = 0, PICK_COLS - 1 do
             local i = (pk.top + r) * PICK_COLS + cI + 1
             local it = items[i]
             if it then
-                local ta = V(a.x + gap + cI * (tile + gap), a.y + 100 + r * (tile + 30), 0)
+                local ta = V(a.x + 24 + cI * (tile + gap), top + r * (tile + 34), 0)
                 local tb = ta + V(tile, tile, 0)
                 local selected, hovered = i == pk.sel, i == pk.hover
-                d:rect(ta, tb, { colour = selected and "#ffe06655" or (hovered and "#ffffff33" or "#ffffff14"), fill = true, rounding = 8 })
-                local th = THUMBS[it.key]
-                if th then
-                    local u0, v0 = th[2] / 4, th[3] / 4
-                    d:image(string.format("plugin/thumbs/sheet%02d.png", th[1]), ta + V(6, 6, 0), tb - V(6, 6, 0), { uv = { u0, v0, u0 + 0.25, v0 + 0.25 } })
-                elseif not pcall(drawFootprint, d, it.key, ta + V(18, 18, 0), tb - V(18, 30, 0)) or not S.footDrawn then
-                    -- no picture and no known shape: its name, big
-                    d:text(ta + V(10, tile / 2 - 22, 0), shortTitle(it.title or it.key, 15), { size = 16, colour = "#ffffffdd" })
+                d:rect(ta, tb, { colour = selected and UI.accentDim or (hovered and UI.tileHot or UI.tile), fill = true, rounding = 10 })
+                local path, u0, v0, k = UI.thumbOf(it.key)
+                if path then
+                    d:image(path, ta + V(8, 8, 0), tb - V(8, 8, 0), { uv = { u0, v0, u0 + k, v0 + k } })
+                elseif not pcall(UI.drawFootprint, d, it.key, ta + V(22, 22, 0), tb - V(22, 22, 0)) or not S.footDrawn then
+                    -- no picture and no known shape: its initials, big
+                    local name = tostring(it.title or it.key)
+                    local ini = string.upper(string.sub(name, 1, 1)) .. (string.match(name, "%s(%w)") or "")
+                    d:text(V((ta.x + tb.x) / 2, ta.y + tile / 2 - 22, 0), ini, { size = 40, colour = "#ffffff40", font = "title", align = "centre" })
                 end
-                if selected then d:rect(ta, tb, { colour = "#ffe066", rounding = 8, thickness = 3 }) end
-                d:text(V(ta.x, tb.y + 4, 0), shortTitle(it.title or it.key, 20), { size = 14, colour = selected and "#ffe066" or "#ffffffcc" })
+                if selected then d:rect(ta, tb, { colour = UI.accent, rounding = 10, thickness = 3 }) end
+                d:text(V((ta.x + tb.x) / 2, tb.y + 7, 0), shortTitle(it.title or it.key, 19), { size = 14, colour = selected and UI.accent or UI.dim, align = "centre" })
                 table.insert(S.screen.pickTiles, { a = ta, b = tb, i = i })
             end
         end
     end
-    local rows = math.ceil(#items / PICK_COLS)
+    -- where in the list: a slim bar on the right
     if rows > PICK_ROWS then
-        d:text(V(b.x - 120, a.y + 18, 0), string.format("%d / %d", pk.top + 1, rows - PICK_ROWS + 1), { size = 16, colour = "#ffffff99" })
+        local y0, y1 = top, top + PICK_ROWS * (tile + 34) - 34
+        local x0 = b.x - 12
+        d:rect(V(x0, y0, 0), V(x0 + 4, y1, 0), { colour = UI.tile, fill = true, rounding = 2 })
+        local f0, f1 = pk.top / rows, math.min(1, (pk.top + PICK_ROWS) / rows)
+        d:rect(V(x0, y0 + (y1 - y0) * f0, 0), V(x0 + 4, y0 + (y1 - y0) * f1, 0), { colour = UI.accent, fill = true, rounding = 2 })
     end
-    d:text(V(a.x + gap, b.y - 40, 0), "A add    B close    LB / RB category    stick / D-pad choose    (mouse: click, wheel)", { size = 16, colour = "#ffffffcc" })
+    UI.footer(d, a, b, { { "a", "Add" }, { "b", "Close" }, { "LB RB", "Category" }, { "D-pad", "Choose" } })
 end
 
 local function padEditor(sec)
@@ -3662,6 +3766,7 @@ reskate.on("tick", function(dt)
     if c then
         local px = c.position
         local last = S.mouse.pos or px
+        if (S.mouse.pos and d2(px, S.mouse.pos) > 3) or c.left or c.right or (c.wheel and c.wheel ~= 0) then S.mouseUsedAt = S.clock end
         local dx, dy = px.x - last.x, px.y - last.y
         if c.wheel and c.wheel ~= 0 and not c.over_screen then
             S.cam.goalDist = clamp((S.cam.goalDist or S.cam.dist) * (0.85 ^ c.wheel), 0.5, 300)
@@ -3824,6 +3929,62 @@ end)
 -- ---------------------------------------------------------------- drawing the handles
 local function colourOf(base, hot) return hot and YELLOW or base end
 
+function UI.drawPadHud(d)
+    local W, H = S.size.x, S.size.y
+    local c = V(W / 2, H / 2, 0)
+    local ng = groupCount()
+    local selecting = S.aHold and S.aHold.sweep
+    -- the cross
+    if not S.grab then
+        local col = selecting and UI.purple or (S.aim and UI.accent or "#ffffffd0")
+        d:circle(c, 3, { colour = col, fill = true })
+        d:circle(c, 13, { colour = col, thickness = 2 })
+        if S.aim then
+            local so = placedSolid(S.aim)
+            drawShape(d, so.shape or so, S.group[S.aim.id] and UI.purple or "#ffffff", 3, so.xf)
+            local name = titleOf(S.aim.item)
+            local w = UI.textW(d, name, 15) + 22
+            d:rect(V(c.x - w / 2, c.y + 24, 0), V(c.x + w / 2, c.y + 50, 0), { colour = UI.bg, fill = true, rounding = 13 })
+            d:text(V(c.x, c.y + 28, 0), name, { size = 15, colour = UI.text, align = "centre" })
+        end
+    end
+    -- what is set, along the top
+    local chips = {}
+    if selecting then chips[#chips + 1] = { string.format("Selecting  %d", ng), UI.purple }
+    elseif ng > 0 then chips[#chips + 1] = { string.format("Group  %d", ng), UI.purple } end
+    chips[#chips + 1] = { "Steps  " .. (STEPS[S.stepSize] or STEPS[2]).name, UI.accent }
+    if S.grab then chips[#chips + 1] = { "Snap  " .. snapLabel(), S.snapPick and UI.orange or "#35e0ff" } end
+    if gridSize() > 0 then chips[#chips + 1] = { "Grid  " .. GRID_NAMES[S.gridI], UI.green } end
+    local tot = 0
+    for _, ch in ipairs(chips) do tot += UI.chipW(d, ch[1]) + 8 end
+    local x = W / 2 - (tot - 8) / 2
+    for _, ch in ipairs(chips) do x += UI.chip(d, x, 24, ch[1], ch[2]) + 8 end
+    -- the last message, above the prompts
+    if S.msg ~= "" and S.clock < S.msgUntil then
+        local msg = S.msg
+        if #msg > 90 then msg = string.sub(msg, 1, 88) .. "…" end
+        local w = UI.textW(d, msg, 15) + 28
+        d:rect(V(W / 2 - w / 2, H - 112, 0), V(W / 2 + w / 2, H - 84, 0), { colour = "#0d1117b0", fill = true, rounding = 14 })
+        d:text(V(W / 2, H - 107, 0), msg, { size = 15, colour = UI.dim, align = "centre" })
+    end
+    -- the buttons for what can be done now
+    local items
+    if S.toolsWin then
+        items = nil
+    elseif selecting then
+        items = { { "a", "Let go: done" } }
+    elseif S.grab then
+        items = { { "a", "Put down" }, { "b", "Cancel" }, { "x", "Copy" }, { "LB RB", "Turn" }, { "D-pad L R", "Row" }, { "R3", "Copy tools" }, { "L3", "Snap" } }
+    elseif S.aim and S.group[S.aim.id] then
+        items = { { "a", "Pick up all" }, { "x", "Copy all" }, { "y", "Out of group" }, { "LB", "Clear group" } }
+    elseif S.aim then
+        items = { { "a", "Pick up" }, { "Hold A", "Select" }, { "x", "Copy" }, { "y", "Remove" }, { "RB", "Group" } }
+    else
+        items = { { "a", "Add object" }, { "Hold A", "Select" }, { "Menu", "Steps" }, { "b", "Close" } }
+    end
+    if items then UI.promptRow(d, W / 2, H - 48, items) end
+end
+
 -- an outline as it stands: round its base, round its top, and up its corners
 local COS25 = math.cos(math.rad(25))
 drawShape = function(d, sh, col, th, xf)
@@ -3867,31 +4028,10 @@ reskate.on("draw", function(d)
         local okt, errt = pcall(drawTools, d)
         if not okt then reskate.log("Quick Drop helper: copy tools: " .. tostring(errt), "warn"); S.toolsWin = nil end
     end
-    -- the controller's aiming cross, and the object it is on (what A picks up)
-    if S.padUsedAt and S.clock - S.padUsedAt < 15000 then
-        local c = V(S.size.x / 2, S.size.y / 2, 0)
-        local ng = groupCount()
-        if S.aHold and S.aHold.sweep then
-            d:text(c + V(-110, -150, 0), string.format("Selecting: %d  (let go of A)", ng), { size = 18, colour = "#c49bff", shadow = true })
-        elseif ng > 0 then d:text(c + V(-60, -150, 0), string.format("Group: %d", ng), { size = 18, colour = "#c49bff", shadow = true }) end
-        if S.grab then
-            d:text(c + V(-400, 150, 0), "A put down    B cancel    X copy    D-pad left/right: row    R3: copy tools    L3: snap (" .. snapLabel() .. ")    Menu: " .. (STEPS[S.stepSize] or STEPS[2]).name, { size = 18, colour = "#ffffff", shadow = true })
-        else
-            d:circle(c, 8, { colour = "#ffffffcc", thickness = 2 })
-            d:line(c - V(16, 0, 0), c - V(10, 0, 0), { colour = "#ffffffcc", thickness = 2 })
-            d:line(c + V(10, 0, 0), c + V(16, 0, 0), { colour = "#ffffffcc", thickness = 2 })
-            d:line(c - V(0, 16, 0), c - V(0, 10, 0), { colour = "#ffffffcc", thickness = 2 })
-            d:line(c + V(0, 10, 0), c + V(0, 16, 0), { colour = "#ffffffcc", thickness = 2 })
-            if not S.aim then
-                d:text(c + V(14, 14, 0), "A add object", { size = 16, colour = "#ffffffaa", shadow = true })
-            end
-            if S.aim then
-                local so = placedSolid(S.aim)
-                drawShape(d, so.shape or so, "#ffffff", 3, so.xf)
-                d:text(c + V(14, 14, 0), titleOf(S.aim.item) .. (S.group[S.aim.id] and "   A pick up all   X copy all   Y out of group" or "   A pick up   X copy   Y remove   RB group"), { size = 16, colour = "#ffffff", shadow = true })
-            end
-        end
-    end
+    -- the controller's view (when the controller was used last): aiming cross, what it is on, prompts along the bottom
+    local padMode = S.padUsedAt and (not S.mouseUsedAt or S.padUsedAt >= S.mouseUsedAt) and S.clock - S.padUsedAt < 60000
+    if padMode then pcall(UI.drawPadHud, d) end
+    if padMode and not S.grab and not S.drag then return end
     if not S.target then return end
     local t = S.target
     local p = t.pos
@@ -3941,7 +4081,10 @@ reskate.on("draw", function(d)
         return h and h.kind == kind and (i == nil or h.axis == i or h.plane == i)
     end
 
-    if S.mode == 1 then
+    if padMode then
+        -- the controller: no handles (like Quick Drop), only its outline where it is going
+        S.screen.axis, S.screen.unit, S.screen.planes, S.screen.ring, S.screen.cubes = {}, {}, {}, {}, {}
+    elseif S.mode == 1 then
         S.screen.axis, S.screen.unit, S.screen.planes = {}, {}, {}
         local AXES = axesFor(t.heading)
         -- plane squares (like the 3D maker's small triangles between two arrows)
@@ -4069,7 +4212,7 @@ reskate.on("draw", function(d)
         end
     end
     -- the object's box where it is going: shows at once while the game catches up
-    if S.boxCorners and S.mode ~= 3 then
+    if S.boxCorners and (S.mode ~= 3 or padMode) then
         local c = S.boxCorners
         local col = (S.dirty or (S.drag and S.drag.moved) or not lastApplied()) and "#ffe066" or "#ffffff66"
         local sh = S.itemBox[S.sel.item] and worldShape(S.sel.item, p, t.heading, t.scale) or nil
