@@ -83,6 +83,13 @@ local function titleOf(key)
 end
 
 local function select(o, blueprint)
+    if S.sel and S.target and S.group and S.group[S.sel.id] and not (o and o.id == S.sel.id) then
+        -- a group member stops being the held one: its place is kept for the others (and sent if it is not yet)
+        local t = S.target
+        S.gt[S.sel.id] = { pos = t.pos, heading = t.heading, scale = t.scale }
+        local l = S.lastSent
+        if l and l.id == S.sel.id and not S.dirty then S.gs[S.sel.id] = { pos = l.pos, heading = l.heading, scale = l.scale } end
+    end
     S.handleLen = nil
     S.edit = {}
     S.guides, S.padRaw, S.tighten, S.snapLock = nil, nil, nil, nil
@@ -148,6 +155,28 @@ local function scan()
         for id, o in pairs(now) do
             if not S.known[id] then table.insert(fresh, o) end
         end
+        -- copies made in one go (rows, circles, group copies): matched by item and place
+        if #S.expectMany > 0 then
+            local keep = {}
+            for _, o in ipairs(fresh) do
+                local hit = nil
+                for i, x in ipairs(S.expectMany) do
+                    if x.item == o.item and len(x.pos - o.position) < 0.05 then hit = i break end
+                end
+                if hit then
+                    local x = table.remove(S.expectMany, hit)
+                    if x.tilt then S.tilt[o.id] = { x = x.tilt.x, z = x.tilt.z }; S.tiltSaveDue = true end
+                    if x.rec then
+                        if x.rec.cancelled then table.insert(S.q, { op = "remove", id = o.id, rec = { ids = {}, total = 1, done = 0, failed = 0, quiet = true } })
+                        else table.insert(x.rec.ids, o.id) end
+                    end
+                else
+                    table.insert(keep, o)
+                end
+            end
+            fresh = keep
+            for i = #S.expectMany, 1, -1 do if S.clock - S.expectMany[i].at > 15000 then table.remove(S.expectMany, i) end end
+        end
         -- one new object: a drop. Many at once: a park or map loading, not something to pick.
         local ec = S.expectCopy
         if #fresh == 1 and ec and fresh[1].item == ec.item and len(fresh[1].position - ec.pos) < 0.05 then
@@ -169,6 +198,7 @@ local function scan()
             reskate.log(string.format("Quick Drop helper: %d objects loaded with the park.", #fresh))
         end
         if S.sel and not now[S.sel.id] then select(nil) end
+        for id in pairs(S.group) do if not now[id] then S.group[id] = nil; S.gt[id] = nil; S.gs[id] = nil end end
         -- moved by something else (Quick Drop again): follow it
         if S.sel and not S.dirty and not S.drag and S.clock - S.lastSend > 1500 then
             local o = now[S.sel.id]
@@ -247,10 +277,66 @@ local function send()
     end
 end
 
+local drawShape -- (further on, with the drawing)
+-- ---------------------------------------------------------------- several objects at once (a group)
+-- RB (or Ctrl+click) puts objects in a group. Picking up one of them takes the rest along: each keeps its place
+-- and turn next to the one held (the leader). While held, the others show as outlines; they are moved once it is
+-- put down (the game takes 4 edits a second, so they go one after another).
+S.group = {}         -- id -> true
+S.gt = {}            -- id -> { pos, heading, scale }: where a follower is going
+S.gs = {}            -- id -> what was last sent for it
+S.q = {}             -- copies to place and objects to remove, waiting for a free edit
+S.expectMany = {}    -- copies placed, waiting to show up in the game's list
+S.gbase = nil        -- { leader = id, m = { id -> { off, dh, sr } } }: the followers, seen from the leader
+local function groupCount() local n = 0; for _ in pairs(S.group) do n += 1 end; return n end
+-- turning about the up axis, the way headings go
+local function rotY(v, a)
+    local c, s = math.cos(a), math.sin(a)
+    return V(v.x * c + v.z * s, v.y, -v.x * s + v.z * c)
+end
+local function poseOf(id)
+    local g = S.gt[id]
+    if g then return g end
+    local o = S.known and S.known[id]
+    if o then return { pos = o.position, heading = o.heading or 0, scale = o.scale or 1 } end
+    return nil
+end
+-- is this object being taken along with the held one?
+local function follower(id)
+    local b = S.gbase
+    return b ~= nil and S.sel ~= nil and b.leader == S.sel.id and b.m[id] ~= nil
+end
+local function groupBase()
+    S.gbase = nil
+    if not (S.sel and S.target and S.group[S.sel.id]) then return end
+    local L = S.target
+    local m, n = {}, 0
+    for id in pairs(S.group) do
+        if id ~= S.sel.id then
+            local p = poseOf(id)
+            if p then
+                m[id] = { off = rotY(p.pos - L.pos, -L.heading) / L.scale, dh = wrap(p.heading - L.heading), sr = p.scale / L.scale }
+                n += 1
+            end
+        end
+    end
+    if n > 0 then S.gbase = { leader = S.sel.id, m = m } end
+end
+
 local function markUndo()
     if S.target then
         local tl = S.tilt[S.sel.id]
-        table.insert(S.undo, { id = S.sel.id, pos = S.target.pos, heading = S.target.heading, scale = S.target.scale, tilt = tl and { x = tl.x, z = tl.z } or nil })
+        local u = { id = S.sel.id, pos = S.target.pos, heading = S.target.heading, scale = S.target.scale, tilt = tl and { x = tl.x, z = tl.z } or nil }
+        if S.group[S.sel.id] then
+            u.group = {}
+            for id in pairs(S.group) do
+                if id ~= S.sel.id then
+                    local p = poseOf(id)
+                    if p then u.group[id] = { pos = p.pos, heading = p.heading, scale = p.scale } end
+                end
+            end
+        end
+        table.insert(S.undo, u)
         if #S.undo > 100 then table.remove(S.undo, 1) end
     end
 end
@@ -258,6 +344,17 @@ end
 local function undo()
     local u = table.remove(S.undo)
     if not u then say("Nothing to undo.") return end
+    if u.kind == "placed" then
+        -- copies made in one go (a row, a circle, a group copy): take them all away again
+        local r = u.rec
+        r.cancelled = true
+        for i = #S.q, 1, -1 do if S.q[i].rec == r then table.remove(S.q, i) end end
+        local gone = { ids = {}, total = 0, done = 0, failed = 0, label = "Undone", quiet = true }
+        for _, id in ipairs(r.ids) do table.insert(S.q, { op = "remove", id = id, rec = gone }); gone.total += 1 end
+        r.ids = {}
+        say(gone.total > 0 and string.format("Undo: taking away %d cop%s.", gone.total, gone.total == 1 and "y" or "ies") or "Undo: copies not made.")
+        return
+    end
     if not S.sel or S.sel.id ~= u.id then
         for _, o in ipairs(reskate.objects.list()) do if o.id == u.id then select(o) end end
     end
@@ -266,6 +363,10 @@ local function undo()
         S.tilt[u.id] = u.tilt
         S.tiltSaveDue = true
         S.dirty = true
+        if u.group then
+            for id, p in pairs(u.group) do if S.known and S.known[id] then S.gt[id] = { pos = p.pos, heading = p.heading, scale = p.scale } end end
+            groupBase()
+        end
     end
 end
 
@@ -821,7 +922,7 @@ local function objSnap(pos, heading, scale, allow, tl)
     local reach = SNAP_REACH + len(me.hi - me.lo)
     local near = {}
     for id, o in pairs(S.known) do
-        if id ~= S.sel.id then
+        if id ~= S.sel.id and not follower(id) then
             local d = len(o.position - pos)
             local b = S.itemBox[o.item]
             if d < reach + (b and len((b[2] - b[1]) * (o.scale or 1)) or 0) then
@@ -1045,7 +1146,7 @@ local function turnSnap(hd)
     if not (S.osnap and S.sel and S.known and S.target) then return hd, nil end
     local best, bd = nil, SNAP_REACH + 4
     for id, o in pairs(S.known) do
-        if id ~= S.sel.id then
+        if id ~= S.sel.id and not follower(id) then
             local d = len(o.position - S.target.pos)
             if d < bd then best, bd = o, d end
         end
@@ -1112,7 +1213,7 @@ local function alignSnap(pos, base, scale, allow, baseTilt)
     end
     local near = {}
     for id, o in pairs(S.known) do
-        if id ~= S.sel.id and S.itemBox[o.item] then
+        if id ~= S.sel.id and not follower(id) and S.itemBox[o.item] then
             local b = S.itemBox[o.item]
             local d = len(o.position - pos) - len((b[2] - b[1]) * (o.scale or 1)) / 2
             if d < SNAP_REACH + 2 then near[#near + 1] = { o = o, d = d } end
@@ -1598,7 +1699,7 @@ local function stepTighten()
     S.tighten = nil
 end
 
-local function clickPick(px)
+local function clickPick(px, toGroup)
     local o, d = rayAt(px)
     local hit = reskate.world.pick(o, o + d * 300)
     if not hit then return end
@@ -1618,7 +1719,7 @@ local function clickPick(px)
     if best then
         send()
         select(best, hit.object and hit.object.blueprint)
-        say("Picked " .. titleOf(best.item))
+        if toGroup and S.toggleGroup then S.toggleGroup(best) else say("Picked " .. titleOf(best.item)) end
     elseif hit.object then
         say("That is part of the map: only placed objects can be changed.")
     end
@@ -1659,6 +1760,7 @@ end
 
 local function closeEditor()
     S.picker = nil
+    S.toolsWin = nil
     if not S.open then return end
     if S.typing then S.typing = false; pcall(reskate.ui.close_dialog, "ddh_type") end
     S.drag = nil
@@ -1686,6 +1788,7 @@ reskate.on("level_loaded", function()
     S.measure = nil
     S.bpNames = nil
     S.tiltHeld, S.tilt, S.tiltAt, S.tiltSrc, S.level = {}, {}, {}, {}, nil
+    S.group, S.gt, S.gs, S.q, S.expectMany, S.gbase, S.toolsWin = {}, {}, {}, {}, {}, nil, nil
 end)
 
 -- typing exact numbers: a text box with "X Y Z turn size"; change any of them
@@ -1854,8 +1957,10 @@ local function oldPanel(ui)
         ui:info("RT / LT", "raise / lower")
         ui:info("LB / RB", "turn (holding)")
         ui:info("D-pad up / down", "size (holding) / zoom")
-        ui:info("D-pad left / right", "next object")
-        ui:info("Right stick / R3", "turn the view / look at it")
+        ui:info("D-pad left / right", "next object (holding: copy in a row)")
+        ui:info("RB / LB", "group: add or take out / clear")
+        ui:info("Right stick / R3", "turn the view / look at it (holding: copy tools)")
+        ui:info("Ctrl+click", "group: add or take out")
         ui:info("View / Menu", "undo / Fine-Normal-Big")
         ui:info("Hold L3", "Fine while held")
     end
@@ -1865,6 +1970,7 @@ end
 -- ---------------------------------------------------------------- the new panel (ReSkate 2.1.4 widgets)
 -- step sizes for the steppers: metres, degrees, size
 -- (speed: how fast the controller slides a held object, m/s; fly: how fast the free view flies, times)
+local GRID_NAMES_P = { "Off", "0.25 m", "0.5 m", "1 m", "2 m" }
 local STEPS = {
     { m = 0.01, deg = 1, size = 0.01, speed = 0.4, fly = 0.3, name = "Fine", mf = "%.2f m", df = "%.0f°", sf = "%.2f×" },
     { m = 0.1, deg = 15, size = 0.1, speed = 2.5, fly = 1.0, name = "Normal", mf = "%.2f m", df = "%.0f°", sf = "%.2f×" },
@@ -2031,6 +2137,19 @@ local function newPanel(ui)
         if ob ~= nil then S.osnap = ob end
     end
 
+    -- several at once, and copies in rows / circles / grids
+    local ng = groupCount()
+    if section(ui, "many", "Several at once", ng > 0 and string.format("group of %d", ng) or "") then
+        ui:note(ng > 0 and string.format("%d in the group. Moving one moves them all.", ng) or "Ctrl+click (or RB on the controller) to put objects in a group.")
+        local gb = ui:buttons("grp", { "Add / take out picked", "Clear group" }, 0)
+        if gb == 1 and S.sel and S.known and S.known[S.sel.id] and S.toggleGroup then S.toggleGroup(S.known[S.sel.id]) end
+        if gb == 2 and S.clearGroup then S.clearGroup() end
+        if ui:button("tools", "Copy tools (row, circle, grid)") and S.openTools then S.openTools() end
+        ui:heading("Grid snap")
+        local gi = ui:buttons("gridsz", GRID_NAMES_P, S.gridI or 1)
+        if gi and gi ~= S.gridI then S.gridI = gi end
+    end
+
     -- every object in the park
     rebuildList()
     local sub = tostring(S.listTotal)
@@ -2106,8 +2225,10 @@ local function newPanel(ui)
         ui:info("RT / LT", "raise / lower")
         ui:info("LB / RB", "turn (holding)")
         ui:info("D-pad up / down", "size (holding) / zoom")
-        ui:info("D-pad left / right", "next object")
-        ui:info("Right stick / R3", "turn the view / look at it")
+        ui:info("D-pad left / right", "next object (holding: copy in a row)")
+        ui:info("RB / LB", "group: add or take out / clear")
+        ui:info("Right stick / R3", "turn the view / look at it (holding: copy tools)")
+        ui:info("Ctrl+click", "group: add or take out")
         ui:info("View / Menu", "undo / Fine-Normal-Big")
         ui:info("Hold L3", "Fine while held")
     end
@@ -2359,8 +2480,14 @@ local function startGrab()
     local tl = S.tilt[S.sel.id]
     S.grab = { id = S.sel.id, pos = t.pos, heading = t.heading, scale = t.scale, tilt = tl and { x = tl.x, z = tl.z } or nil }
     markUndo()
+    if S.group[S.sel.id] then groupBase() else S.gbase = nil end
     S.cam.goal = t.pos
-    say("Holding " .. titleOf(S.sel.item) .. ".  A: put down   B: cancel   X: copy")
+    local n = S.gbase and groupCount() or 1
+    if n > 1 then
+        say(string.format("Holding %d objects.  A: put down   B: cancel   X: copy them   D-pad left/right: copy in a row", n))
+    else
+        say("Holding " .. titleOf(S.sel.item) .. ".  A: put down   B: cancel   X: copy   D-pad left/right: copy in a row")
+    end
 end
 S.startGrab = startGrab
 local function endHoldMove()
@@ -2377,7 +2504,17 @@ end
 local function cancelGrab()
     local g = S.grab
     S.grab = nil
+    S.toolsWin = nil
     S.padRaw, S.guides, S.snapLock, S.tighten = nil, nil, nil, nil
+    if g and g.copyRec then
+        -- the group was copied in place and picked up: the copies go again, the group goes back
+        local r = g.copyRec
+        r.cancelled = true
+        for i = #S.q, 1, -1 do if S.q[i].rec == r then table.remove(S.q, i) end end
+        for _, id in ipairs(r.ids) do table.insert(S.q, { op = "remove", id = id, rec = { ids = {}, total = 1, done = 0, failed = 0, quiet = true } }) end
+        r.ids = {}
+        for i = #S.undo, 1, -1 do if S.undo[i].rec == r then table.remove(S.undo, i) break end end
+    end
     if g and g.fresh and S.sel and S.sel.id == g.id then
         -- a copy just made: cancelling takes it away again
         S.dirty = false
@@ -2403,15 +2540,96 @@ local function cancelGrab()
     end
     say("Cancelled: back where it was.")
 end
+-- the held object and the ones it takes along, as they are now
+local function heldList()
+    local L = S.target
+    local out = { { id = S.sel.id, item = S.sel.item, pos = L.pos, heading = L.heading, scale = L.scale, tilt = S.tilt[S.sel.id] } }
+    local b = S.gbase
+    if b and b.leader == S.sel.id then
+        for id in pairs(b.m) do
+            local p, o = poseOf(id), S.known and S.known[id]
+            if p and o then out[#out + 1] = { id = id, item = o.item, pos = p.pos, heading = p.heading, scale = p.scale, tilt = S.tilt[id] } end
+        end
+    end
+    return out
+end
+-- how long a set of objects is along a direction (their boxes; 1 m for one of unknown size)
+local function extentAlong(list, dir)
+    local lo, hi = math.huge, -math.huge
+    for _, s in ipairs(list) do
+        local bx = worldBox(s.item, s.pos, s.heading, s.scale)
+        local cs = cornersOf(bx)
+        if #cs == 1 then
+            local k = dot(s.pos, dir)
+            lo, hi = math.min(lo, k - 0.5), math.max(hi, k + 0.5)
+        else
+            for _, c in ipairs(cs) do local k = dot(c, dir); lo, hi = math.min(lo, k), math.max(hi, k) end
+        end
+    end
+    if lo > hi then return 1 end
+    return math.max(hi - lo, 0.05)
+end
+local function newRec(label) return { ids = {}, total = 0, done = 0, failed = 0, label = label } end
+-- copies to make (each: item, pos, heading, scale, tilt), one after another; one undo step takes them all away
+local MAX_COPIES = 200
+local function queueCopies(list, label)
+    local rec = newRec(label)
+    for i, c in ipairs(list) do
+        if i > MAX_COPIES then break end
+        table.insert(S.q, { op = "place", item = c.item, pos = c.pos, heading = c.heading, scale = c.scale, tilt = c.tilt, rec = rec })
+        rec.total += 1
+    end
+    if rec.total > 0 then table.insert(S.undo, { kind = "placed", rec = rec }) end
+    if #list > MAX_COPIES then say(string.format("Only the first %d copies are made.", MAX_COPIES), true) end
+    return rec
+end
 -- X: a copy where the held object is now (tilt and all); the original stays in hand
 local function copyHeld()
     local t = S.target
     if not (S.sel and t) then return end
+    if S.gbase and S.gbase.leader == S.sel.id then
+        local list = heldList()
+        queueCopies(list, "Copies")
+        say(string.format("Copying %d objects...", #list))
+        return
+    end
     S.copyQ = { item = S.sel.item, pos = t.pos, heading = t.heading, scale = t.scale, tilt = S.tilt[S.sel.id], until_ = S.clock + 3000 }
 end
+local startGrabRef
 -- X in free view: a copy of the object under the cross, in the same place, picked up to be moved away
 local function copyAimed(o)
+    if S.group[o.id] and groupCount() > 1 then
+        -- a group: copies stay where they are, and the group itself is picked up (the same thing, seen from here)
+        send()
+        if not (S.sel and S.sel.id == o.id) then select(o) end
+        local list = {}
+        for id in pairs(S.group) do
+            local p, ob = poseOf(id), S.known and S.known[id]
+            if id == S.sel.id and S.target then p = S.target end
+            if p and ob then list[#list + 1] = { item = ob.item, pos = p.pos, heading = p.heading, scale = p.scale, tilt = S.tilt[id] } end
+        end
+        local rec = queueCopies(list, "Copies")
+        startGrabRef()
+        if S.grab then S.grab.copyRec = rec end
+        say(string.format("Copied %d objects in place: you're holding the group. B takes the copies away.", #list))
+        return
+    end
     S.copyQ = { item = o.item, pos = o.position, heading = o.heading or 0, scale = o.scale or 1, tilt = S.tilt[o.id], until_ = S.clock + 3000, grab = true }
+end
+-- D-pad left / right while holding: a copy stays here and the held one (with its group) steps one width along
+local function rowStep(sign)
+    if not (S.sel and S.target) then return end
+    local list = heldList()
+    local h = S.target.heading
+    local dir = V(math.cos(h), 0, -math.sin(h)) * sign
+    local step = extentAlong(list, dir) + (S.tools and S.tools.gap or 0)
+    queueCopies(list, "Row")
+    S.target.pos += dir * step
+    S.padRaw = nil
+    S.dirty = true
+    S.cam.goal = (S.cam.goal or S.cam.target) + dir * step
+    S.cam.target += dir * step
+    say(string.format("Copy left behind; moved %.2f m %s.", step, sign > 0 and "right" or "left"))
 end
 local function copyTick()
     local q = S.copyQ
@@ -2434,11 +2652,27 @@ local function copyTick()
         say("No copy: " .. tostring(why), true)
     end
 end
--- Y twice: remove it
+-- Y twice: remove it (a group member: the whole group)
 local function deletePress(o)
     o = o or (S.sel and { id = S.sel.id, item = S.sel.item })
     if not o then say("Aim the cross at an object, then Y twice.") return end
     local id = o.id
+    local n = groupCount()
+    if S.group[id] and n > 1 then
+        if S.delAsk and S.delAsk.id == id and S.delAsk.all and S.clock - S.delAsk.at < 2500 then
+            S.delAsk = nil
+            if S.grab then S.grab = nil; endHoldMove() end
+            local rec = newRec("Removed")
+            for gid in pairs(S.group) do table.insert(S.q, { op = "remove", id = gid, rec = rec }); rec.total += 1 end
+            S.group, S.gbase = {}, nil
+            S.aim = nil
+            say(string.format("Removing %d objects...", rec.total))
+        else
+            S.delAsk = { id = id, at = S.clock, all = true }
+            say(string.format("Press Y again to remove all %d objects in the group.", n))
+        end
+        return
+    end
     if S.delAsk and S.delAsk.id == id and S.clock - S.delAsk.at < 2500 then
         S.delAsk = nil
         local name = titleOf(o.item)
@@ -2458,6 +2692,320 @@ local function deletePress(o)
     else
         S.delAsk = { id = id, at = S.clock }
         say("Press Y again to remove " .. titleOf(o.item) .. ".")
+    end
+end
+
+startGrabRef = startGrab
+
+local function toggleGroup(o)
+    if not o then say("Aim the cross at an object, then RB puts it in the group.") return end
+    if S.group[o.id] then S.group[o.id] = nil else S.group[o.id] = true end
+    S.gbase = nil
+    local n = groupCount()
+    if n == 0 then say("Group cleared.")
+    else say(string.format("Group: %d object%s.  RB: add / take out   LB: clear   A on one: move them all", n, n == 1 and "" or "s")) end
+end
+local function clearGroup()
+    if groupCount() == 0 then return end
+    S.group, S.gbase = {}, nil
+    say("Group cleared.")
+end
+S.toggleGroup, S.clearGroup = toggleGroup, clearGroup
+
+-- each tick: where the followers go, from where the leader is going
+local function followTick()
+    local b = S.gbase
+    if not (b and S.sel and S.target and b.leader == S.sel.id) then return end
+    local L = S.target
+    for id, m in pairs(b.m) do
+        if S.known and S.known[id] and S.group[id] then
+            S.gt[id] = { pos = L.pos + rotY(m.off * L.scale, L.heading), heading = wrap(L.heading + m.dh), scale = clamp(m.sr * L.scale, 0.1, 10) }
+        else
+            b.m[id] = nil
+        end
+    end
+end
+local function samePose(a, b)
+    return a ~= nil and b ~= nil and len(a.pos - b.pos) < 1e-4 and math.abs(wrap(a.heading - b.heading)) < 1e-5 and math.abs(a.scale - b.scale) < 1e-5
+end
+local function freeSlot(keep)
+    local tries = S.tries or {}
+    S.tries = tries
+    while tries[1] and S.clock - tries[1] > 1050 do table.remove(tries, 1) end
+    return #tries < 4 - (keep or 0)
+end
+-- the followers' moves: once the held one is put down (and its own move is sent)
+local function sendGroup()
+    if S.grab or (S.drag and S.drag.moved) or S.dirty or S.copyQ then return end
+    if S.clock - (S.gLast or -1e9) < 120 then return end
+    if not lastApplied() then return end
+    for id, g in pairs(S.gt) do
+        local o = S.known and S.known[id]
+        if not o or (S.sel and id == S.sel.id) then
+            S.gt[id], S.gs[id] = nil, nil
+        elseif samePose(g, S.gs[id]) then
+            -- arrived: no longer needed unless it is still being taken along
+            if not follower(id) and len(o.position - g.pos) < 0.01 then S.gt[id], S.gs[id] = nil, nil end
+        else
+            if not freeSlot() then return end
+            table.insert(S.tries, S.clock)
+            S.gLast = S.clock
+            local hd = nil
+            if math.abs(wrap(g.heading - (o.heading or 0))) > 1e-5 then hd = g.heading end
+            local ok, why = reskate.objects.move(id, g.pos, hd, g.scale)
+            if ok then
+                S.gs[id] = { pos = g.pos, heading = g.heading, scale = g.scale }
+                S.lastSent = { id = id, pos = g.pos, heading = g.heading, scale = g.scale, at = S.clock }
+            elseif not BUSY[why] then
+                S.gs[id] = { pos = g.pos, heading = g.heading, scale = g.scale }
+                say("One of the group could not be moved: " .. tostring(why), true)
+            end
+            return
+        end
+    end
+end
+-- copies and removals, one after another (leaving room for the held object's own moves)
+local function qTick()
+    local e = S.q[1]
+    if not e then return end
+    if S.clock - (S.qLast or -1e9) < 120 then return end
+    if not freeSlot((S.dirty or S.grab) and 1 or 0) then return end
+    table.insert(S.tries, S.clock)
+    S.qLast = S.clock
+    local ok, why
+    if e.op == "place" then
+        ok, why = reskate.objects.place(e.item, e.pos, e.heading, e.scale)
+    else
+        if not (S.known and S.known[e.id]) then ok = true else letGo(e.id); ok, why = reskate.objects.remove(e.id) end
+    end
+    local r = e.rec
+    if ok then
+        table.remove(S.q, 1)
+        r.done += 1
+        if e.op == "place" then
+            table.insert(S.expectMany, { item = e.item, pos = e.pos, tilt = e.tilt, rec = r, at = S.clock })
+        else
+            S.tilt[e.id] = nil
+            S.tiltSaveDue = true
+            S.group[e.id], S.gt[e.id], S.gs[e.id] = nil, nil, nil
+            if S.sel and S.sel.id == e.id then select(nil) end
+        end
+        S.lastScan = math.min(S.lastScan, S.clock - 350)
+    elseif BUSY[why] then
+        return
+    else
+        table.remove(S.q, 1)
+        r.failed += 1
+        reskate.log("Quick Drop helper: " .. (e.op == "place" and "copy" or "remove") .. " refused: " .. tostring(why), "warn")
+    end
+    if r.done + r.failed >= r.total and not r.quiet then
+        if r.failed > 0 then say(string.format("%s: %d done, %d refused by the game (see ReSkate.log).", r.label, r.done, r.failed), true)
+        else say(string.format("%s: %d done.", r.label, r.done)) end
+    elseif not r.quiet and r.total > 4 and r.done % 5 == 0 then
+        say(string.format("%s: %d of %d...", r.label, r.done, r.total))
+    end
+end
+
+-- ---------------------------------------------------------------- grid snapping
+local GRIDS = { 0, 0.25, 0.5, 1, 2 }
+local GRID_NAMES = { "Off", "0.25 m", "0.5 m", "1 m", "2 m" }
+S.gridI = 1
+local function gridSize() return GRIDS[S.gridI] or 0 end
+-- on the ground grid (x and z), when nothing else is snapped to
+local function gridSnap(p, guides)
+    local g = gridSize()
+    if g <= 0 or (guides and #guides > 0) then return p end
+    return V(round(p.x, g), p.y, round(p.z, g))
+end
+
+-- ---------------------------------------------------------------- copy tools: a row, a circle or a grid of copies
+S.tools = { kind = 1, count = 5, count2 = 3, dir = 1, gap = 0, radius = 5, face = 1 }
+local KINDS = { "Row", "Circle", "Grid" }
+local DIRS = { "Sideways", "Forward", "Up" }
+local FACES = { "To the middle", "Same way" }
+local function cyc(v, n, d) return (v - 1 + d) % n + 1 end
+local function planCopies()
+    if not (S.sel and S.target) then return {} end
+    local T = S.tools
+    local list = heldList()
+    local L = S.target
+    local X = V(math.cos(L.heading), 0, -math.sin(L.heading))
+    local Z = V(math.sin(L.heading), 0, math.cos(L.heading))
+    local out = {}
+    local function add(off, turn, about, keepHeading)
+        for _, s in ipairs(list) do
+            local p, h = s.pos, s.heading
+            if turn ~= 0 then
+                p = about + rotY(p - about, turn)
+                if not keepHeading then h = wrap(h + turn) end
+            end
+            out[#out + 1] = { item = s.item, pos = p + off, heading = h, scale = s.scale, tilt = s.tilt }
+        end
+    end
+    if T.kind == 1 then
+        local dir = ({ X, Z, UP })[T.dir]
+        local step = extentAlong(list, dir) + T.gap
+        for i = 1, T.count - 1 do add(dir * (step * i), 0) end
+    elseif T.kind == 2 then
+        local c = L.pos - Z * T.radius
+        for i = 1, T.count - 1 do add(V(0, 0, 0), i * 2 * math.pi / T.count, c, T.face == 2) end
+    else
+        local sx, sz = extentAlong(list, X) + T.gap, extentAlong(list, Z) + T.gap
+        for i = 0, T.count - 1 do
+            for j = 0, T.count2 - 1 do
+                if i > 0 or j > 0 then add(X * (sx * i) + Z * (sz * j), 0) end
+            end
+        end
+    end
+    return out
+end
+local function toolsRows()
+    local T = S.tools
+    local st = STEPS[S.stepSize] or STEPS[2]
+    local rows = {}
+    rows[#rows + 1] = { "Make", KINDS[T.kind], function(d) T.kind = cyc(T.kind, 3, d) end }
+    rows[#rows + 1] = { T.kind == 3 and "Across" or "How many", tostring(T.count), function(d) T.count = clamp(T.count + d, 2, 50) end }
+    if T.kind == 1 then
+        rows[#rows + 1] = { "Which way", DIRS[T.dir], function(d) T.dir = cyc(T.dir, 3, d) end }
+        rows[#rows + 1] = { "Gap", string.format("%.2f m", T.gap), function(d) T.gap = clamp(round(T.gap + d * st.m, 0.01), -10, 50) end }
+    elseif T.kind == 2 then
+        rows[#rows + 1] = { "Size (radius)", string.format("%.2f m", T.radius), function(d) T.radius = clamp(round(T.radius + d * st.m * 5, 0.01), 0.25, 200) end }
+        rows[#rows + 1] = { "Facing", FACES[T.face], function(d) T.face = cyc(T.face, 2, d) end }
+    else
+        rows[#rows + 1] = { "Deep", tostring(T.count2), function(d) T.count2 = clamp(T.count2 + d, 1, 20) end }
+        rows[#rows + 1] = { "Gap", string.format("%.2f m", T.gap), function(d) T.gap = clamp(round(T.gap + d * st.m, 0.01), -10, 50) end }
+    end
+    rows[#rows + 1] = { "Grid snap", GRID_NAMES[S.gridI], function(d) S.gridI = cyc(S.gridI, #GRIDS, d) end }
+    rows[#rows + 1] = { "make" }
+    return rows
+end
+local function makeCopies()
+    local plan = planCopies()
+    if #plan == 0 then say("Pick an object first.") return end
+    queueCopies(plan, KINDS[S.tools.kind])
+    S.toolsWin = nil
+    say(string.format("Making %d copies (%s)...", math.min(#plan, MAX_COPIES), KINDS[S.tools.kind]))
+end
+local function openTools()
+    if not (S.sel and S.target) then say("Pick an object first, then open the copy tools.") return end
+    S.toolsWin = { row = 1 }
+end
+S.openTools = openTools
+-- the controller in the window: D-pad up / down choose, left / right change, A makes them, B closes
+local function toolsPad(p)
+    local W = S.toolsWin
+    local rows = toolsRows()
+    W.row = clamp(W.row, 1, #rows)
+    if padPress("b", p.b) then S.toolsWin = nil return end
+    if padPress("a", p.a) then makeCopies() return end
+    if padStep("tu", p.up) then W.row = clamp(W.row - 1, 1, #rows) end
+    if padStep("td", p.down) then W.row = clamp(W.row + 1, 1, #rows) end
+    local f = rows[W.row][3]
+    if f and padStep("tl", p.left) then f(-1) end
+    if f and padStep("tr", p.right) then f(1) end
+end
+-- the mouse in the window: < and > change a row, the button makes them; true when the click was the window's
+local function toolsMouse(c)
+    local box = S.screen and S.screen.toolsBox
+    if not (S.toolsWin and box) then return false end
+    local px = c.position
+    local inside = px.x >= box.a.x and px.x <= box.b.x and px.y >= box.a.y and px.y <= box.b.y
+    if not inside then return false end
+    if c.left and not S.mouse.left then
+        local rows = toolsRows()
+        for _, t in ipairs(S.screen.toolsTiles or {}) do
+            if px.x >= t.a.x and px.x <= t.b.x and px.y >= t.a.y and px.y <= t.b.y then
+                if t.make then makeCopies()
+                elseif t.close then S.toolsWin = nil
+                elseif rows[t.row] and rows[t.row][3] then S.toolsWin.row = t.row; rows[t.row][3](t.d) end
+                break
+            end
+        end
+    end
+    return true
+end
+local function drawTools(d)
+    local W = S.toolsWin
+    if not W then return end
+    local plan = planCopies()
+    -- where the copies will go
+    for i, c in ipairs(plan) do
+        if i > MAX_COPIES then break end
+        if S.itemBox[c.item] then
+            drawShape(d, worldShape(c.item, c.pos, c.heading, c.scale), "#7dffb0", 2)
+        else
+            d:world_line(c.pos - V(0.4, 0, 0), c.pos + V(0.4, 0, 0), { colour = "#7dffb0", thickness = 2 })
+            d:world_line(c.pos - V(0, 0, 0.4), c.pos + V(0, 0, 0.4), { colour = "#7dffb0", thickness = 2 })
+        end
+    end
+    local rows = toolsRows()
+    W.row = clamp(W.row, 1, #rows)
+    local rh, w = 40, 440
+    local a = V(30, S.size.y * 0.22, 0)
+    local b = a + V(w, 70 + #rows * rh + 40, 0)
+    S.screen.toolsBox = { a = a, b = b }
+    S.screen.toolsTiles = {}
+    d:rect(a, b, { colour = "#101418ee", fill = true, rounding = 10 })
+    d:text(a + V(16, 12, 0), "COPY TOOLS", { size = 24, colour = "#ffffff", shadow = true })
+    local xa, xb = b - V(40, 0, 0), b
+    local ca, cb = V(b.x - 40, a.y + 10, 0), V(b.x - 10, a.y + 40, 0)
+    d:text(ca + V(8, 2, 0), "×", { size = 22, colour = "#ffffffaa" })
+    table.insert(S.screen.toolsTiles, { a = ca, b = cb, close = true })
+    for i, r in ipairs(rows) do
+        local ra = V(a.x + 12, a.y + 56 + (i - 1) * rh, 0)
+        local rb = V(b.x - 12, ra.y + rh - 6, 0)
+        local selected = i == W.row
+        if r[1] == "make" then
+            d:rect(ra, rb, { colour = selected and "#ffe066" or "#ffffff22", fill = true, rounding = 6 })
+            local n = math.min(#plan, MAX_COPIES)
+            d:text(ra + V(12, 7, 0), string.format("Make %d cop%s  (A)", n, n == 1 and "y" or "ies"), { size = 18, colour = selected and "#101418" or "#ffffff" })
+            table.insert(S.screen.toolsTiles, { a = ra, b = rb, make = true })
+        else
+            d:rect(ra, rb, { colour = selected and "#ffe06633" or "#ffffff10", fill = true, rounding = 6 })
+            d:text(ra + V(12, 7, 0), r[1], { size = 17, colour = "#ffffffcc" })
+            local la, lb2 = V(ra.x + 190, ra.y, 0), V(ra.x + 222, rb.y, 0)
+            local ga, gb = V(rb.x - 32, ra.y, 0), rb
+            d:text(la + V(10, 6, 0), "<", { size = 18, colour = selected and "#ffe066" or "#ffffff88" })
+            d:text(V(ra.x + 232, ra.y + 7, 0), r[2], { size = 17, colour = selected and "#ffe066" or "#ffffff" })
+            d:text(ga + V(10, 6, 0), ">", { size = 18, colour = selected and "#ffe066" or "#ffffff88" })
+            table.insert(S.screen.toolsTiles, { a = la, b = lb2, row = i, d = -1 })
+            table.insert(S.screen.toolsTiles, { a = ga, b = gb, row = i, d = 1 })
+        end
+    end
+    d:text(V(a.x + 16, b.y - 32, 0), "D-pad: choose / change    A: make    B: close", { size = 15, colour = "#ffffffaa" })
+end
+
+-- the group as it is (and where its followers are going)
+local function drawGroup(d)
+    for id in pairs(S.group) do
+        local o = S.known and S.known[id]
+        if o and not (S.sel and S.sel.id == id and S.grab) then
+            local g = S.gt[id]
+            if g and S.itemBox[o.item] then
+                local tl = tilted(id) and S.tilt[id] or nil
+                local xf = tl and function(v) return tiltPoint(g.pos, g.heading, tl, v) end or nil
+                drawShape(d, worldShape(o.item, g.pos, g.heading, g.scale), "#c49bff", 3, xf)
+            else
+                local so = placedSolid(o)
+                if not drawShape(d, so.shape or so, "#c49bff", 3, so.xf) then
+                    local q = o.position
+                    d:world_line(q - V(0.4, 0, 0), q + V(0.4, 0, 0), { colour = "#c49bff", thickness = 3 })
+                    d:world_line(q - V(0, 0, 0.4), q + V(0, 0, 0.4), { colour = "#c49bff", thickness = 3 })
+                end
+            end
+        end
+    end
+end
+-- a few lines of the ground grid round the held object
+local function drawGrid(d)
+    local g = gridSize()
+    if g <= 0 or not S.target then return end
+    local p = S.target.pos
+    local cx, cz = round(p.x, g), round(p.z, g)
+    local n = 6
+    for i = -n, n do
+        d:world_line(V(cx + i * g, p.y, cz - n * g), V(cx + i * g, p.y, cz + n * g), { colour = "#ffffff30", thickness = 1 })
+        d:world_line(V(cx - n * g, p.y, cz + i * g), V(cx + n * g, p.y, cz + i * g), { colour = "#ffffff30", thickness = 1 })
     end
 end
 
@@ -2492,6 +3040,21 @@ local function pickerTabs()
 end
 local function openPicker()
     local tabs = pickerTabs()
+    if not S.loggedPics then
+        S.loggedPics = true
+        local none, ddh = 0, {}
+        for _, t in ipairs(tabs) do
+            if t.name ~= "DDH" then
+                for _, it in ipairs(t.items) do
+                    if not THUMBS[it.key] then
+                        none += 1
+                        if string.find(string.lower(it.key), "bkddh", 1, true) then table.insert(ddh, it.key) end
+                    end
+                end
+            end
+        end
+        reskate.log(string.format("Quick Drop helper: add window: %d objects have no picture (%d of them DDH)%s", none, #ddh, #ddh > 0 and (": " .. table.concat(ddh, ", ")) or ""))
+    end
     if #tabs == 0 then say("The game lists no objects to add.", true) return end
     S.picker = { tabs = tabs, tab = 1, sel = 1, top = 0 }
     S.padWait = true
@@ -2567,6 +3130,21 @@ local function pickerMouse(c)
         end
     end
 end
+-- an object with no picture but a known shape: its outline seen from above, filling the tile
+local function drawFootprint(d, item, a, b)
+    S.footDrawn = false
+    local pts = localOutline(item)
+    if not pts or #pts < 3 then return end
+    local lo, hi = V(math.huge, 0, math.huge), V(-math.huge, 0, -math.huge)
+    for _, q in ipairs(pts) do lo = V(math.min(lo.x, q.x), 0, math.min(lo.z, q.z)); hi = V(math.max(hi.x, q.x), 0, math.max(hi.z, q.z)) end
+    local w, h = math.max(hi.x - lo.x, 1e-3), math.max(hi.z - lo.z, 1e-3)
+    local k = math.min((b.x - a.x) / w, (b.y - a.y) / h)
+    local ox, oy = (a.x + b.x) / 2, (a.y + b.y) / 2
+    local sp = {}
+    for i, q in ipairs(pts) do sp[i] = V(ox + (q.x - (lo.x + hi.x) / 2) * k, oy - (q.z - (lo.z + hi.z) / 2) * k, 0) end
+    for i = 1, #sp do d:line(sp[i], sp[i % #sp + 1], { colour = "#9fd8ff", thickness = 2 }) end
+    S.footDrawn = true
+end
 local function shortTitle(t, n) t = tostring(t); if #t > n then return string.sub(t, 1, n - 1) .. "…" end return t end
 -- drawing it
 local function drawPicker(d)
@@ -2609,8 +3187,9 @@ local function drawPicker(d)
                 if th then
                     local u0, v0 = th[2] / 4, th[3] / 4
                     d:image(string.format("plugin/thumbs/sheet%02d.png", th[1]), ta + V(6, 6, 0), tb - V(6, 6, 0), { uv = { u0, v0, u0 + 0.25, v0 + 0.25 } })
-                else
-                    d:text(ta + V(10, tile / 2 - 10, 0), shortTitle(it.title or it.key, 16), { size = 15, colour = "#ffffffcc" })
+                elseif not pcall(drawFootprint, d, it.key, ta + V(18, 18, 0), tb - V(18, 30, 0)) or not S.footDrawn then
+                    -- no picture and no known shape: its name, big
+                    d:text(ta + V(10, tile / 2 - 22, 0), shortTitle(it.title or it.key, 15), { size = 16, colour = "#ffffffdd" })
                 end
                 if selected then d:rect(ta, tb, { colour = "#ffe066", rounding = 8, thickness = 3 }) end
                 d:text(V(ta.x, tb.y + 4, 0), shortTitle(it.title or it.key, 20), { size = 14, colour = selected and "#ffe066" or "#ffffffcc" })
@@ -2643,6 +3222,9 @@ local function padEditor(sec)
     local t = S.target
     if S.grab and not (S.sel and S.sel.id == S.grab.id) then S.grab = nil end
     local holding = S.grab ~= nil
+    if S.toolsWin then
+        if not (S.sel and S.target) then S.toolsWin = nil else toolsPad(p) end
+    end
 
     if padPress("b", p.b) then
         if holding then cancelGrab() else closeEditor() end
@@ -2659,7 +3241,14 @@ local function padEditor(sec)
         if holding then S.grab = nil; endHoldMove() end
         undo(); t = S.target; holding = false
     end
-    if padPress("rs", p.rs) and t then S.cam.goal = t.pos end
+    if padPress("rs", p.rs) then
+        -- holding: the copy tools; free: look at the picked object
+        if holding then
+            if S.toolsWin then S.toolsWin = nil else openTools() end
+        elseif t then
+            S.cam.goal = t.pos
+        end
+    end
     if padPress("y", p.y) then
         -- holding: the held one; free: the one under the cross (or the picked one)
         if holding then deletePress() else deletePress(S.aim) end
@@ -2689,6 +3278,13 @@ local function padEditor(sec)
     if not holding then
         if padStep("left", p.left) then pickNext(-1) t = S.target end
         if padStep("right", p.right) then pickNext(1) t = S.target end
+        -- the group: RB puts the object under the cross in (or takes it out), LB clears it
+        if padPress("rb", p.rb) and not p.lb then toggleGroup(S.aim) end
+        if padPress("lb", p.lb) and not p.rb then clearGroup() end
+    elseif not S.toolsWin then
+        -- holding: D-pad left / right leaves a copy and steps along (a quick row)
+        if padStep("rowl", p.left) then rowStep(-1); t = S.target end
+        if padStep("rowr", p.right) then rowStep(1); t = S.target end
     end
 
     -- the view: right stick turns it
@@ -2763,6 +3359,7 @@ local function padEditor(sec)
         S.padRaw = (S.padRaw or t.pos) + mv
         local ntl
         t.pos, t.heading, S.guides, ntl = snapTurned(S.padRaw, S.padHd0 or t.heading, t.scale, allowFree(lx ~= 0 or ly ~= 0, up ~= 0), S.padTilt0)
+        t.pos = gridSnap(t.pos, S.guides)
         S.tilt[S.sel.id] = ntl
         S.cam.goal = (S.cam.goal or S.cam.target) + mv
         S.cam.target += mv
@@ -2780,9 +3377,11 @@ local function padEditor(sec)
 
     -- size: D-pad up / down, by the step size
     local sstep = st.size
-    if padStep("up", p.up) then begin(); t.scale = clamp(round(t.scale + sstep, sstep), 0.1, 10) end
-    if padStep("down", p.down) then begin(); t.scale = clamp(round(t.scale - sstep, sstep), 0.1, 10) end
-    if p.up or p.down then active = true end
+    if not S.toolsWin then
+        if padStep("up", p.up) then begin(); t.scale = clamp(round(t.scale + sstep, sstep), 0.1, 10) end
+        if padStep("down", p.down) then begin(); t.scale = clamp(round(t.scale - sstep, sstep), 0.1, 10) end
+        if p.up or p.down then active = true end
+    end
 
     if active then
         S.dirty = true
@@ -2829,6 +3428,13 @@ reskate.on("tick", function(dt)
     do
         local okc, errc = pcall(copyTick)
         if not okc then S.copyQ = nil; reskate.log("Quick Drop helper: copy: " .. tostring(errc), "warn") end
+    end
+    do
+        local okg, errg = pcall(function() followTick(); sendGroup(); qTick() end)
+        if not okg then
+            if #S.q > 0 then table.remove(S.q, 1) end
+            if not S.groupWarned then S.groupWarned = true; reskate.log("Quick Drop helper: group: " .. tostring(errg), "warn") end
+        end
     end
     do
         local ok, err = pcall(tiltTick)
@@ -2900,6 +3506,13 @@ reskate.on("tick", function(dt)
 
     -- the mouse
     local c = reskate.input.cursor()
+    if c and S.toolsWin and not S.drag and not c.over_screen then
+        local okt, used = pcall(toolsMouse, c)
+        if okt and used then
+            S.mouse = { pos = c.position, left = c.left }
+            c = nil
+        end
+    end
     if c and S.picker then
         pcall(pickerMouse, c)
         S.mouse = { pos = c.position, left = c.left }
@@ -2920,6 +3533,7 @@ reskate.on("tick", function(dt)
                 local t = S.target
                 local tl0 = S.tilt[S.sel.id]
                 h.start = { pos = t.pos, heading = t.heading, scale = t.scale, px = px, tilt = tl0 and { x = tl0.x, z = tl0.z } or nil }
+                if S.group[S.sel.id] then groupBase() else S.gbase = nil end
                 local o, d = rayAt(px)
                 if h.kind == "axis" then
                     local s0, s1 = S.screen.center, S.screen.unit[h.axis]
@@ -2992,6 +3606,7 @@ reskate.on("tick", function(dt)
                         t.pos = g.start.pos + off
                         local ntl
                         if toObjects then t.pos, t.heading, S.guides, ntl = snapTurned(t.pos, g.start.heading, t.scale, allowIn(g.n), g.start.tilt) else t.heading, ntl = g.start.heading, g.start.tilt end
+                        if math.abs(g.n.y) > 0.9 then t.pos = gridSnap(t.pos, S.guides) end
                         S.tilt[S.sel.id] = ntl
                         g.moved = true
                     end
@@ -3031,7 +3646,7 @@ reskate.on("tick", function(dt)
             end
             if S.drag and S.drag.moved and S.drag.kind ~= "tilt" then S.dirty = true end
         elseif not c.left and S.mouse.left and S.drag then
-            if S.drag.kind == "click" then clickPick(px) end
+            if S.drag.kind == "click" then clickPick(px, reskate.input.key("Ctrl")) end
             local moved = S.drag.moved
             local wasTilt = S.drag.kind == "tilt"
             S.snapLock = nil
@@ -3070,7 +3685,7 @@ local function colourOf(base, hot) return hot and YELLOW or base end
 
 -- an outline as it stands: round its base, round its top, and up its corners
 local COS25 = math.cos(math.rad(25))
-local function drawShape(d, sh, col, th, xf)
+drawShape = function(d, sh, col, th, xf)
     local pts = sh.pts
     local n = #pts
     if n < 3 then return false end
@@ -3105,11 +3720,19 @@ reskate.on("draw", function(d)
         if not ok then reskate.log("Quick Drop helper: add window: " .. tostring(err), "warn"); S.picker = nil end
         return
     end
+    pcall(drawGroup, d)
+    pcall(drawGrid, d)
+    if S.toolsWin then
+        local okt, errt = pcall(drawTools, d)
+        if not okt then reskate.log("Quick Drop helper: copy tools: " .. tostring(errt), "warn"); S.toolsWin = nil end
+    end
     -- the controller's aiming cross, and the object it is on (what A picks up)
     if S.padUsedAt and S.clock - S.padUsedAt < 15000 then
         local c = V(S.size.x / 2, S.size.y / 2, 0)
+        local ng = groupCount()
+        if ng > 0 then d:text(c + V(-60, -150, 0), string.format("Group: %d", ng), { size = 18, colour = "#c49bff", shadow = true }) end
         if S.grab then
-            d:text(c + V(-170, 150, 0), "A put down    B cancel    X copy    Menu: " .. (STEPS[S.stepSize] or STEPS[2]).name, { size = 18, colour = "#ffffff", shadow = true })
+            d:text(c + V(-300, 150, 0), "A put down    B cancel    X copy    D-pad left/right: row    R3: copy tools    Menu: " .. (STEPS[S.stepSize] or STEPS[2]).name, { size = 18, colour = "#ffffff", shadow = true })
         else
             d:circle(c, 8, { colour = "#ffffffcc", thickness = 2 })
             d:line(c - V(16, 0, 0), c - V(10, 0, 0), { colour = "#ffffffcc", thickness = 2 })
@@ -3122,7 +3745,7 @@ reskate.on("draw", function(d)
             if S.aim then
                 local so = placedSolid(S.aim)
                 drawShape(d, so.shape or so, "#ffffff", 3, so.xf)
-                d:text(c + V(14, 14, 0), titleOf(S.aim.item) .. "   A pick up   X copy   Y remove", { size = 16, colour = "#ffffff", shadow = true })
+                d:text(c + V(14, 14, 0), titleOf(S.aim.item) .. "   A pick up   X copy   Y remove   RB " .. (S.group[S.aim.id] and "out of group" or "group"), { size = 16, colour = "#ffffff", shadow = true })
             end
         end
     end
