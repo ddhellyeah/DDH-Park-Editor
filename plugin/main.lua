@@ -1344,9 +1344,7 @@ function FN.supportY(item, pos, heading, scale, selfId, wantSlope)
         for fid in pairs(S.gbase.m) do local fo = S.known and S.known[fid]; if fo then mine[#mine + 1] = fo.position end end
     end
     -- the first thing (not mine) straight down from a point
-    local function down(x, z)
-        local wpt = pos + ax * x + az * z
-        local from, to = V(wpt.x, bottom + 1.5, wpt.z), V(wpt.x, bottom - 40, wpt.z)
+    local function pickDown(from, to)
         for _ = 1, 3 do
             local ok, hit = pcall(reskate.world.pick, from, to)
             if not (ok and type(hit) == "table" and hit.position) then return nil end
@@ -1359,6 +1357,20 @@ function FN.supportY(item, pos, heading, scale, selfId, wantSlope)
             from = hit.position - V(0, 0.02, 0)
         end
         return nil
+    end
+    local function down(x, z)
+        local wpt = pos + ax * x + az * z
+        local y = pickDown(V(wpt.x, bottom + 1.5, wpt.z), V(wpt.x, bottom - 40, wpt.z))
+        -- the game's other ray (its physics) as well, from just above its bottom: in places (a street over
+        -- water) the first one sees through the road down to the sea floor, this one stops on the road
+        if reskate.world.raycast then
+            local a, z2 = V(wpt.x, bottom + 0.3, wpt.z), V(wpt.x, bottom - 40, wpt.z)
+            local ok, h = pcall(reskate.world.raycast, a, z2)
+            local hp = ok and h or nil
+            if type(hp) == "table" and hp.position then hp = hp.position end
+            if hp and hp.y and hp.y <= a.y + 1e-3 and hp.y > z2.y + 1e-3 and (not y or hp.y > y) then y = hp.y end
+        end
+        return y
     end
     -- (its middle decides: pushed against something it meets it side on; pushed on over it, it climbs on top)
     local best = down(mx, mz)
