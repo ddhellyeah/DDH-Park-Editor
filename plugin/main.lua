@@ -402,38 +402,79 @@ local function groupBase()
     if n > 0 then S.gbase = { leader = S.sel.id, m = m } end
 end
 
-local function markUndo()
-    if S.target then
-        local tl = S.tilt[S.sel.id]
-        local u = { id = S.sel.id, pos = S.target.pos, heading = S.target.heading, scale = S.target.scale, tilt = tl and { x = tl.x, z = tl.z } or nil }
-        if S.group[S.sel.id] then
-            u.group = {}
-            for id in pairs(S.group) do
-                if id ~= S.sel.id then
-                    local p = poseOf(id)
-                    if p then u.group[id] = { pos = p.pos, heading = p.heading, scale = p.scale } end
-                end
+-- ---------------------------------------------------------------- undo and redo
+-- Entries: a pose (an object, with its group's poses), "placed" (copies / sets made in one go: undo takes them
+-- away), "removed" (objects removed: undo puts them back). Every undo makes the matching redo entry, and back.
+S.redo = {}
+local function poseEntry(id)
+    local p = (S.sel and S.sel.id == id and S.target) or poseOf(id)
+    if not p then return nil end
+    local tl = S.tilt[id]
+    local u = { id = id, pos = p.pos, heading = p.heading, scale = p.scale, tilt = tl and { x = tl.x, z = tl.z } or nil }
+    if S.group[id] then
+        u.group = {}
+        for gid in pairs(S.group) do
+            if gid ~= id then
+                local q = poseOf(gid)
+                if q then u.group[gid] = { pos = q.pos, heading = q.heading, scale = q.scale } end
             end
         end
-        table.insert(S.undo, u)
-        if #S.undo > 100 then table.remove(S.undo, 1) end
+    end
+    return u
+end
+local function pushUndo(u, keepRedo)
+    table.insert(S.undo, u)
+    if #S.undo > 100 then table.remove(S.undo, 1) end
+    if not keepRedo then S.redo = {} end
+end
+S.pushUndo = pushUndo
+local function markUndo()
+    if S.target and S.sel then
+        local u = poseEntry(S.sel.id)
+        if u then pushUndo(u) end
     end
 end
-
-local function undo()
-    local u = table.remove(S.undo)
-    if not u then say("Nothing to undo.") return end
-    if u.kind == "placed" then
-        -- copies made in one go (a row, a circle, a group copy): take them all away again
-        local r = u.rec
-        r.cancelled = true
-        for i = #S.q, 1, -1 do if S.q[i].rec == r then table.remove(S.q, i) end end
-        local gone = { ids = {}, total = 0, done = 0, failed = 0, label = "Undone", quiet = true }
-        for _, id in ipairs(r.ids) do table.insert(S.q, { op = "remove", id = id, rec = gone }); gone.total += 1 end
-        r.ids = {}
-        say(gone.total > 0 and string.format("Undo: taking away %d cop%s.", gone.total, gone.total == 1 and "y" or "ies") or "Undo: copies not made.")
-        return
+-- what objects are, to put them back later
+local function itemsOf(ids)
+    local out = {}
+    for _, id in ipairs(ids) do
+        local o = S.known and S.known[id]
+        local p = (S.sel and S.sel.id == id and S.target) or poseOf(id)
+        if o and p then
+            local tl = S.tilt[id]
+            out[#out + 1] = { item = o.item, pos = p.pos, heading = p.heading, scale = p.scale, tilt = tl and { x = tl.x, z = tl.z } or nil }
+        end
     end
+    return out
+end
+S.itemsOf = itemsOf
+-- place objects again (one after another) / remove them; both give the record of what was done
+local function queuePlace(items, label)
+    local rec = { ids = {}, byIdx = {}, total = 0, done = 0, failed = 0, label = label, items = items, quiet = true }
+    for i, c in ipairs(items) do
+        table.insert(S.q, { op = "place", item = c.item, pos = c.pos, heading = c.heading, scale = c.scale, tilt = c.tilt, rec = rec, idx = i })
+        rec.total += 1
+    end
+    return rec
+end
+local function queueRemove(ids, label)
+    local rec = { ids = {}, total = 0, done = 0, failed = 0, label = label, quiet = true }
+    for _, id in ipairs(ids) do
+        S.group[id] = nil
+        table.insert(S.q, { op = "remove", id = id, rec = rec }); rec.total += 1
+    end
+    S.gbase = nil
+    return rec
+end
+-- remove objects so that undo can bring them back
+function S.removeUndoable(ids, label)
+    local items = itemsOf(ids)
+    local rec = queueRemove(ids, label or "Removed")
+    rec.quiet = false
+    pushUndo({ kind = "removed", items = items })
+    return rec
+end
+local function restorePose(u)
     if not S.sel or S.sel.id ~= u.id then
         for _, o in ipairs(reskate.objects.list()) do if o.id == u.id then select(o) end end
     end
@@ -443,11 +484,60 @@ local function undo()
         S.tiltSaveDue = true
         S.dirty = true
         if u.group then
+            S.gbase = nil
             for id, p in pairs(u.group) do if S.known and S.known[id] then S.gt[id] = { pos = p.pos, heading = p.heading, scale = p.scale } end end
             groupBase()
         end
+        return true
     end
+    return false
 end
+-- one step of undo (from = S.undo, to = S.redo) or redo (the other way)
+local function step(from, to, word)
+    local u = table.remove(from)
+    if not u then say("Nothing to " .. word .. ".") return end
+    if u.kind == "placed" then
+        -- made in one go: take them away (what they were is kept, to make them again)
+        local r = u.rec
+        r.cancelled = true
+        for i = #S.q, 1, -1 do if S.q[i].rec == r then table.remove(S.q, i) end end
+        local items = #r.ids > 0 and itemsOf(r.ids) or (r.items or {})
+        local n = #r.ids
+        queueRemove(r.ids, word)
+        r.ids = {}
+        table.insert(to, { kind = "unplaced", items = items })
+        say(string.format("%s: taking away %d object%s.", word == "undo" and "Undo" or "Redo", n, n == 1 and "" or "s"))
+    elseif u.kind == "unplaced" or u.kind == "removed" then
+        -- put back: they come again as a group
+        local rec = queuePlace(u.items, word)
+        rec.onAll = function(r)
+            S.group = {}
+            for _, id in ipairs(r.ids) do S.group[id] = true end
+            S.gbase = nil
+        end
+        table.insert(to, u.kind == "removed" and { kind = "unremoved", rec = rec } or { kind = "placed", rec = rec })
+        say(string.format("%s: putting back %d object%s.", word == "undo" and "Undo" or "Redo", #u.items, #u.items == 1 and "" or "s"))
+    elseif u.kind == "unremoved" then
+        local r = u.rec
+        for i = #S.q, 1, -1 do if S.q[i].rec == r then table.remove(S.q, i) end end
+        local items = itemsOf(r.ids)
+        queueRemove(r.ids, word)
+        r.ids = {}
+        table.insert(to, { kind = "removed", items = items })
+        say(string.format("%s: removing %d object%s again.", word == "undo" and "Undo" or "Redo", #items, #items == 1 and "" or "s"))
+    else
+        local cur = poseEntry(u.id)
+        if restorePose(u) then
+            if cur then table.insert(to, cur) end
+        else
+            say("That object is gone: nothing to " .. word .. ".")
+        end
+    end
+    if #to > 100 then table.remove(to, 1) end
+end
+local function undo() step(S.undo, S.redo, "undo") end
+local function redo() step(S.redo, S.undo, "redo") end
+S.redoFn = redo
 
 -- ---------------------------------------------------------------- the view
 local function camGlide(sec)
@@ -2686,7 +2776,8 @@ local function queueCopies(list, label)
         table.insert(S.q, { op = "place", item = c.item, pos = c.pos, heading = c.heading, scale = c.scale, tilt = c.tilt, rec = rec })
         rec.total += 1
     end
-    if rec.total > 0 then table.insert(S.undo, { kind = "placed", rec = rec }) end
+    rec.items = list
+    if rec.total > 0 then S.pushUndo({ kind = "placed", rec = rec }) end
     if #list > MAX_COPIES then say(string.format("Only the first %d copies are made.", MAX_COPIES), true) end
     return rec
 end
@@ -2818,11 +2909,12 @@ local function deletePress(o)
         if S.delAsk and S.delAsk.id == id and S.delAsk.all and S.clock - S.delAsk.at < 2500 then
             S.delAsk = nil
             if S.grab then S.grab = nil; endHoldMove() end
-            local rec = newRec("Removed")
-            for gid in pairs(S.group) do table.insert(S.q, { op = "remove", id = gid, rec = rec }); rec.total += 1 end
+            local ids = {}
+            for gid in pairs(S.group) do ids[#ids + 1] = gid end
+            local rec = S.removeUndoable(ids, "Removed")
             S.group, S.gbase = {}, nil
             S.aim = nil
-            say(string.format("Removing %d objects...", rec.total))
+            say(string.format("Removing %d objects... (View: undo)", rec.total))
         else
             S.delAsk = { id = id, at = S.clock, all = true }
             say(string.format("Press Y again to remove all %d objects in the group.", n))
@@ -2833,15 +2925,17 @@ local function deletePress(o)
         S.delAsk = nil
         local name = titleOf(o.item)
         if S.grab and S.grab.id == id then S.grab = nil; endHoldMove() end
+        local keep = S.itemsOf({ id })
         letGo(id)
         local ok, why = reskate.objects.remove(id)
         if ok then
+            if #keep > 0 then S.pushUndo({ kind = "removed", items = keep }) end
             S.tilt[id] = nil
             S.tiltSaveDue = true
             if S.sel and S.sel.id == id then select(nil) end
             S.aim = nil
             S.lastScan = -1e9
-            say("Removed " .. name .. ".")
+            say("Removed " .. name .. ".  (View: undo)")
         else
             say("Not removed: " .. tostring(why), true)
         end
@@ -2960,6 +3054,57 @@ local function qTick()
     elseif not r.quiet and r.total > 4 and r.done % 5 == 0 then
         say(string.format("%s: %d of %d...", r.label, r.done, r.total))
     end
+end
+
+-- ---------------------------------------------------------------- arranging a group: mirror, line up, space, level
+-- Seen from the picked one (its turn gives "left / right" and "front / back"); one undo puts them all back.
+function S.arrange(kind)
+    if not S.sel then
+        for id in pairs(S.group) do local o = S.known and S.known[id]; if o then select(o) break end end
+    end
+    if not (S.sel and S.target) then say("Pick objects first (hold A and sweep, or Ctrl+click).", true) return end
+    S.group[S.sel.id] = true
+    local ids = {}
+    for id in pairs(S.group) do if S.known and S.known[id] then ids[#ids + 1] = id end end
+    if #ids < 2 then say("Select two or more objects to arrange them.", true) return end
+    markUndo()
+    S.gbase = nil
+    local h0 = S.target.heading
+    local poses = {}
+    local cx, cz, n = 0, 0, 0
+    for _, id in ipairs(ids) do
+        local p = (id == S.sel.id) and S.target or poseOf(id)
+        poses[id] = { pos = p.pos, heading = p.heading, scale = p.scale }
+        cx += p.pos.x; cz += p.pos.z; n += 1
+    end
+    local C = V(cx / n, 0, cz / n)
+    local function loc(p) return rotY(V(p.x - C.x, 0, p.z - C.z), -h0) end
+    local function wld(l, y) local w = rotY(l, h0); return V(C.x + w.x, y, C.z + w.z) end
+    local L = loc(S.target.pos)
+    if kind == "space" then
+        table.sort(ids, function(a, b) return loc(poses[a].pos).x < loc(poses[b].pos).x end)
+    end
+    local x0, x1 = math.huge, -math.huge
+    for _, id in ipairs(ids) do local l = loc(poses[id].pos); x0 = math.min(x0, l.x); x1 = math.max(x1, l.x) end
+    for i, id in ipairs(ids) do
+        local p = poses[id]
+        local l = loc(p.pos)
+        local a = wrap(p.heading - h0)
+        local np, nh = p.pos, p.heading
+        if kind == "mirrorX" then np = wld(V(-l.x, 0, l.z), p.pos.y); nh = wrap(h0 - a)
+        elseif kind == "mirrorZ" then np = wld(V(l.x, 0, -l.z), p.pos.y); nh = wrap(h0 + math.pi - a)
+        elseif kind == "lineup" then np = wld(V(l.x, 0, L.z), p.pos.y)
+        elseif kind == "space" then np = wld(V(x0 + (x1 - x0) * (i - 1) / (#ids - 1), 0, l.z), p.pos.y)
+        elseif kind == "level" then np = V(p.pos.x, S.target.pos.y, p.pos.z) end
+        if id == S.sel.id then
+            S.target = { pos = np, heading = nh, scale = p.scale }
+            S.dirty = true
+        else
+            S.gt[id] = { pos = np, heading = nh, scale = p.scale }
+        end
+    end
+    local words = { mirrorX = "Mirrored left / right", mirrorZ = "Mirrored front / back", lineup = "Lined up", space = "Spaced evenly", level = "Same height" }
+    say(string.format("%s: %d objects.  (Undo puts them back)", words[kind] or kind, #ids))
 end
 
 -- ---------------------------------------------------------------- grid snapping
@@ -3486,6 +3631,17 @@ end
         say(string.format("Saved the set \"%s\" (%d object%s). Find it under Sets, or in Add object.", name, #objs, #objs == 1 and "" or "s"))
         reskate.log(string.format("Quick Drop helper: saved set %s with %d objects", file, #objs))
     end
+    function S.renameSetFn(set, newName)
+        newName = safeName(newName)
+        if newName == "" then say("A set needs a name.", true) return end
+        local data = { format = "ddh-park-set", version = 1, name = newName, objects = set.objects }
+        local file = string.gsub(newName, " ", "_") .. ".json"
+        local ok, why = pcall(reskate.files.write, FOLDER .. "/" .. file, reskate.json.encode(data, true))
+        if not ok or why == false then say("Not renamed: " .. tostring(why), true) return end
+        if file ~= set.file then pcall(reskate.files.remove, FOLDER .. "/" .. set.file) end
+        S.loadSets()
+        say("Renamed to \"" .. newName .. "\".")
+    end
     function S.deleteSet(set)
         local ok = pcall(reskate.files.remove, FOLDER .. "/" .. set.file)
         S.loadSets()
@@ -3518,7 +3674,8 @@ end
             table.insert(S.q, { op = "place", item = c.item, pos = c.pos, heading = c.heading, scale = c.scale, tilt = c.tilt, rec = rec, idx = i })
             rec.total += 1
         end
-        table.insert(S.undo, { kind = "placed", rec = rec })
+        rec.items = list
+        S.pushUndo({ kind = "placed", rec = rec })
         -- all there: they become the group; the first is picked (and held, with the controller)
         rec.onAll = function(r)
             S.group = {}
@@ -3549,8 +3706,9 @@ end
         local c = S.carry
         if not c then return {} end
         local out = {}
+        local H = c.snapH or c.heading
         for _, e in ipairs(c.set.objects) do
-            out[#out + 1] = { item = e.item, pos = c.pos + rotY(V(e.x or 0, e.y or 0, e.z or 0), c.heading), heading = wrap(c.heading + (e.h or 0)), scale = clamp(e.s or 1, 0.1, 10) }
+            out[#out + 1] = { item = e.item, pos = c.pos + rotY(V(e.x or 0, e.y or 0, e.z or 0), H), heading = wrap(H + (e.h or 0)), scale = clamp(e.s or 1, 0.1, 10) }
         end
         return out
     end
@@ -3560,31 +3718,35 @@ end
         local c = S.carry
         if not (c and S.osnap and S.known) or S.snapPick == "off" then return nil end
         local saveSel, saveT = S.sel, S.target
-        local best, bestG, bestCost = nil, nil, math.huge
+        local best, bestG, bestCost, bestH = nil, nil, math.huge, nil
         for i, e in ipairs(c.set.objects) do
             if i > 40 then break end
-            local p = at + rotY(V(e.x or 0, e.y or 0, e.z or 0), c.heading)
+            local off = V(e.x or 0, e.y or 0, e.z or 0)
+            local p = at + rotY(off, c.heading)
             local h = wrap(c.heading + (e.h or 0))
             local sc = clamp(e.s or 1, 0.1, 10)
             if S.itemBox[e.item] then
                 S.sel = { id = "__carry", item = e.item }
                 S.target = { pos = p, heading = h, scale = sc }
-                local ok, out, g = pcall(objSnap, p, h, sc, allow, nil)
+                -- (like one held object: it meets faces, and turns to meet a turned neighbour flat)
+                local ok, np, nh, g = pcall(snapTurned, p, h, sc, allow, nil)
                 if ok and g and #g > 0 then
-                    local mv = out - p
-                    local cost = len(mv) - (g[1].kind == "touch" and 0.05 or 0)
-                    if cost < bestCost then best, bestG, bestCost = mv, g, cost end
+                    local dh = wrap(nh - h)
+                    local setH = wrap(c.heading + dh)
+                    local setPos = np - rotY(off, setH)
+                    local cost = len(np - p) + math.abs(dh) * 0.5 - (g[1].kind == "touch" and 0.05 or 0)
+                    if cost < bestCost then best, bestG, bestCost, bestH = setPos, g, cost, setH end
                 end
             end
         end
         S.sel, S.target = saveSel, saveT
-        return best, bestG
+        return best, bestG, bestH
     end
     function S.carryDrop()
         local c = S.carry
         if not c then return end
         S.carry = nil
-        S.placeSet(c.set, c.pos, c.heading, true)
+        S.placeSet(c.set, c.pos, c.snapH or c.heading, true)
     end
     function S.carryCancel()
         if not S.carry then return end
@@ -3670,17 +3832,17 @@ local function padEditor(sec)
             local mv = (flat(f) * ly + flat(r) * lx) * st.speed * sec + V(0, up * st.speed * 0.6 * sec, 0)
             c.raw = (c.raw or c.pos) + mv
             -- snapping, like one object: the set moves as one to where its nearest piece meets something
-            local delta, guides = nil, nil
-            local okS, d1, g1 = pcall(S.carrySnap, c.raw, allowFree(lx ~= 0 or ly ~= 0, up ~= 0))
-            if okS then delta, guides = d1, g1 end
+            local spos, guides, sh = nil, nil, nil
+            local okS, p1, g1, h1 = pcall(S.carrySnap, c.raw, allowFree(lx ~= 0 or ly ~= 0, up ~= 0))
+            if okS then spos, guides, sh = p1, g1, h1 end
             c.guides = guides
-            if delta then c.pos = c.raw + delta else c.pos = gridSnap(c.raw) end
+            if spos then c.pos, c.snapH = spos, sh else c.pos, c.snapH = gridSnap(c.raw), nil end
         else
             c.raw = nil
         end
         local tstep = math.rad(st.deg)
-        if padStep("lb", p.lb) then c.heading = wrap(round(c.heading + tstep, tstep)) end
-        if padStep("rb", p.rb) then c.heading = wrap(round(c.heading - tstep, tstep)) end
+        if padStep("lb", p.lb) then c.heading = wrap(round((c.snapH or c.heading) + tstep, tstep)); c.snapH = nil end
+        if padStep("rb", p.rb) then c.heading = wrap(round((c.snapH or c.heading) - tstep, tstep)); c.snapH = nil end
         S.cam.goal = c.pos
         return
     end
@@ -3711,7 +3873,8 @@ local function padEditor(sec)
     if p.ls then st = STEPS[1] end
     if padPress("back", p.back) then
         if holding then S.grab = nil; endHoldMove() end
-        undo(); t = S.target; holding = false
+        if p.lb then redo() else undo() end
+        t = S.target; holding = false
     end
     if padPress("rs", p.rs) then
         -- holding: the copy tools; free: look at the picked object
@@ -3731,12 +3894,13 @@ local function padEditor(sec)
         elseif yt and S.clock - yt.at < 450 and groupCount() > 0 and (yt.sel or not S.aim or S.group[S.aim.id]) then
             -- the second Y: every selected object goes
             S.yTap, S.yHold = nil, nil
-            local rec = newRec("Removed")
             if S.grab then S.grab = nil; endHoldMove() end
-            for gid in pairs(S.group) do table.insert(S.q, { op = "remove", id = gid, rec = rec }); rec.total += 1 end
+            local ids = {}
+            for gid in pairs(S.group) do ids[#ids + 1] = gid end
+            local rec = S.removeUndoable(ids, "Removed")
             S.group, S.gbase = {}, nil
             S.aim = nil
-            say(string.format("Removing %d selected objects...", rec.total))
+            say(string.format("Removing %d selected objects... (View: undo)", rec.total))
         elseif groupCount() > 0 and (not S.aim or S.group[S.aim.id]) then
             -- the first Y with a selection: wait a moment for a second one
             S.yTap = { at = S.clock, id = S.aim and S.aim.id or nil, sel = true }
@@ -4030,7 +4194,8 @@ reskate.on("tick", function(dt)
     if press("T") then S.osnap = not S.osnap; say(S.osnap and "Snap to objects on" or "Snap to objects off") end
     if press("Tab") and S.sel then cycleSnap() end
     if press("F") and S.target then S.cam.goal = S.target.pos end
-    if press("Z") and ctrl then undo() end
+    if press("Z") and ctrl then if reskate.input.key("Shift") then redo() else undo() end end
+    if press("Y") and ctrl then redo() end
     do -- the view: arrows and PageUp / PageDown slide it
         local _, f, r = camBasis()
         local sp = math.max(S.cam.dist, 3) * (reskate.input.key("Shift") and 2.5 or 0.8) * sec
@@ -4465,10 +4630,11 @@ end
             y += 38
         end
         -- the everyday buttons
-        local bw = (w - 16) / 3
-        btn(d, V(x, y, 0), V(x + bw, y + 36, 0), "+  Add", function() if S.openPicker then S.openPicker() end end, "primary")
-        btn(d, V(x + bw + 8, y, 0), V(x + 2 * bw + 8, y + 36, 0), "Undo", function() undo() end)
-        btn(d, V(x + 2 * bw + 16, y, 0), V(x + w, y + 36, 0), "Controls", function() S.controlsOpen = true end)
+        local bw = (w - 18) / 4
+        btn(d, V(x, y, 0), V(x + bw, y + 36, 0), "+ Add", function() if S.openPicker then S.openPicker() end end, "primary")
+        btn(d, V(x + bw + 6, y, 0), V(x + 2 * bw + 6, y + 36, 0), "Undo", function() undo() end)
+        btn(d, V(x + 2 * bw + 12, y, 0), V(x + 3 * bw + 12, y + 36, 0), "Redo", function() if S.redoFn then S.redoFn() end end)
+        btn(d, V(x + 3 * bw + 18, y, 0), V(x + w, y + 36, 0), "Controls", function() S.controlsOpen = true end)
         y += 48
         -- tabs
         S.ptab = S.ptab or 1
@@ -4559,7 +4725,7 @@ end
             if #S.sets == 0 then
                 d:text(V(x + 4, y, 0), "None yet.", { size = 14, colour = UI.dim }); y += 26
             end
-            local rowH = 46
+            local rowH = 76
             local maxRows = math.max(2, math.floor((b.y - 120 - y) / rowH))
             for i, set in ipairs(S.sets) do
                 if i > maxRows then
@@ -4568,14 +4734,38 @@ end
                 end
                 local ra, rb = V(x, y, 0), V(x + w, y + rowH - 6, 0)
                 d:rect(ra, rb, { colour = UI.tile, fill = true, rounding = 9 })
+                -- its layout from above
+                local pa, pb2 = V(x + 6, y + 6, 0), V(x + 58, y + 34, 0)
+                d:rect(pa, pb2, { colour = "#00000040", fill = true, rounding = 6 })
+                pcall(UI.drawSetPreview, d, set, pa + V(3, 3, 0), pb2 - V(3, 3, 0), UI.purple)
                 local nmS = set.name
-                if #nmS > 20 then nmS = string.sub(nmS, 1, 19) .. "…" end
-                d:text(V(x + 12, y + 5, 0), nmS, { size = 15, colour = UI.text, font = "bold" })
-                d:text(V(x + 12, y + 23, 0), string.format("%d objects", #set.objects), { size = 12, colour = UI.dim })
-                btn(d, V(rb.x - 132, y + 6, 0), V(rb.x - 52, y + rowH - 12, 0), "Place", function() S.carrySet(set, crossPoint(), wrap(S.cam.yaw + math.pi)) end, "primary")
-                btn(d, V(rb.x - 46, y + 6, 0), V(rb.x - 6, y + rowH - 12, 0), "×", function()
+                if #nmS > 22 then nmS = string.sub(nmS, 1, 21) .. "…" end
+                d:text(V(x + 66, y + 5, 0), nmS, { size = 15, colour = UI.text, font = "bold" })
+                d:text(V(x + 66, y + 23, 0), string.format("%d objects", #set.objects), { size = 12, colour = UI.dim })
+                local by = y + 38
+                local bw4 = (w - 12 - 18) / 4
+                local bx = x + 6
+                btn(d, V(bx, by, 0), V(bx + bw4, by + 28, 0), "Place", function() S.carrySet(set, crossPoint(), wrap(S.cam.yaw + math.pi)) end, "primary")
+                btn(d, V(bx + bw4 + 6, by, 0), V(bx + 2 * bw4 + 6, by + 28, 0), "Rename", function()
+                    S.renameSet = set
+                    local ok = pcall(reskate.ui.dialog, "ddh_setrename", { title = "Rename set", message = "A new name.", field = { text = set.name, max = 40 },
+                        buttons = { { id = "apply", label = "Rename" }, { id = "close", label = "Cancel" } } })
+                    if ok then S.typing = true end
+                end)
+                btn(d, V(bx + 2 * bw4 + 12, by, 0), V(bx + 3 * bw4 + 12, by + 28, 0), "Update", function()
+                    if S.updSetAsk == set.file and S.clock - (S.updSetAt or 0) < 3000 then
+                        S.updSetAsk = nil
+                        S.saveSet(set.name)
+                    else
+                        local nm2 = #(S.setMembers and S.setMembers() or {})
+                        if nm2 == 0 then say("Pick an object or make a group first: Update saves it over this set.", true) return end
+                        S.updSetAsk, S.updSetAt = set.file, S.clock
+                        say(string.format("Click Update again to save the %d selected over \"%s\".", nm2, set.name))
+                    end
+                end)
+                btn(d, V(bx + 3 * bw4 + 18, by, 0), V(rb.x - 6, by + 28, 0), "Delete", function()
                     if S.delSetAsk == set.file and S.clock - (S.delSetAt or 0) < 3000 then S.delSetAsk = nil; S.deleteSet(set)
-                    else S.delSetAsk, S.delSetAt = set.file, S.clock; say("Click × again to delete \"" .. set.name .. "\".") end
+                    else S.delSetAsk, S.delSetAt = set.file, S.clock; say("Click Delete again to delete \"" .. set.name .. "\".") end
                 end)
                 y += rowH
             end
@@ -4588,6 +4778,16 @@ end
             btn(d, V(x + gw + 8, y, 0), V(x + w, y + 34, 0), "Clear group", function() if S.clearGroup then S.clearGroup() end end)
             y += 42
             btn(d, V(x, y, 0), V(x + w, y + 34, 0), "Copy tools   (row, circle, grid)", function() if S.openTools then S.openTools() end end)
+            y += 46
+            y = label(d, x, y, "Arrange the group")
+            local aw = (w - 8) / 2
+            btn(d, V(x, y, 0), V(x + aw, y + 30, 0), "Mirror left / right", function() S.arrange("mirrorX") end)
+            btn(d, V(x + aw + 8, y, 0), V(x + w, y + 30, 0), "Mirror front / back", function() S.arrange("mirrorZ") end)
+            y += 36
+            local a3 = (w - 12) / 3
+            btn(d, V(x, y, 0), V(x + a3, y + 30, 0), "Line up", function() S.arrange("lineup") end)
+            btn(d, V(x + a3 + 6, y, 0), V(x + 2 * a3 + 6, y + 30, 0), "Space evenly", function() S.arrange("space") end)
+            btn(d, V(x + 2 * a3 + 12, y, 0), V(x + w, y + 30, 0), "Same height", function() S.arrange("level") end)
             y += 50
             rebuildList()
             y = label(d, x, y, string.format("Objects in this park  ·  %d", S.listMatched or 0))
@@ -4647,6 +4847,15 @@ end
             d:text(V(x + 4, b.y - 30, 0), msg, { size = 13, colour = UI.dim })
         end
     end
+    reskate.on("throwdown_ui", function(e)
+        if e.action ~= "dialog" or e.args[1] ~= "ddh_setrename" then return end
+        local what = e.args[2]
+        if what ~= "apply" and what ~= "cancel" and what ~= "close" then return end
+        S.typing = false
+        if what ~= "cancel" then pcall(reskate.ui.close_dialog, "ddh_setrename") end
+        if what == "apply" and S.renameSet and S.renameSetFn then S.renameSetFn(S.renameSet, tostring(e.args[3] or "")) end
+        S.renameSet = nil
+    end)
     reskate.on("throwdown_ui", function(e)
         if e.action ~= "dialog" or e.args[1] ~= "ddh_setname" then return end
         local what = e.args[2]
@@ -4735,7 +4944,7 @@ end
         callout(d, V(cx - 150, cy - 141, 0), V(lx, cy - 205, 0), "LT   lower", false)
         callout(d, V(cx - 125, cy - 112, 0), V(lx, cy - 150, 0), "LB   turn  ·  clear group", false)
         callout(d, ls, V(lx, cy - 70, 0), "L-stick   move  ·  L3 snap", false)
-        callout(d, vw, V(lx, cy + 5, 0), "View   undo", false)
+        callout(d, vw, V(lx, cy + 5, 0), "View   undo  ·  LB+View redo", false)
         callout(d, dp, V(lx, cy + 80, 0), "D-pad   size  ·  row copy", false)
         callout(d, V(cx + 150, cy - 141, 0), V(rx, cy - 205, 0), "RT   raise", true)
         callout(d, V(cx + 125, cy - 112, 0), V(rx, cy - 160, 0), "RB   turn  ·  add to group", true)
@@ -4789,7 +4998,7 @@ end
             { { "Tab" }, "snap target: auto, one object, off" },
             { { "G" }, "drag in steps" },
             { { "F" }, "look at the picked object" },
-            { { "Ctrl" }, { "Z" }, "undo" },
+            { { "Ctrl" }, { "Z" }, "undo        Ctrl + Y: redo" },
             { { "Shift" }, "bigger steps" },
             { { "Ctrl" }, "hold while dragging: no snapping" },
             { { "Arrows" }, { "PgUp" }, { "PgDn" }, "fly the view" },
