@@ -1158,7 +1158,10 @@ local function objSnap(pos, heading, scale, allow, tl)
                                 end
                                 local ovu = math.min(u1, E.ulen) - math.max(u0, 0)
                                 local ovv = math.min(v1, E.vlen) - math.max(v0, 0)
-                                if c < 0 then
+                                -- (two sides that are not at the same height at all, like one sitting on top of the
+                                -- other, do not meet: else a stacked object is pulled down beside it)
+                                local stacked = F.side and E.side and ovv <= 0.02
+                                if c < 0 and not stacked then
                                     -- facing each other: they meet
                                     local g = math.max(0, -ovu, -ovv)
                                     if g <= SNAP_TOUCH then
@@ -1180,7 +1183,7 @@ local function objSnap(pos, heading, scale, allow, tl)
                                             add(E.v, 0 - v0, "match", 0.5, nil, nil, nil, math.max(thr, math.min(E.vlen * 0.5, 0.75)))
                                         end
                                     end
-                                elseif math.max(0, -ovu, -ovv) <= SNAP_REACH then
+                                elseif (c > 0 or not stacked) and math.max(0, -ovu, -ovv) <= SNAP_REACH then
                                     -- facing the same way: lined up flush
                                     add(E.n, -dline, "level", 1)
                                 end
@@ -1198,7 +1201,8 @@ local function objSnap(pos, heading, scale, allow, tl)
                   if q.x >= x0 and q.x <= x1 and q.y >= y0 and q.y <= y1 and q.z >= z0 and q.z <= z1 then
                     local du, dv = dot(q - E.o, E.u), dot(q - E.o, E.v)
                     -- (only a corner that lands on the face itself)
-                    if du > -0.02 and du < E.ulen + 0.02 and dv > -0.02 and dv < E.vlen + 0.02 then
+                    local vin = E.side and (dv > 0.02 and dv < E.vlen - 0.02) or (dv > -0.02 and dv < E.vlen + 0.02)
+                    if du > -0.02 and du < E.ulen + 0.02 and vin then
                         local dd = dot(q - E.o, E.n)
                         if dd < best then best, inside = dd, du > 0.01 and du < E.ulen - 0.01 and dv > 0.01 and dv < E.vlen - 0.01 end
                     end
@@ -1319,33 +1323,37 @@ function FN.supportY(item, pos, heading, scale, selfId)
     local ax, az = V(math.cos(heading), 0, -math.sin(heading)), V(math.sin(heading), 0, math.cos(heading))
     local mx, mz = (lo.x + hi.x) / 2, (lo.z + hi.z) / 2
     local wx, wz = (hi.x - lo.x) * 0.4, (hi.z - lo.z) * 0.4
-    -- (its middle only: pushed against something it meets it side on; pushed on over it, it climbs on top)
-    local pts = { V(mx, 0, mz) }
-    local _ = wx + wz
     local me = selfId and S.known and S.known[selfId]
     local mine = { me and me.position, S.lastSent and S.lastSent.id == selfId and S.lastSent.pos or nil }
     -- (and the ones it takes along)
     if S.gbase and S.gbase.leader == selfId then
         for fid in pairs(S.gbase.m) do local fo = S.known and S.known[fid]; if fo then mine[#mine + 1] = fo.position end end
     end
-    local best = nil
-    for _, q in ipairs(pts) do
-        local wpt = pos + ax * q.x + az * q.z
+    -- the first thing (not mine) straight down from a point
+    local function down(x, z)
+        local wpt = pos + ax * x + az * z
         local from, to = V(wpt.x, bottom + 1.5, wpt.z), V(wpt.x, bottom - 40, wpt.z)
         for _ = 1, 3 do
             local ok, hit = pcall(reskate.world.pick, from, to)
-            if not (ok and type(hit) == "table" and hit.position) then break end
-            if hit.position.y <= to.y + 1e-3 then break end   -- (the end of the ray: nothing there)
+            if not (ok and type(hit) == "table" and hit.position) then return nil end
+            if hit.position.y <= to.y + 1e-3 then return nil end   -- (the end of the ray: nothing there)
             local own = false
             if hit.object and hit.object.position then
                 for _, mp in pairs(mine) do if mp and len(hit.object.position - mp) < 0.05 then own = true end end
             end
-            if own then
-                from = hit.position - V(0, 0.02, 0)
-            else
-                if not best or hit.position.y > best then best = hit.position.y end
-                break
-            end
+            if not own then return hit.position.y end
+            from = hit.position - V(0, 0.02, 0)
+        end
+        return nil
+    end
+    -- (its middle decides: pushed against something it meets it side on; pushed on over it, it climbs on top)
+    local best = down(mx, mz)
+    -- but it only steps down once it is off what it stands on: while a corner (a little in) still rests on it,
+    -- it stays up there (else a box on top of another drops off as soon as its middle passes the edge)
+    if best and best < bottom - 0.03 then
+        for _, c in ipairs({ { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } }) do
+            local y = down(mx + wx * c[1], mz + wz * c[2])
+            if y and math.abs(y - bottom) <= 0.03 then best = bottom; break end
         end
     end
     if not best then return nil end
