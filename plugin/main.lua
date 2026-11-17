@@ -3610,8 +3610,13 @@ local function padEditor(sec)
         S.padWait = false
     end
     -- the controller is in use: the aiming cross shows
-    local anyIn = math.abs(p.lx) > 0.2 or math.abs(p.ly) > 0.2 or math.abs(p.rx) > 0.2 or math.abs(p.ry) > 0.2 or p.lt > 0.2 or p.rt > 0.2
-    for k in pairs(PADNAMES) do if p[k] then anyIn = true end end
+    -- (a clear push only: a resting stick or trigger does not count, so the mouse keeps its handles)
+    local anyIn = math.abs(p.lx) > 0.5 or math.abs(p.ly) > 0.5 or math.abs(p.rx) > 0.5 or math.abs(p.ry) > 0.5 or p.lt > 0.5 or p.rt > 0.5
+    S.padPrevB = S.padPrevB or {}
+    for k in pairs(PADNAMES) do
+        if p[k] and not S.padPrevB[k] then anyIn = true end
+        S.padPrevB[k] = p[k]
+    end
     if anyIn then S.padUsedAt = S.clock end
 
     if S.picker then pickerPad(p) return end
@@ -4809,7 +4814,7 @@ local function drawMain(d)
         if not okt then reskate.log("Quick Drop helper: copy tools: " .. tostring(errt), "warn"); S.toolsWin = nil end
     end
     -- the controller's view (when the controller was used last): aiming cross, what it is on, prompts along the bottom
-    local padMode = S.padUsedAt and (not S.mouseUsedAt or S.padUsedAt >= S.mouseUsedAt) and S.clock - S.padUsedAt < 60000
+    local padMode = S.padUsedAt ~= nil and (not S.mouseUsedAt or S.padUsedAt > S.mouseUsedAt) and S.clock - S.padUsedAt < 60000
     if padMode then pcall(UI.drawPadHud, d) end
     if padMode and not S.grab and not S.drag then return end
     if not S.target then return end
