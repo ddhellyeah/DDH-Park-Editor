@@ -83,6 +83,7 @@ local function titleOf(key)
 end
 
 local function select(o, blueprint)
+    if not (o and S.sel and o.id == S.sel.id) then S.snapPick = nil end
     if S.sel and S.target and S.group and S.group[S.sel.id] and not (o and o.id == S.sel.id) then
         -- a group member stops being the held one: its place is kept for the others (and sent if it is not yet)
         local t = S.target
@@ -413,6 +414,7 @@ local SNAP_REACH = 4     -- metres past the boxes within which sides line up
 local SNAP_TOUCH = 0.5   -- metres apart sideways at most for two sides to meet
 local SNAP_MAX = 12      -- nearest objects looked at
 local SNAP_TURN = math.rad(5)
+local LEVEL_NEAR = 1.0   -- metres apart at most for lining up with any but the nearest object
 local HEIGHT_FIT = 1.0   -- metres up or down at most that an object goes to take the height of one it meets
 
 local function boxLog(text)
@@ -914,15 +916,25 @@ end
 -- allow(direction, metres) answers how such a move may be made for the handle in use: the move as a vector and
 -- the direction it goes along, or nil when that handle cannot go that way.
 -- Returns the place, and what it snapped to (a list of { o, nb, kind }) or nil.
+-- snapping to: "auto" (the nearest), one chosen object (L3 tap / Tab cycles), or "off"
+S.snapPick = nil
+local function snapAllowed(id)
+    if follower(id) then return false end
+    local sp = S.snapPick
+    if sp == nil then return true end
+    if sp == "off" then return false end
+    return id == sp
+end
 local function objSnap(pos, heading, scale, allow, tl)
     if not (S.osnap and S.sel and S.known) then return pos, nil end
+    if S.snapPick == "off" then return pos, nil end
     local thr = clamp(S.cam.dist * 0.03, 0.12, 0.5)
     local me = worldSolid(S.sel.item, pos, heading, scale, tl)
     local mc = cornersOf(me)
     local reach = SNAP_REACH + len(me.hi - me.lo)
     local near = {}
     for id, o in pairs(S.known) do
-        if id ~= S.sel.id and not follower(id) then
+        if id ~= S.sel.id and snapAllowed(id) then
             local d = len(o.position - pos)
             local b = S.itemBox[o.item]
             if d < reach + (b and len((b[2] - b[1]) * (o.scale or 1)) or 0) then
@@ -945,8 +957,11 @@ local function objSnap(pos, heading, scale, allow, tl)
     for i = 1, math.min(#near, SNAP_MAX) do
         local o = near[i].o
         local nb = near[i].nb
+        local farOff = i > 1 and near[i].gap > LEVEL_NEAR
         local function add(axis, m, kind, rank, n, corner, fit)
             if math.abs(m) > thr then return end
+            -- in a crowd: lining up only with the nearest object, or ones within a metre
+            if kind == "level" and farOff then return end
             local mv, dir = allow(axis, m)
             if mv then cands[#cands + 1] = { mv = mv, dir = dir, cost = len(mv), rank = rank, o = o, nb = nb, kind = kind, n = n, corner = corner, near = i, fit = fit } end
         end
@@ -1073,7 +1088,11 @@ local function objSnap(pos, heading, scale, allow, tl)
     end
     for _, c in ipairs(cands) do
         local ok = true
+        -- after the first: more of the same object, or another one it meets face to face (fitting in a gap);
+        -- not lining up with other objects round about (in a crowd that pulls it the wrong way)
+        if first and c.o ~= first.o and not (c.kind == "touch" and c.rank == 0) then ok = false end
         for _, q in ipairs(picked) do
+            if not ok then break end
             if math.abs(dot(c.dir, q.dir)) > 0.05 then ok = false break end
         end
         if ok then
@@ -1146,7 +1165,7 @@ local function turnSnap(hd)
     if not (S.osnap and S.sel and S.known and S.target) then return hd, nil end
     local best, bd = nil, SNAP_REACH + 4
     for id, o in pairs(S.known) do
-        if id ~= S.sel.id and not follower(id) then
+        if id ~= S.sel.id and snapAllowed(id) then
             local d = len(o.position - S.target.pos)
             if d < bd then best, bd = o, d end
         end
@@ -1213,7 +1232,7 @@ local function alignSnap(pos, base, scale, allow, baseTilt)
     end
     local near = {}
     for id, o in pairs(S.known) do
-        if id ~= S.sel.id and not follower(id) and S.itemBox[o.item] then
+        if id ~= S.sel.id and snapAllowed(id) and S.itemBox[o.item] then
             local b = S.itemBox[o.item]
             local d = len(o.position - pos) - len((b[2] - b[1]) * (o.scale or 1)) / 2
             if d < SNAP_REACH + 2 then near[#near + 1] = { o = o, d = d } end
@@ -1961,6 +1980,7 @@ local function oldPanel(ui)
         ui:info("RB / LB", "group: add or take out / clear")
         ui:info("Right stick / R3", "turn the view / look at it (holding: copy tools)")
         ui:info("Ctrl+click", "group: add or take out")
+        ui:info("Tab / tap L3", "snap: auto / one object / off")
         ui:info("View / Menu", "undo / Fine-Normal-Big")
         ui:info("Hold L3", "Fine while held")
     end
@@ -1970,6 +1990,13 @@ end
 -- ---------------------------------------------------------------- the new panel (ReSkate 2.1.4 widgets)
 -- step sizes for the steppers: metres, degrees, size
 -- (speed: how fast the controller slides a held object, m/s; fly: how fast the free view flies, times)
+local function snapLabelP()
+    local sp = S.snapPick
+    if sp == nil then return "auto (nearest)" end
+    if sp == "off" then return "off" end
+    local o = S.known and S.known[sp]
+    return o and titleOf(o.item) or "auto (nearest)"
+end
 local GRID_NAMES_P = { "Off", "0.25 m", "0.5 m", "1 m", "2 m" }
 local STEPS = {
     { m = 0.01, deg = 1, size = 0.01, speed = 0.4, fly = 0.3, name = "Fine", mf = "%.2f m", df = "%.0f°", sf = "%.2f×" },
@@ -2135,6 +2162,11 @@ local function newPanel(ui)
         if sn ~= nil then S.snap = sn end
         local ob = ui:toggle("osnap", "Snap to objects (T)", S.osnap)
         if ob ~= nil then S.osnap = ob end
+        ui:info("Snaps to (Tab / L3)", snapLabelP())
+        local sb = ui:buttons("snappick", { "Auto", "Next object", "Off" }, 0)
+        if sb == 1 then S.snapPick = nil; S.snapLock = nil end
+        if sb == 2 and S.cycleSnap then if S.snapPick == "off" then S.snapPick = nil end; S.cycleSnap(); if S.snapPick == nil then S.cycleSnap() end end
+        if sb == 3 then S.snapPick = "off"; S.guides = nil end
     end
 
     -- several at once, and copies in rows / circles / grids
@@ -2229,6 +2261,7 @@ local function newPanel(ui)
         ui:info("RB / LB", "group: add or take out / clear")
         ui:info("Right stick / R3", "turn the view / look at it (holding: copy tools)")
         ui:info("Ctrl+click", "group: add or take out")
+        ui:info("Tab / tap L3", "snap: auto / one object / off")
         ui:info("View / Menu", "undo / Fine-Normal-Big")
         ui:info("Hold L3", "Fine while held")
     end
@@ -2479,6 +2512,7 @@ local function startGrab()
     local t = S.target
     local tl = S.tilt[S.sel.id]
     S.grab = { id = S.sel.id, pos = t.pos, heading = t.heading, scale = t.scale, tilt = tl and { x = tl.x, z = tl.z } or nil }
+    S.snapPick = nil
     markUndo()
     if S.group[S.sel.id] then groupBase() else S.gbase = nil end
     S.cam.goal = t.pos
@@ -2497,6 +2531,7 @@ end
 local function placeGrab()
     endHoldMove()
     S.grab = nil
+    S.snapPick = nil
     S.dirty = true
     if S.target and not sameAsSent(S.target) then S.lastSend = math.min(S.lastSend, S.clock - 250) end
     say("Put down.")
@@ -2504,6 +2539,7 @@ end
 local function cancelGrab()
     local g = S.grab
     S.grab = nil
+    S.snapPick = nil
     S.toolsWin = nil
     S.padRaw, S.guides, S.snapLock, S.tighten = nil, nil, nil, nil
     if g and g.copyRec then
@@ -2595,6 +2631,55 @@ local function copyHeld()
     end
     S.copyQ = { item = S.sel.item, pos = t.pos, heading = t.heading, scale = t.scale, tilt = S.tilt[S.sel.id], until_ = S.clock + 3000 }
 end
+-- the objects near the held one, nearest first (for choosing what it snaps to)
+local function snapChoices()
+    local out = {}
+    if not (S.sel and S.target and S.known) then return out end
+    local t = S.target
+    local me = worldSolid(S.sel.item, t.pos, t.heading, t.scale, S.tilt[S.sel.id])
+    for id, o in pairs(S.known) do
+        if id ~= S.sel.id and not follower(id) then
+            local d = len(o.position - t.pos)
+            if d < 30 then
+                local nb = placedSolid(o)
+                local gap = (me.x0 and nb.x0) and apart3(me, nb) or d
+                if gap < SNAP_REACH then out[#out + 1] = { id = id, gap = gap, d = d } end
+            end
+        end
+    end
+    table.sort(out, function(a, b) if math.abs(a.gap - b.gap) > 1e-4 then return a.gap < b.gap end return a.d < b.d end)
+    while #out > 6 do table.remove(out) end
+    return out
+end
+-- auto -> the nearest -> the next ... -> off -> auto
+local function cycleSnap()
+    local ch = snapChoices()
+    local cur = S.snapPick
+    local nxt
+    if cur == nil then
+        nxt = ch[1] and ch[1].id or "off"
+    elseif cur == "off" then
+        nxt = nil
+    else
+        local at = 0
+        for i, c in ipairs(ch) do if c.id == cur then at = i end end
+        nxt = ch[at + 1] and ch[at + 1].id or "off"
+    end
+    S.snapPick = nxt
+    S.snapLock, S.guides = nil, nil
+    if nxt == nil then say("Snap: auto (the nearest object)")
+    elseif nxt == "off" then say("Snap: off")
+    else say("Snap: only to " .. titleOf(S.known[nxt].item) .. "  (again: the next one)") end
+end
+S.cycleSnap = cycleSnap
+local function snapLabel()
+    local sp = S.snapPick
+    if sp == nil then return "auto" end
+    if sp == "off" then return "off" end
+    local o = S.known and S.known[sp]
+    return o and titleOf(o.item) or "auto"
+end
+
 local startGrabRef
 -- X in free view: a copy of the object under the cross, in the same place, picked up to be moved away
 local function copyAimed(o)
@@ -3234,6 +3319,12 @@ local function padEditor(sec)
         S.stepSize = S.stepSize % #STEPS + 1
         say("Steps: " .. STEPS[S.stepSize].name)
     end
+    -- L3 tapped while holding: what it snaps to (auto, each nearby object, off); held: Fine
+    if p.ls and not S.l3At then S.l3At = S.clock end
+    if not p.ls and S.l3At then
+        if holding and S.clock - S.l3At < 300 then cycleSnap() end
+        S.l3At = nil
+    end
     -- the step size chosen (Fine / Normal / Big); L3 held: Fine
     local st = STEPS[S.stepSize] or STEPS[2]
     if p.ls then st = STEPS[1] end
@@ -3478,6 +3569,7 @@ reskate.on("tick", function(dt)
     if press("R") then S.mode = 3 end
     if press("G") then S.snap = not S.snap end
     if press("T") then S.osnap = not S.osnap; say(S.osnap and "Snap to objects on" or "Snap to objects off") end
+    if press("Tab") and S.sel then cycleSnap() end
     if press("F") and S.target then S.cam.goal = S.target.pos end
     if press("Z") and ctrl then undo() end
     do -- the view: arrows and PageUp / PageDown slide it
@@ -3732,7 +3824,7 @@ reskate.on("draw", function(d)
         local ng = groupCount()
         if ng > 0 then d:text(c + V(-60, -150, 0), string.format("Group: %d", ng), { size = 18, colour = "#c49bff", shadow = true }) end
         if S.grab then
-            d:text(c + V(-300, 150, 0), "A put down    B cancel    X copy    D-pad left/right: row    R3: copy tools    Menu: " .. (STEPS[S.stepSize] or STEPS[2]).name, { size = 18, colour = "#ffffff", shadow = true })
+            d:text(c + V(-400, 150, 0), "A put down    B cancel    X copy    D-pad left/right: row    R3: copy tools    L3: snap (" .. snapLabel() .. ")    Menu: " .. (STEPS[S.stepSize] or STEPS[2]).name, { size = 18, colour = "#ffffff", shadow = true })
         else
             d:circle(c, 8, { colour = "#ffffffcc", thickness = 2 })
             d:line(c - V(16, 0, 0), c - V(10, 0, 0), { colour = "#ffffffcc", thickness = 2 })
@@ -3892,6 +3984,15 @@ reskate.on("draw", function(d)
         d:text(center + V(14, -30, 0), string.format("%.2f×", t.scale), { size = 18, colour = "#ffffff", shadow = true })
     end
     d:circle(center, 4, { colour = "#ffffff", fill = true })
+    -- what it snaps to, when chosen (L3 tap / Tab): that object in orange
+    if S.snapPick then
+        local o = S.snapPick ~= "off" and S.known and S.known[S.snapPick]
+        if o then
+            local so = placedSolid(o)
+            drawShape(d, so.shape or so, "#ffa640", 4, so.xf)
+        end
+        d:text(center + V(14, 8, 0), "snap: " .. snapLabel(), { size = 16, colour = "#ffa640", shadow = true })
+    end
     -- what it is snapped to: that object's box (or its point), and how
     if S.guides then
         local WORDS = { touch = "touching", level = "lined up", turn = "same turn" }
