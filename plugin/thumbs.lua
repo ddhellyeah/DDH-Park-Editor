@@ -145,4 +145,11 @@ return {
     ["own_bkddh_softbox_6_lights____________00001"] = { 9, 2, 3 },
     ["own_bkddh_spine_transfer______________00001"] = { 9, 3, 3 },
     ["own_bkddh_test_box2___________________00001"] = { 10, 0, 0 },
+    ["own_bkddh_raw_truck_troph_____________00001"] = { 10, 1, 0 },
+    ["own_bkddh_ddh_pole_jam________________00001"] = { 10, 2, 0 },
+    ["own_bkddh_dtn_plt_02_props____________00001"] = { 10, 3, 0 },
+    ["own_bkddh_raw_basketball______________00001"] = { 10, 0, 1 },
+    ["own_bkddh_raw_basketball__2___________00001"] = { 10, 1, 1 },
+    ["own_bkddh_raw_train_cart______________00001"] = { 10, 2, 1 },
+    ["own_bkddh_raw_vending_mac_____________00001"] = { 10, 3, 1 },
 }
