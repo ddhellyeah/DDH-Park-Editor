@@ -1130,8 +1130,8 @@ local function objSnap(pos, heading, scale, allow, tl)
         local o = near[i].o
         local nb = near[i].nb
         local farOff = i > 1 and near[i].gap > LEVEL_NEAR
-        local function add(axis, m, kind, rank, n, corner, fit)
-            if math.abs(m) > thr then return end
+        local function add(axis, m, kind, rank, n, corner, fit, tol)
+            if math.abs(m) > (tol or thr) then return end
             -- in a crowd: lining up only with the nearest object, or ones within a metre
             if kind == "level" and farOff then return end
             local mv, dir = allow(axis, m)
@@ -1170,6 +1170,14 @@ local function objSnap(pos, heading, scale, allow, tl)
                                             add(E.u, 0 - u0, "level", 1); add(E.u, E.ulen - u1, "level", 1)
                                             add(E.u, 0 - u1, "level", 1); add(E.u, E.ulen - u0, "level", 1)
                                             add(E.v, 0 - v0, "level", 1); add(E.v, E.vlen - v1, "level", 1)
+                                        end
+                                        -- the same size face to face (like Skate 3's pieces): edges exactly together, from
+                                        -- further off (up to half the face), so the two join without a step or a gap
+                                        if math.abs((u1 - u0) - E.ulen) < 0.02 then
+                                            add(E.u, 0 - u0, "match", 0.5, nil, nil, nil, math.max(thr, math.min(E.ulen * 0.5, 0.75)))
+                                        end
+                                        if not (F.side and E.side) and math.abs((v1 - v0) - E.vlen) < 0.02 then
+                                            add(E.v, 0 - v0, "match", 0.5, nil, nil, nil, math.max(thr, math.min(E.vlen * 0.5, 0.75)))
                                         end
                                     end
                                 elseif math.max(0, -ovu, -ovv) <= SNAP_REACH then
@@ -1300,6 +1308,50 @@ local function allowIn(n)      -- a square: only across its plane (a sloped face
         return w * (m / l2), w * (1 / math.sqrt(l2))
     end
 end
+-- landing on what is under it: rays straight down at its middle and corners, from a little above its bottom (so it
+-- steps up onto things up to 1.5 m higher, and down onto anything lower); the held object itself is looked through
+S.landOn = true
+function FN.supportY(item, pos, heading, scale, selfId)
+    local b = S.itemBox[item]
+    local lo, hi = V(-0.3, 0, -0.3), V(0.3, 1, 0.3)
+    if b then lo, hi = b[1] * scale, b[2] * scale end
+    local bottom = pos.y + lo.y
+    local ax, az = V(math.cos(heading), 0, -math.sin(heading)), V(math.sin(heading), 0, math.cos(heading))
+    local mx, mz = (lo.x + hi.x) / 2, (lo.z + hi.z) / 2
+    local wx, wz = (hi.x - lo.x) * 0.4, (hi.z - lo.z) * 0.4
+    -- (its middle only: pushed against something it meets it side on; pushed on over it, it climbs on top)
+    local pts = { V(mx, 0, mz) }
+    local _ = wx + wz
+    local me = selfId and S.known and S.known[selfId]
+    local mine = { me and me.position, S.lastSent and S.lastSent.id == selfId and S.lastSent.pos or nil }
+    -- (and the ones it takes along)
+    if S.gbase and S.gbase.leader == selfId then
+        for fid in pairs(S.gbase.m) do local fo = S.known and S.known[fid]; if fo then mine[#mine + 1] = fo.position end end
+    end
+    local best = nil
+    for _, q in ipairs(pts) do
+        local wpt = pos + ax * q.x + az * q.z
+        local from, to = V(wpt.x, bottom + 1.5, wpt.z), V(wpt.x, bottom - 40, wpt.z)
+        for _ = 1, 3 do
+            local ok, hit = pcall(reskate.world.pick, from, to)
+            if not (ok and type(hit) == "table" and hit.position) then break end
+            if hit.position.y <= to.y + 1e-3 then break end   -- (the end of the ray: nothing there)
+            local own = false
+            if hit.object and hit.object.position then
+                for _, mp in pairs(mine) do if mp and len(hit.object.position - mp) < 0.05 then own = true end end
+            end
+            if own then
+                from = hit.position - V(0, 0.02, 0)
+            else
+                if not best or hit.position.y > best then best = hit.position.y end
+                break
+            end
+        end
+    end
+    if not best then return nil end
+    return best - lo.y
+end
+
 local function allowFree(level, updown)   -- the controller: the ways it is being moved right now
     local flat = allowIn(UP)
     return function(ax, m)
@@ -4180,6 +4232,16 @@ function FN.padEditor(sec)
             S.padTilt0 = tl0 and { x = tl0.x, z = tl0.z } or nil
         end
         S.padRaw = (S.padRaw or t.pos) + mv
+        if S.landOn and up == 0 and (lx ~= 0 or ly ~= 0) and not tilted(S.sel.id) then
+            if S.clock - (S.landAt or -1e9) > 70 then
+                S.landAt = S.clock
+                local okL, y = pcall(FN.supportY, S.sel.item, S.padRaw, S.padHd0 or t.heading, t.scale, S.sel.id)
+                S.landY = okL and y or nil
+            end
+            if S.landY then S.padRaw = V(S.padRaw.x, S.landY, S.padRaw.z) end
+        else
+            S.landY = nil
+        end
         local ntl
         t.pos, t.heading, S.guides, ntl = snapTurned(S.padRaw, S.padHd0 or t.heading, t.scale, allowFree(lx ~= 0 or ly ~= 0, up ~= 0), S.padTilt0)
         t.pos = FN.gridSnap(t.pos, S.guides)
@@ -4458,6 +4520,10 @@ reskate.on("tick", function(dt)
                             off = o2
                         end
                         t.pos = g.start.pos + off
+                        if S.landOn and math.abs(g.n.y) > 0.9 and not tilted(S.sel.id) then
+                            local okL, y = pcall(FN.supportY, S.sel.item, t.pos, g.start.heading, t.scale, S.sel.id)
+                            if okL and y then t.pos = V(t.pos.x, y, t.pos.z) end
+                        end
                         local ntl
                         if toObjects then t.pos, t.heading, S.guides, ntl = snapTurned(t.pos, g.start.heading, t.scale, allowIn(g.n), g.start.tilt) else t.heading, ntl = g.start.heading, g.start.tilt end
                         if math.abs(g.n.y) > 0.9 then t.pos = FN.gridSnap(t.pos, S.guides) end
@@ -4828,7 +4894,8 @@ end
             end
             y = label(d, x, y, "Grid")
             y = seg(d, x, y, w, FN.GRID_NAMES_P, S.gridI or 1, function(i) S.gridI = i end) + 14
-            y = switch(d, x, y, w, "Drag in steps   (G)", S.snap, function() S.snap = not S.snap end)
+            y = switch(d, x, y, w, "Drag in steps   (G)", S.snap, function() S.snap = not S.snap end) + 8
+            y = switch(d, x, y, w, "Land on what is under it", S.landOn, function() S.landOn = not S.landOn end)
         elseif S.ptab == 4 then
             -- ---------------------------------------------------------------- sets
             local nm = #(S.setMembers and S.setMembers() or {})
@@ -5363,7 +5430,7 @@ function FN.drawMain(d)
     end
     -- what it is snapped to: that object's box (or its point), and how
     if S.guides then
-        local WORDS = { touch = "touching", level = "lined up", turn = "same turn" }
+        local WORDS = { touch = "touching", level = "lined up", turn = "same turn", match = "same size" }
         local seen = {}
         for _, gd in ipairs(S.guides) do
             local id = gd.o.id
