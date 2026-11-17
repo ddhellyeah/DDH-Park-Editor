@@ -2152,7 +2152,7 @@ function FN.oldPanel(ui)
         ui:info("RT / LT", "raise / lower")
         ui:info("LB / RB", "turn (holding)")
         ui:info("D-pad up / down", "size (holding) / zoom")
-        ui:info("D-pad left / right", "next object (holding: copy in a row)")
+        ui:info("D-pad left / right", "next object (holding: zoom)")
         ui:info("Hold A", "select: sweep the cross over objects")
         ui:info("Y on a selected one", "out of the group (hold Y and sweep for more)")
         ui:info("RB / LB", "group: add or take out / clear")
@@ -2406,7 +2406,7 @@ function FN.newPanel(ui)
         ui:info("RB  /  LB", "group add  /  clear")
         ui:info("Sticks, RT / LT", "move, look, up / down")
         ui:info("LB / RB (holding)", "turn")
-        ui:info("D-pad (holding)", "size, copy in a row")
+        ui:info("D-pad (holding)", "size, zoom")
         ui:info("R3 / L3 (holding)", "copy tools / snap target")
         ui:info("Menu  /  View", "step size  /  undo")
         ui:heading("Mouse and keys")
@@ -2683,9 +2683,9 @@ local function startGrab()
     S.cam.goal = t.pos
     local n = S.gbase and groupCount() or 1
     if n > 1 then
-        say(string.format("Holding %d objects.  A: put down   B: cancel   X: copy them   D-pad left/right: copy in a row", n))
+        say(string.format("Holding %d objects.  A: put down   B: cancel   X: copy them   D-pad left/right: zoom", n))
     else
-        say("Holding " .. titleOf(S.sel.item) .. ".  A: put down   B: cancel   X: copy   D-pad left/right: copy in a row")
+        say("Holding " .. titleOf(S.sel.item) .. ".  A: put down   B: cancel   X: copy   D-pad left/right: zoom")
     end
 end
 S.startGrab = startGrab
@@ -4082,9 +4082,9 @@ function FN.padEditor(sec)
             end
         end
     elseif not S.toolsWin then
-        -- holding: D-pad left / right leaves a copy and steps along (a quick row)
-        if padStep("rowl", p.left) then FN.rowStep(-1); t = S.target end
-        if padStep("rowr", p.right) then FN.rowStep(1); t = S.target end
+        -- holding: D-pad right zooms in, left zooms out (like the mouse wheel)
+        if p.right then S.cam.goalDist = clamp((S.cam.goalDist or S.cam.dist) * (1 - 1.5 * sec), 0.5, 300) end
+        if p.left then S.cam.goalDist = clamp((S.cam.goalDist or S.cam.dist) * (1 + 1.5 * sec), 0.5, 300) end
     end
 
     -- the view: right stick turns it
@@ -4582,7 +4582,7 @@ function UI.drawPadHud(d)
     elseif selecting then
         items = { { "a", "Let go: done" } }
     elseif S.grab then
-        items = { { "a", "Put down" }, { "b", "Cancel" }, { "x", "Copy" }, { "LB RB", "Turn" }, { "D-pad L R", "Row" }, { "R3", "Copy tools" }, { "View L3", "Snap" } }
+        items = { { "a", "Put down" }, { "b", "Cancel" }, { "x", "Copy" }, { "LB RB", "Turn" }, { "D-pad L R", "Zoom" }, { "R3", "Copy tools" }, { "View L3", "Snap" } }
     elseif S.aim and S.group[S.aim.id] then
         items = { { "a", "Pick up all" }, { "x", "Copy all" }, { "y", "Take out  ·  twice: delete all" }, { "LB", "Clear group" } }
     elseif S.aim then
@@ -5068,7 +5068,7 @@ end
         callout(d, V(cx - 125, cy - 112, 0), V(lx, cy - 150, 0), "LB   turn  ·  clear group", false)
         callout(d, ls, V(lx, cy - 70, 0), "L-stick   move  ·  L3 next snap", false)
         callout(d, vw, V(lx, cy + 5, 0), "View   snap: auto / one / off", false)
-        callout(d, dp, V(lx, cy + 80, 0), "D-pad   size  ·  row copy", false)
+        callout(d, dp, V(lx, cy + 80, 0), "D-pad   size  ·  zoom", false)
         callout(d, V(cx + 150, cy - 141, 0), V(rx, cy - 205, 0), "RT   raise", true)
         callout(d, V(cx + 125, cy - 112, 0), V(rx, cy - 160, 0), "RB   turn  ·  add to group", true)
         callout(d, ab + BP.y, V(rx, cy - 115, 0), "Y   remove  ·  ungroup", true)
