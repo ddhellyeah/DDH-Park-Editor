@@ -1859,6 +1859,7 @@ end
 
 local function closeEditor()
     S.aHold, S.yHold = nil, nil
+    S.carry = nil
     S.controlsOpen = false
     if S.grab then S.grab = nil end
     S.closedAt = S.clock
@@ -3260,7 +3261,7 @@ local function pickerPlace()
     local at = crossPoint()
     if it.set then
         closePicker()
-        S.placeSet(it.set, at, wrap(S.cam.yaw + math.pi))
+        S.carrySet(it.set, at, wrap(S.cam.yaw + math.pi))
         return
     end
     -- facing the view, as Quick Drop does
@@ -3495,7 +3496,7 @@ end
         pcall(reskate.files.reveal, FOLDER)
     end
     -- place a set: its middle where the cross is, facing the view; then it is held (controller) or picked as a group
-    function S.placeSet(set, at, heading)
+    function S.placeSet(set, at, heading, dropped)
         local have = {}
         for _, it in ipairs(reskate.objects.catalog()) do have[it.key] = true end
         at = at or (S.cam and S.cam.target) or V(0, 0, 0)
@@ -3527,14 +3528,42 @@ end
             if lead and S.open then
                 select(lead)
                 local padMode = S.padUsedAt and (not S.mouseUsedAt or S.padUsedAt >= S.mouseUsedAt)
-                if padMode then
+                if padMode and not dropped then
                     startGrab()
                     if S.grab then S.grab.copyRec = r end
                 end
             end
-            say(string.format("Placed the set \"%s\": %d objects, picked as a group.%s", set.name, #r.ids, missing > 0 and string.format(" %d left out (mod missing).", missing) or ""))
+            say(string.format("Placed the set \"%s\": %d objects (picked as a group).%s", set.name, #r.ids, missing > 0 and string.format(" %d left out (mod missing).", missing) or ""))
         end
         say(string.format("Placing the set \"%s\" (%d objects)...%s", set.name, rec.total, missing > 0 and string.format(" %d left out: their mod is missing.", missing) or ""), missing > 0)
+    end
+    -- carrying a set before it is placed: it follows the cross (or the mouse) as outlines; A / click puts it down
+    function S.carrySet(set, at, heading)
+        S.carry = { set = set, pos = at or (S.cam and S.cam.target) or V(0, 0, 0), heading = heading or wrap(S.cam.yaw + math.pi) }
+        S.grab = nil
+        S.padWait = true
+        S.cam.goal = S.carry.pos
+        say("Carrying \"" .. set.name .. "\": move it, A (or click) puts it down, B (or right click) cancels.")
+    end
+    function S.carryPlaces()
+        local c = S.carry
+        if not c then return {} end
+        local out = {}
+        for _, e in ipairs(c.set.objects) do
+            out[#out + 1] = { item = e.item, pos = c.pos + rotY(V(e.x or 0, e.y or 0, e.z or 0), c.heading), heading = wrap(c.heading + (e.h or 0)), scale = clamp(e.s or 1, 0.1, 10) }
+        end
+        return out
+    end
+    function S.carryDrop()
+        local c = S.carry
+        if not c then return end
+        S.carry = nil
+        S.placeSet(c.set, c.pos, c.heading, true)
+    end
+    function S.carryCancel()
+        if not S.carry then return end
+        S.carry = nil
+        say("Cancelled: nothing placed.")
     end
     -- a set seen from above: every object's outline, fitted into a box
     function UI.drawSetPreview(d, set, a, b, col)
@@ -3588,6 +3617,35 @@ local function padEditor(sec)
     if S.picker then pickerPad(p) return end
     if S.controlsOpen then
         if padPress("b", p.b) or padPress("a", p.a) then S.controlsOpen = false end
+        return
+    end
+    if S.carry then
+        -- carrying a set: left stick moves it, RT / LT up / down, LB / RB turn, right stick circles round it
+        local c = S.carry
+        if padPress("a", p.a) then S.carryDrop() return end
+        if padPress("b", p.b) then S.carryCancel() return end
+        local st = STEPS[S.stepSize] or STEPS[2]
+        if p.ls then st = STEPS[1] end
+        local rx, ry = stick(p.rx, p.ry)
+        if S.lookInvX then rx = -rx end
+        if S.lookInvY then ry = -ry end
+        S.cam.yaw -= rx * 2.4 * sec
+        S.cam.pitch = clamp(S.cam.pitch - ry * 1.6 * sec, -1.45, 1.45)
+        local _, f, r = camBasis()
+        local lx, ly = stick(p.lx, p.ly)
+        local up = p.rt - p.lt
+        if math.abs(up) < 0.15 then up = 0 end
+        if lx ~= 0 or ly ~= 0 or up ~= 0 then
+            local mv = (flat(f) * ly + flat(r) * lx) * st.speed * sec + V(0, up * st.speed * 0.6 * sec, 0)
+            c.raw = (c.raw or c.pos) + mv
+            c.pos = gridSnap(c.raw)
+        else
+            c.raw = nil
+        end
+        local tstep = math.rad(st.deg)
+        if padStep("lb", p.lb) then c.heading = wrap(round(c.heading + tstep, tstep)) end
+        if padStep("rb", p.rb) then c.heading = wrap(round(c.heading - tstep, tstep)) end
+        S.cam.goal = c.pos
         return
     end
     local fine = p.ls
@@ -3951,6 +4009,24 @@ reskate.on("tick", function(dt)
         if okp and used then
             S.mouse = { pos = c.position, left = c.left }
             S.hover = nil
+            c = nil
+        end
+    end
+    if c and S.carry then
+        local px = c.position
+        local box = S.screen and S.screen.panelBox
+        local overPanel = box and px.x >= box.a.x and px.x <= box.b.x and px.y >= box.a.y and px.y <= box.b.y
+        if not overPanel then
+            local o, dd = rayAt(px)
+            local okp, hit = pcall(reskate.world.pick, o, o + dd * 300)
+            if okp and type(hit) == "table" and hit.position then S.carry.pos = gridSnap(hit.position) end
+            if c.wheel and c.wheel ~= 0 then
+                local st = STEPS[S.stepSize] or STEPS[2]
+                S.carry.heading = wrap(S.carry.heading + math.rad(st.deg) * c.wheel)
+            end
+            if c.left and not S.mouse.left then S.carryDrop()
+            elseif c.right and not S.mouse.right then S.carryCancel() end
+            S.mouse = { pos = px, left = c.left, right = c.right }
             c = nil
         end
     end
@@ -4455,7 +4531,7 @@ end
                 if #nmS > 20 then nmS = string.sub(nmS, 1, 19) .. "…" end
                 d:text(V(x + 12, y + 5, 0), nmS, { size = 15, colour = UI.text, font = "bold" })
                 d:text(V(x + 12, y + 23, 0), string.format("%d objects", #set.objects), { size = 12, colour = UI.dim })
-                btn(d, V(rb.x - 132, y + 6, 0), V(rb.x - 52, y + rowH - 12, 0), "Place", function() S.placeSet(set, crossPoint(), wrap(S.cam.yaw + math.pi)) end, "primary")
+                btn(d, V(rb.x - 132, y + 6, 0), V(rb.x - 52, y + rowH - 12, 0), "Place", function() S.carrySet(set, crossPoint(), wrap(S.cam.yaw + math.pi)) end, "primary")
                 btn(d, V(rb.x - 46, y + 6, 0), V(rb.x - 6, y + rowH - 12, 0), "×", function()
                     if S.delSetAsk == set.file and S.clock - (S.delSetAt or 0) < 3000 then S.delSetAsk = nil; S.deleteSet(set)
                     else S.delSetAsk, S.delSetAt = set.file, S.clock; say("Click × again to delete \"" .. set.name .. "\".") end
@@ -4728,6 +4804,29 @@ local function drawMain(d)
     if S.picker then return end
     pcall(drawGroup, d)
     pcall(drawGrid, d)
+    if S.carry then
+        pcall(function()
+            for i, c in ipairs(S.carryPlaces()) do
+                if i > 200 then break end
+                if S.itemBox[c.item] then
+                    drawShape(d, worldShape(c.item, c.pos, c.heading, c.scale), UI.purple, 3)
+                else
+                    d:world_line(c.pos - V(0.4, 0, 0), c.pos + V(0.4, 0, 0), { colour = UI.purple, thickness = 3 })
+                    d:world_line(c.pos - V(0, 0, 0.4), c.pos + V(0, 0, 0.4), { colour = UI.purple, thickness = 3 })
+                    d:world_line(c.pos, c.pos + V(0, 1, 0), { colour = UI.purple, thickness = 3 })
+                end
+            end
+            local W, H = S.size.x, S.size.y
+            UI.chip(d, W / 2 - 120, 24, "Carrying  " .. S.carry.set.name, UI.purple)
+            local padMode = S.padUsedAt and (not S.mouseUsedAt or S.padUsedAt >= S.mouseUsedAt)
+            if padMode then
+                UI.promptRow(d, W / 2, H - 48, { { "a", "Put down" }, { "b", "Cancel" }, { "LB RB", "Turn" }, { "RT LT", "Up / down" } })
+            else
+                UI.promptRow(d, W / 2, H - 48, { { "Click", "Put down" }, { "Right click", "Cancel" }, { "Wheel", "Turn" } })
+            end
+        end)
+        return
+    end
     if S.toolsWin then
         local okt, errt = pcall(drawTools, d)
         if not okt then reskate.log("Quick Drop helper: copy tools: " .. tostring(errt), "warn"); S.toolsWin = nil end
