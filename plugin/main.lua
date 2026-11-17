@@ -1778,6 +1778,7 @@ local function openEditor()
 end
 
 local function closeEditor()
+    S.aHold = nil
     S.picker = nil
     S.toolsWin = nil
     if not S.open then return end
@@ -1977,6 +1978,7 @@ local function oldPanel(ui)
         ui:info("LB / RB", "turn (holding)")
         ui:info("D-pad up / down", "size (holding) / zoom")
         ui:info("D-pad left / right", "next object (holding: copy in a row)")
+        ui:info("Hold A", "select: sweep the cross over objects")
         ui:info("RB / LB", "group: add or take out / clear")
         ui:info("Right stick / R3", "turn the view / look at it (holding: copy tools)")
         ui:info("Ctrl+click", "group: add or take out")
@@ -2258,6 +2260,7 @@ local function newPanel(ui)
         ui:info("LB / RB", "turn (holding)")
         ui:info("D-pad up / down", "size (holding) / zoom")
         ui:info("D-pad left / right", "next object (holding: copy in a row)")
+        ui:info("Hold A", "select: sweep the cross over objects")
         ui:info("RB / LB", "group: add or take out / clear")
         ui:info("Right stick / R3", "turn the view / look at it (holding: copy tools)")
         ui:info("Ctrl+click", "group: add or take out")
@@ -3349,7 +3352,18 @@ local function padEditor(sec)
         if holding then
             placeGrab(); holding = false
         else
-            local o = S.aim
+            -- not holding: a tap picks up (or opens the add window) when A comes up; held, it selects (below)
+            S.aHold = { at = S.clock, first = S.aim and S.aim.id or nil, sweep = false, added = 0 }
+        end
+    end
+    if S.aHold and not p.a then
+        local ah = S.aHold
+        S.aHold = nil
+        if ah.sweep then
+            local n = groupCount()
+            say(string.format("Group: %d object%s.  A on one: move them all   LB: clear   RB: add / take out", n, n == 1 and "" or "s"))
+        elseif not holding then
+            local o = ah.first and S.known and S.known[ah.first]
             if o then
                 -- the object under the cross: pick it up
                 if not (S.sel and S.sel.id == o.id) then send(); select(o); t = S.target end
@@ -3414,6 +3428,19 @@ local function padEditor(sec)
         if p.down then S.cam.goalDist = clamp((S.cam.goalDist or S.cam.dist) * (1 + 1.5 * sec), 0.5, 300) end
         -- what A would pick up
         S.aim = aimedObject()
+        -- A held down: every object the cross passes over goes in the group
+        local ah = S.aHold
+        if ah and p.a and not ah.sweep and S.clock - ah.at > 300 then
+            ah.sweep = true
+            if ah.first and S.known and S.known[ah.first] and not S.group[ah.first] then S.group[ah.first] = true; ah.added += 1; S.gbase = nil end
+            say("Selecting: move the cross over objects, let go of A when done.")
+        end
+        if ah and ah.sweep and S.aim and not S.group[S.aim.id] then
+            S.group[S.aim.id] = true
+            ah.added += 1
+            S.gbase = nil
+            if reskate.audio and reskate.audio.play_ui then pcall(reskate.audio.play_ui, "navigate") end
+        end
         if S.padBurst then
             S.padBurst = false
             S.padMoving = false
@@ -3822,7 +3849,9 @@ reskate.on("draw", function(d)
     if S.padUsedAt and S.clock - S.padUsedAt < 15000 then
         local c = V(S.size.x / 2, S.size.y / 2, 0)
         local ng = groupCount()
-        if ng > 0 then d:text(c + V(-60, -150, 0), string.format("Group: %d", ng), { size = 18, colour = "#c49bff", shadow = true }) end
+        if S.aHold and S.aHold.sweep then
+            d:text(c + V(-110, -150, 0), string.format("Selecting: %d  (let go of A)", ng), { size = 18, colour = "#c49bff", shadow = true })
+        elseif ng > 0 then d:text(c + V(-60, -150, 0), string.format("Group: %d", ng), { size = 18, colour = "#c49bff", shadow = true }) end
         if S.grab then
             d:text(c + V(-400, 150, 0), "A put down    B cancel    X copy    D-pad left/right: row    R3: copy tools    L3: snap (" .. snapLabel() .. ")    Menu: " .. (STEPS[S.stepSize] or STEPS[2]).name, { size = 18, colour = "#ffffff", shadow = true })
         else
