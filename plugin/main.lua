@@ -1851,6 +1851,7 @@ end
 
 local function closeEditor()
     S.aHold, S.yHold = nil, nil
+    S.controlsOpen = false
     if S.grab then S.grab = nil end
     S.closedAt = S.clock
     S.picker = nil
@@ -2328,7 +2329,7 @@ local function hasNewWidgets(ui)
     return ok and yes
 end
 
-reskate.ui.screen(TITLE, function(ui)
+local function dockedPanel(ui)
     if S.newUI == nil then
         S.newUI = hasNewWidgets(ui)
         reskate.log("Quick Drop helper: " .. (S.newUI and "using the new panel (ReSkate 2.1.4 widgets)." or "this ReSkate has no 2.1.4 widgets; using the old panel."))
@@ -2341,7 +2342,17 @@ reskate.ui.screen(TITLE, function(ui)
         return
     end
     oldPanel(ui)
-end, { dock = "right", width = 0.2 })
+end
+do
+    local ok, why = pcall(reskate.ui.screen, TITLE)
+    if ok then
+        S.ownPanel = true
+        reskate.log("Quick Drop helper: using its own drawn panel.")
+    else
+        reskate.log("Quick Drop helper: a screen without a panel is not possible here (" .. tostring(why) .. "); using ReSkate's panel.")
+        reskate.ui.screen(TITLE, dockedPanel, { dock = "right", width = 0.2 })
+    end
+end
 
 local function press(k)
     local d = reskate.input.key(k)
@@ -3385,6 +3396,10 @@ local function padEditor(sec)
     if anyIn then S.padUsedAt = S.clock end
 
     if S.picker then pickerPad(p) return end
+    if S.controlsOpen then
+        if padPress("b", p.b) or padPress("a", p.a) then S.controlsOpen = false end
+        return
+    end
     local fine = p.ls
     local t = S.target
     if S.grab and not (S.sel and S.sel.id == S.grab.id) then S.grab = nil end
@@ -3724,6 +3739,20 @@ reskate.on("tick", function(dt)
 
     -- the mouse
     local c = reskate.input.cursor()
+    if c and ((S.mouse.pos and d2(c.position, S.mouse.pos) > 3) or c.left or c.right or (c.wheel and c.wheel ~= 0)) then S.mouseUsedAt = S.clock end
+    if c and S.controlsOpen then
+        pcall(UI.controlsMouse, c)
+        S.mouse = { pos = c.position, left = c.left }
+        c = nil
+    end
+    if c and S.ownPanel and not S.picker and not S.drag then
+        local okp, used = pcall(UI.panelMouse, c)
+        if okp and used then
+            S.mouse = { pos = c.position, left = c.left }
+            S.hover = nil
+            c = nil
+        end
+    end
     if c and S.toolsWin and not S.drag and not c.over_screen then
         local okt, used = pcall(toolsMouse, c)
         if okt and used then
@@ -3980,8 +4009,437 @@ drawShape = function(d, sh, col, th, xf)
     return true
 end
 
-reskate.on("draw", function(d)
-    if not S.open then return end
+
+-- ---------------------------------------------------------------- the panel on the right, drawn over the view
+-- (a screen without ReSkate's own panel: everything here is drawn, and clicks on it are kept from the view)
+-- (in a function of its own: its many locals don't count against the file's limit)
+;(function()
+    local PW = 384
+    local tiles = {}
+    local function hot(a, b)
+        local m = S.mouse and S.mouse.pos
+        return m ~= nil and m.x >= a.x and m.x <= b.x and m.y >= a.y and m.y <= b.y
+    end
+    local function tileAdd(a, b, fn) tiles[#tiles + 1] = { a = a, b = b, fn = fn } end
+    local function btn(d, a, b, label, fn, style)
+        local h = hot(a, b)
+        local col = style == "primary" and (h and "#ffe27a" or UI.accent) or (style == "on" and (h and "#ffffff40" or "#ffffff33") or (h and UI.tileHot or UI.tile))
+        d:rect(a, b, { colour = col, fill = true, rounding = 9 })
+        if style == "on" then d:rect(a, b, { colour = UI.accent, rounding = 9, thickness = 2 }) end
+        d:text(V((a.x + b.x) / 2, (a.y + b.y) / 2 - 9, 0), label, { size = 15, colour = style == "primary" and "#0d1117" or UI.text, font = (style == "primary" or style == "on") and "bold" or nil, align = "centre" })
+        if fn then tileAdd(a, b, fn) end
+    end
+    -- a row of choices, one of them on
+    local function seg(d, x, y, w, labels, cur, fn)
+        local n = #labels
+        d:rect(V(x, y, 0), V(x + w, y + 34, 0), { colour = "#00000040", fill = true, rounding = 10 })
+        local cw = (w - 4) / n
+        for i, l in ipairs(labels) do
+            local a, b = V(x + 2 + (i - 1) * cw, y + 2, 0), V(x + 2 + i * cw, y + 32, 0)
+            local on = i == cur
+            local h = hot(a, b)
+            if on then d:rect(a, b, { colour = UI.accent, fill = true, rounding = 8 })
+            elseif h then d:rect(a, b, { colour = UI.tile, fill = true, rounding = 8 }) end
+            d:text(V((a.x + b.x) / 2, y + 8, 0), l, { size = 14, colour = on and "#0d1117" or UI.dim, font = on and "bold" or nil, align = "centre" })
+            tileAdd(a, b, function() fn(i) end)
+        end
+        return y + 34
+    end
+    local function switch(d, x, y, w, label, on, fn)
+        local a, b = V(x, y, 0), V(x + w, y + 34, 0)
+        if hot(a, b) then d:rect(a, b, { colour = UI.tile, fill = true, rounding = 9 }) end
+        d:text(V(x + 10, y + 8, 0), label, { size = 15, colour = UI.text })
+        local sx = x + w - 52
+        d:rect(V(sx, y + 7, 0), V(sx + 40, y + 27, 0), { colour = on and UI.accent or "#ffffff2a", fill = true, rounding = 10 })
+        d:circle(V(on and sx + 30 or sx + 10, y + 17, 0), 8, { colour = on and "#0d1117" or "#e6e9ef", fill = true })
+        tileAdd(a, b, fn)
+        return y + 34
+    end
+    -- label   [-]  value  [+]   (click the value to type it)
+    local function stepRow(d, x, y, w, label, value, dec, inc, edit)
+        d:text(V(x + 4, y + 8, 0), label, { size = 14, colour = UI.dim })
+        local bx = x + w - 196
+        local m1a, m1b = V(bx, y + 2, 0), V(bx + 30, y + 30, 0)
+        local va, vb = V(bx + 34, y + 2, 0), V(bx + 162, y + 30, 0)
+        local p1a, p1b = V(bx + 166, y + 2, 0), V(bx + 196, y + 30, 0)
+        d:rect(m1a, m1b, { colour = hot(m1a, m1b) and UI.tileHot or UI.tile, fill = true, rounding = 7 })
+        d:text(V(bx + 15, y + 5, 0), "-", { size = 18, colour = UI.text, align = "centre" })
+        d:rect(va, vb, { colour = hot(va, vb) and "#ffffff1c" or "#00000040", fill = true, rounding = 7 })
+        d:text(V((va.x + vb.x) / 2, y + 7, 0), value, { size = 15, colour = UI.text, align = "centre" })
+        d:rect(p1a, p1b, { colour = hot(p1a, p1b) and UI.tileHot or UI.tile, fill = true, rounding = 7 })
+        d:text(V(bx + 181, y + 5, 0), "+", { size = 18, colour = UI.text, align = "centre" })
+        tileAdd(m1a, m1b, dec); tileAdd(p1a, p1b, inc); tileAdd(va, vb, edit)
+        return y + 34
+    end
+    local function label(d, x, y, str)
+        d:text(V(x + 2, y, 0), string.upper(str), { size = 12, colour = "#f0f3f670", font = "bold" })
+        return y + 20
+    end
+
+    -- typing one number: a text box; "+2" adds 2
+    local TYPE1 = "ddh_type1"
+    local function typeOne(title, cur, fmtS, apply)
+        S.typeOne = { apply = apply, cur = cur }
+        local ok, why = pcall(reskate.ui.dialog, TYPE1, {
+            title = title, message = "Type a number, then Enter. Start with + to add to it (+2, +-0.5).",
+            field = { text = string.format(fmtS, cur), max = 40 },
+            buttons = { { id = "apply", label = "Apply" }, { id = "close", label = "Cancel" } },
+        })
+        if not ok or why == false then S.typeOne = nil; say("Could not open the text box", true) else S.typing = true end
+    end
+    UI.typeOne = typeOne
+    reskate.on("throwdown_ui", function(e)
+        if e.action ~= "dialog" or e.args[1] ~= TYPE1 then return end
+        local what = e.args[2]
+        if what ~= "apply" and what ~= "cancel" and what ~= "close" then return end
+        S.typing = false
+        if what ~= "cancel" then pcall(reskate.ui.close_dialog, TYPE1) end
+        local tw = S.typeOne
+        S.typeOne = nil
+        if what ~= "apply" or not tw then return end
+        local str = string.gsub(tostring(e.args[3] or ""), ",", ".")
+        str = string.gsub(str, "^%s+", ""):gsub("%s+$", ""):gsub("[m°x×]+$", "")
+        local v
+        if string.sub(str, 1, 1) == "+" then v = tonumber(string.sub(str, 2)); if v then v = tw.cur + v end else v = tonumber(str) end
+        if v == nil then say("Not a number: " .. str, true) return end
+        tw.apply(v)
+    end)
+
+    local TABS = { "Edit", "Snap", "Park" }
+    function UI.sidePanel(d)
+        tiles = {}
+        local W, H = S.size.x, S.size.y
+        local a = V(W - PW - 14, 14, 0)
+        local b = V(W - 14, H - 14, 0)
+        S.screen.panelBox = { a = a, b = b }
+        d:rect(a + V(0, 4, 0), b + V(0, 4, 0), { colour = "#00000055", fill = true, rounding = 16 })
+        d:rect(a, b, { colour = UI.bg2, fill = true, rounding = 16 })
+        local x, w = a.x + 16, PW - 32
+        local y = a.y + 16
+        -- title and Done
+        d:text(V(x, y, 0), "DDH Park Editor", { size = 22, colour = UI.text, font = "heading" })
+        d:text(V(x, y + 27, 0), "Quick Drop+", { size = 13, colour = UI.dim })
+        btn(d, V(b.x - 16 - 86, y + 2, 0), V(b.x - 16, y + 34, 0), "Done", function() closeEditor() end)
+        y += 54
+        -- what is picked
+        local t = S.sel and S.target
+        local ng = groupCount()
+        d:rect(V(x, y, 0), V(x + w, y + 64, 0), { colour = "#ffffff0c", fill = true, rounding = 12 })
+        local title, sub, dot = "Nothing picked", "Click an object, or aim the cross and press A", "#ffffff40"
+        if t then
+            title = titleOf(S.sel.item)
+            sub = string.format("%.0f°   ·   size %.2f", math.deg(t.heading), t.scale)
+            dot = UI.accent
+            if S.group[S.sel.id] and ng > 1 then sub = sub .. string.format("   ·   group of %d", ng); dot = UI.purple end
+        elseif ng > 0 then
+            title, sub, dot = string.format("Group of %d", ng), "Pick one of them up to move them all", UI.purple
+        end
+        if #title > 30 then title = string.sub(title, 1, 29) .. "…" end
+        d:circle(V(x + 18, y + 22, 0), 5, { colour = dot, fill = true })
+        d:text(V(x + 32, y + 11, 0), title, { size = 17, colour = UI.text, font = "bold" })
+        d:text(V(x + 32, y + 36, 0), sub, { size = 13, colour = UI.dim })
+        y += 76
+        -- warnings and the last message
+        local miss = S.missing or {}
+        if S.blocked or #miss > 0 then
+            d:rect(V(x, y, 0), V(x + w, y + 30, 0), { colour = "#f8514933", fill = true, rounding = 9 })
+            d:text(V(x + 12, y + 7, 0), string.format("Park locked: %d from a missing mod (see Park)", #miss), { size = 13, colour = "#ffb3ad" })
+            y += 38
+        end
+        -- the everyday buttons
+        local bw = (w - 16) / 3
+        btn(d, V(x, y, 0), V(x + bw, y + 36, 0), "+  Add object", function() if S.openPicker then S.openPicker() end end, "primary")
+        btn(d, V(x + bw + 8, y, 0), V(x + 2 * bw + 8, y + 36, 0), "Undo", function() undo() end)
+        btn(d, V(x + 2 * bw + 16, y, 0), V(x + w, y + 36, 0), "Controls", function() S.controlsOpen = true end)
+        y += 48
+        -- tabs
+        S.ptab = S.ptab or 1
+        if S.ptab > #TABS then S.ptab = 1 end
+        local tw = w / #TABS
+        for i, n in ipairs(TABS) do
+            local ta, tb = V(x + (i - 1) * tw, y, 0), V(x + i * tw, y + 34, 0)
+            local on = i == S.ptab
+            d:text(V((ta.x + tb.x) / 2, y + 7, 0), n, { size = 16, colour = on and UI.text or UI.dim, font = on and "bold" or nil, align = "centre" })
+            d:rect(V(ta.x + 6, y + 31, 0), V(tb.x - 6, y + 34, 0), { colour = on and UI.accent or "#ffffff14", fill = true, rounding = 2 })
+            tileAdd(ta, tb, function() S.ptab = i end)
+        end
+        y += 48
+        local st = STEPS[S.stepSize] or STEPS[2]
+        if S.ptab == 1 then
+            if not t then
+                d:text(V(x + 4, y, 0), "Pick an object to change it here.", { size = 14, colour = UI.dim })
+                y += 30
+            else
+                y = label(d, x, y, "Handles")
+                y = seg(d, x, y, w, { "Move", "Turn", "Size" }, S.mode, function(i) S.mode = i end) + 14
+                y = label(d, x, y, "Position")
+                local function setP(px, py, pz) markUndo(); t.pos = V(px, py, pz); S.dirty = true end
+                y = stepRow(d, x, y, w, "X", string.format("%.3f", t.pos.x), function() setP(t.pos.x - st.m, t.pos.y, t.pos.z) end, function() setP(t.pos.x + st.m, t.pos.y, t.pos.z) end,
+                    function() typeOne("X", t.pos.x, "%.3f", function(v) setP(v, t.pos.y, t.pos.z) end) end) + 4
+                y = stepRow(d, x, y, w, "Height", string.format("%.3f", t.pos.y), function() setP(t.pos.x, t.pos.y - st.m, t.pos.z) end, function() setP(t.pos.x, t.pos.y + st.m, t.pos.z) end,
+                    function() typeOne("Height", t.pos.y, "%.3f", function(v) setP(t.pos.x, v, t.pos.z) end) end) + 4
+                y = stepRow(d, x, y, w, "Z", string.format("%.3f", t.pos.z), function() setP(t.pos.x, t.pos.y, t.pos.z - st.m) end, function() setP(t.pos.x, t.pos.y, t.pos.z + st.m) end,
+                    function() typeOne("Z", t.pos.z, "%.3f", function(v) setP(t.pos.x, t.pos.y, v) end) end) + 12
+                y = label(d, x, y, "Turn, size, tilt")
+                local function setH(v) markUndo(); t.heading = wrap(v); S.dirty = true end
+                local function setS(v) markUndo(); t.scale = clamp(v, 0.1, 10); S.dirty = true end
+                y = stepRow(d, x, y, w, "Turn", string.format("%.1f°", math.deg(t.heading)), function() setH(t.heading + math.rad(st.deg)) end, function() setH(t.heading - math.rad(st.deg)) end,
+                    function() typeOne("Turn (degrees)", math.deg(t.heading), "%.1f", function(v) setH(math.rad(v)) end) end) + 4
+                y = stepRow(d, x, y, w, "Size", string.format("%.2f×", t.scale), function() setS(t.scale - st.size) end, function() setS(t.scale + st.size) end,
+                    function() typeOne("Size", t.scale, "%.2f", setS) end) + 4
+                local tl = S.tilt[S.sel.id] or { x = 0, z = 0 }
+                local function setT(tx, tz) markUndo(); S.tilt[S.sel.id] = (math.abs(tx) < 1e-6 and math.abs(tz) < 1e-6) and nil or { x = wrap(tx), z = wrap(tz) }; S.tiltSaveDue = true end
+                local dd = math.rad(st.deg)
+                y = stepRow(d, x, y, w, "Tilt forward", string.format("%.1f°", math.deg(tl.x)), function() setT(tl.x - dd, tl.z) end, function() setT(tl.x + dd, tl.z) end,
+                    function() typeOne("Tilt forward (degrees)", math.deg(tl.x), "%.1f", function(v) setT(math.rad(v), tl.z) end) end) + 4
+                y = stepRow(d, x, y, w, "Tilt sideways", string.format("%.1f°", math.deg(tl.z)), function() setT(tl.x, tl.z - dd) end, function() setT(tl.x, tl.z + dd) end,
+                    function() typeOne("Tilt sideways (degrees)", math.deg(tl.z), "%.1f", function(v) setT(tl.x, math.rad(v)) end) end) + 10
+                if tilted(S.sel.id) and S.tiltWhy and not S.tiltHeld[S.sel.id] then
+                    d:text(V(x + 4, y, 0), "Tilt waits: " .. S.tiltWhy, { size = 13, colour = UI.orange }); y += 22
+                end
+                local qw = (w - 16) / 3
+                btn(d, V(x, y, 0), V(x + qw, y + 34, 0), "Straighten", function() markUndo(); t.heading = round(t.heading, math.pi / 2); if S.tilt[S.sel.id] then S.tilt[S.sel.id] = nil; S.tiltSaveDue = true end; S.dirty = true end)
+                btn(d, V(x + qw + 8, y, 0), V(x + 2 * qw + 8, y + 34, 0), "Size 1", function() markUndo(); t.scale = 1; S.dirty = true end)
+                btn(d, V(x + 2 * qw + 16, y, 0), V(x + w, y + 34, 0), "Look at it", function() S.cam.goal = t.pos end)
+                y += 48
+            end
+            y = label(d, x, y, "Step size")
+            y = seg(d, x, y, w, { "Fine", "Normal", "Big" }, S.stepSize, function(i) S.stepSize = i end) + 6
+            d:text(V(x + 4, y, 0), string.format("%s m  ·  %s  ·  size %s", string.format("%.2f", st.m), string.format(st.df, st.deg), string.format("%.2f", st.size)), { size = 13, colour = UI.dim })
+        elseif S.ptab == 2 then
+            y = switch(d, x, y, w, "Snap to objects   (T)", S.osnap, function() S.osnap = not S.osnap end) + 10
+            if S.osnap then
+                y = label(d, x, y, "Snapping to:  " .. snapLabelP())
+                local cur = S.snapPick == nil and 1 or (S.snapPick == "off" and 3 or 2)
+                y = seg(d, x, y, w, { "Auto", "Next object", "Off" }, cur, function(i)
+                    if i == 1 then S.snapPick = nil; S.snapLock = nil
+                    elseif i == 2 and S.cycleSnap then if S.snapPick == "off" then S.snapPick = nil end; S.cycleSnap(); if S.snapPick == nil then S.cycleSnap() end
+                    elseif i == 3 then S.snapPick = "off"; S.guides = nil end
+                end) + 6
+                d:text(V(x + 4, y, 0), "Tab, or tap L3 while holding, switches it.", { size = 13, colour = UI.dim })
+                y += 30
+            end
+            y = label(d, x, y, "Grid")
+            y = seg(d, x, y, w, GRID_NAMES_P, S.gridI or 1, function(i) S.gridI = i end) + 14
+            y = switch(d, x, y, w, "Drag in steps   (G)", S.snap, function() S.snap = not S.snap end)
+        else
+            y = label(d, x, y, ng > 0 and string.format("Group  ·  %d objects", ng) or "Group")
+            local gw = (w - 8) / 2
+            btn(d, V(x, y, 0), V(x + gw, y + 34, 0), "Add / remove picked", function() if S.sel and S.known and S.known[S.sel.id] and S.toggleGroup then S.toggleGroup(S.known[S.sel.id]) end end)
+            btn(d, V(x + gw + 8, y, 0), V(x + w, y + 34, 0), "Clear group", function() if S.clearGroup then S.clearGroup() end end)
+            y += 42
+            btn(d, V(x, y, 0), V(x + w, y + 34, 0), "Copy tools   (row, circle, grid)", function() if S.openTools then S.openTools() end end)
+            y += 50
+            rebuildList()
+            y = label(d, x, y, string.format("Objects in this park  ·  %d", S.listMatched or 0))
+            local sa, sb = V(x, y, 0), V(x + w, y + 32, 0)
+            d:rect(sa, sb, { colour = hot(sa, sb) and "#ffffff1c" or "#00000040", fill = true, rounding = 8 })
+            d:text(V(x + 12, y + 7, 0), S.search ~= "" and ("Search:  " .. S.search) or "Search…", { size = 14, colour = S.search ~= "" and UI.text or UI.dim })
+            tileAdd(sa, sb, function()
+                S.typeSearch = true
+                local ok = pcall(reskate.ui.dialog, "ddh_search", { title = "Search objects", message = "Part of a name (empty: all).", field = { text = S.search, max = 40 },
+                    buttons = { { id = "apply", label = "Search" }, { id = "close", label = "Cancel" } } })
+                if ok then S.typing = true end
+            end)
+            y += 40
+            y = seg(d, x, y, w, { "All", "Near", "DDH" }, S.listFilter, function(i) S.listFilter = i; S.listKey = nil; S.listTop = 0 end) + 8
+            -- the list: as many rows as fit, the wheel scrolls it
+            local rowH = 30
+            local bottom = b.y - 70
+            local rows = math.max(3, math.floor((bottom - y) / rowH))
+            local n = #(S.listObjs or {})
+            S.listTop = clamp(S.listTop or 0, 0, math.max(0, n - rows))
+            S.screen.listBox = { a = V(x, y, 0), b = V(x + w, y + rows * rowH, 0), rows = rows, n = n }
+            for r = 1, rows do
+                local i = S.listTop + r
+                local o = S.listObjs and S.listObjs[i]
+                if not o then break end
+                local ra, rb = V(x, y + (r - 1) * rowH, 0), V(x + w, y + r * rowH - 2, 0)
+                local on = S.sel and S.sel.id == o.id
+                if on then d:rect(ra, rb, { colour = UI.accentDim, fill = true, rounding = 7 })
+                elseif hot(ra, rb) then d:rect(ra, rb, { colour = UI.tile, fill = true, rounding = 7 }) end
+                local name = titleOf(o.item)
+                if #name > 30 then name = string.sub(name, 1, 29) .. "…" end
+                if S.group[o.id] then d:circle(V(x + 10, ra.y + 14, 0), 4, { colour = UI.purple, fill = true }) end
+                d:text(V(x + 20, ra.y + 6, 0), name, { size = 14, colour = on and UI.accent or UI.text })
+                d:text(V(rb.x - 8, ra.y + 6, 0), string.format("%.0f m", len(o.position - (S.cam.target or o.position))), { size = 13, colour = UI.dim, align = "right" })
+                tileAdd(ra, rb, function()
+                    send(); select(o); S.cam.goal = o.position; S.listKey = nil; say("Picked " .. titleOf(o.item))
+                end)
+            end
+            if n > rows then
+                local la, lb2 = S.screen.listBox.a, S.screen.listBox.b
+                local f0, f1 = S.listTop / n, math.min(1, (S.listTop + rows) / n)
+                d:rect(V(lb2.x + 4, la.y + (lb2.y - la.y) * f0, 0), V(lb2.x + 7, la.y + (lb2.y - la.y) * f1, 0), { colour = UI.accent, fill = true, rounding = 2 })
+            end
+            local pb = b.y - 56
+            btn(d, V(x, pb, 0), V(x + w, pb + 34, 0), "Save as park mod  (for online)", function() saveParkModSay() end)
+            if S.blocked or #miss > 0 then
+                btn(d, V(x, pb - 42, 0), V(x + w, pb - 8, 0), "Park locked: check again", function()
+                    S.blocked = nil; pcall(findMissing)
+                    if #(S.missing or {}) == 0 then say("No missing objects found. Try moving something again.") else say("Fix: run Clean out park.exe with the game closed.", true) end
+                end)
+            end
+        end
+        -- the last message, along the bottom
+        if S.msg ~= "" and S.clock < S.msgUntil and S.ptab ~= 3 then
+            local msg = S.msg
+            if #msg > 52 then msg = string.sub(msg, 1, 50) .. "…" end
+            d:text(V(x + 4, b.y - 30, 0), msg, { size = 13, colour = UI.dim })
+        end
+    end
+    reskate.on("throwdown_ui", function(e)
+        if e.action ~= "dialog" or e.args[1] ~= "ddh_search" then return end
+        local what = e.args[2]
+        if what ~= "apply" and what ~= "cancel" and what ~= "close" then return end
+        S.typing = false
+        if what ~= "cancel" then pcall(reskate.ui.close_dialog, "ddh_search") end
+        if what == "apply" then S.search = tostring(e.args[3] or ""); S.listKey = nil; S.listTop = 0 end
+    end)
+    -- the mouse on the panel: true when it is there (then the view does nothing with it)
+    function UI.panelMouse(c)
+        local box = S.screen and S.screen.panelBox
+        if not box then return false end
+        local px = c.position
+        if not (px.x >= box.a.x and px.x <= box.b.x and px.y >= box.a.y and px.y <= box.b.y) then return false end
+        if c.wheel and c.wheel ~= 0 then
+            local lb = S.screen.listBox
+            if lb and S.ptab == 3 then S.listTop = clamp((S.listTop or 0) - c.wheel * 3, 0, math.max(0, lb.n - lb.rows)) end
+        end
+        if c.left and not S.mouse.left then
+            for i = #tiles, 1, -1 do
+                local tt = tiles[i]
+                if px.x >= tt.a.x and px.x <= tt.b.x and px.y >= tt.a.y and px.y <= tt.b.y then
+                    if reskate.audio and reskate.audio.play_ui then pcall(reskate.audio.play_ui, "select") end
+                    tt.fn()
+                    break
+                end
+            end
+        end
+        return true
+    end
+
+    -- ---------------------------------------------------------------- the controls window: a controller and the keys
+    local ctiles = {}
+    local function keycap(d, x, y, k, wide)
+        local w = wide or math.max(34, UI.textW(d, k, 13, "bold") + 18)
+        d:rect(V(x, y + 3, 0), V(x + w, y + 33, 0), { colour = "#00000080", fill = true, rounding = 7 })
+        d:rect(V(x, y, 0), V(x + w, y + 30, 0), { colour = "#e6e9ef", fill = true, rounding = 7 })
+        d:text(V(x + w / 2, y + 7, 0), k, { size = 13, colour = "#0d1117", font = "bold", align = "centre" })
+        return w
+    end
+    local function callout(d, from, to, text, right)
+        d:line(from, to, { colour = "#ffffff40", thickness = 1 })
+        d:circle(to, 3, { colour = UI.accent, fill = true })
+        d:text(V(right and to.x + 10 or to.x - 10, to.y - 9, 0), text, { size = 14, colour = UI.text, align = right and "left" or "right" })
+    end
+    function UI.controlsWin(d)
+        ctiles = {}
+        local W, H = S.size.x, S.size.y
+        local pw, ph = math.min(1500, W - 80), math.min(800, H - 80)
+        local a = V(math.floor((W - pw) / 2), math.floor((H - ph) / 2), 0)
+        local b = a + V(pw, ph, 0)
+        S.screen.controlsBox = { a = a, b = b }
+        d:rect(V(0, 0, 0), V(W, H, 0), { colour = "#00000080", fill = true })
+        UI.panelBox(d, a, b, "Controls")
+        local ca, cb = V(b.x - 48, a.y + 10, 0), V(b.x - 12, a.y + 44, 0)
+        d:text(V((ca.x + cb.x) / 2, ca.y + 4, 0), "×", { size = 24, colour = UI.dim, align = "centre" })
+        ctiles[#ctiles + 1] = { a = ca, b = cb, fn = function() S.controlsOpen = false end }
+        -- the controller, drawn (what each button does first, so the pad sits on top of the lines)
+        local half = pw * 0.6
+        local cx, cy = a.x + half / 2, a.y + 52 + (ph - 52) * 0.45
+        d:text(V(a.x + 24, a.y + 68, 0), "CONTROLLER", { size = 13, colour = "#f0f3f680", font = "bold" })
+        local ls, rs = V(cx - 110, cy - 10, 0), V(cx + 60, cy + 40, 0)
+        local dp, ab = V(cx - 60, cy + 40, 0), V(cx + 115, cy - 10, 0)
+        local vw, mn = V(cx - 24, cy - 26, 0), V(cx + 24, cy - 26, 0)
+        local BP = { y = V(0, -22, 0), x = V(-22, 0, 0), b = V(22, 0, 0), a = V(0, 22, 0) }
+        local lx, rx = cx - 235, cx + 235
+        callout(d, V(cx - 150, cy - 85, 0), V(lx, cy - 170, 0), "LT / RT   lower / raise", false)
+        callout(d, V(cx - 120, cy - 82, 0), V(lx, cy - 125, 0), "LB   turn  ·  clear group", false)
+        callout(d, ls, V(lx, cy - 60, 0), "Left stick   move  ·  L3 snap target", false)
+        callout(d, dp, V(lx, cy + 30, 0), "D-pad   size  ·  copy in a row", false)
+        callout(d, vw, V(lx, cy + 110, 0), "View   undo", false)
+        callout(d, V(cx + 120, cy - 82, 0), V(rx, cy - 170, 0), "RB   turn  ·  add to group", true)
+        callout(d, ab + BP.y, V(rx, cy - 115, 0), "Y   remove  ·  leave group", true)
+        callout(d, ab + BP.x, V(rx, cy - 75, 0), "X   copy", true)
+        callout(d, ab + BP.b, V(rx, cy - 35, 0), "B   cancel  /  close", true)
+        callout(d, ab + BP.a, V(rx, cy + 5, 0), "A   pick up  ·  hold: select", true)
+        callout(d, rs, V(rx, cy + 65, 0), "Right stick   look  ·  R3 copy tools", true)
+        callout(d, mn, V(rx, cy + 115, 0), "Menu   Fine / Normal / Big", true)
+        local bodyC = "#2a313c"
+        d:circle(V(cx - 120, cy + 40, 0), 82, { colour = bodyC, fill = true })
+        d:circle(V(cx + 120, cy + 40, 0), 82, { colour = bodyC, fill = true })
+        d:rect(V(cx - 150, cy - 60, 0), V(cx + 150, cy + 60, 0), { colour = bodyC, fill = true, rounding = 50 })
+        d:rect(V(cx - 190, cy - 92, 0), V(cx - 70, cy - 70, 0), { colour = "#3a4250", fill = true, rounding = 10 })
+        d:rect(V(cx + 70, cy - 92, 0), V(cx + 190, cy - 70, 0), { colour = "#3a4250", fill = true, rounding = 10 })
+        d:text(V(cx - 130, cy - 89, 0), "LB", { size = 12, colour = UI.dim, font = "bold", align = "centre" })
+        d:text(V(cx + 130, cy - 89, 0), "RB", { size = 12, colour = UI.dim, font = "bold", align = "centre" })
+        for _, st2 in ipairs({ ls, rs }) do
+            d:circle(st2, 24, { colour = "#151a21", fill = true }); d:circle(st2, 16, { colour = "#444d5a", fill = true })
+        end
+        d:rect(dp - V(6, 20, 0), dp + V(6, 20, 0), { colour = "#151a21", fill = true, rounding = 3 })
+        d:rect(dp - V(20, 6, 0), dp + V(20, 6, 0), { colour = "#151a21", fill = true, rounding = 3 })
+        for k, off in pairs(BP) do
+            d:circle(ab + off, 11, { colour = UI.BTN[k][2], fill = true })
+            d:text(ab + off - V(0, 8, 0), UI.BTN[k][1], { size = 13, colour = "#0d1117", font = "bold", align = "centre" })
+        end
+        d:circle(vw, 7, { colour = "#151a21", fill = true }); d:circle(mn, 7, { colour = "#151a21", fill = true })
+        d:text(V(cx, b.y - 70, 0), "LB + RB together opens and closes the editor", { size = 14, colour = UI.dim, align = "centre" })
+        -- the keyboard and mouse
+        local kx = a.x + half + 20
+        local ky = a.y + 68
+        d:line(V(a.x + half, a.y + 70, 0), V(a.x + half, b.y - 40, 0), { colour = UI.line, thickness = 1 })
+        d:text(V(kx, ky, 0), "KEYBOARD AND MOUSE", { size = 13, colour = "#f0f3f680", font = "bold" })
+        ky += 34
+        local rows = {
+            { { "W" }, { "E" }, { "R" }, "move / turn / size handles" },
+            { { "T" }, "snap to objects on / off" },
+            { { "Tab" }, "snap target: auto, one object, off" },
+            { { "G" }, "drag in steps" },
+            { { "F" }, "look at the picked object" },
+            { { "Ctrl" }, { "Z" }, "undo" },
+            { { "Shift" }, "bigger steps" },
+            { { "Ctrl" }, "hold while dragging: no snapping" },
+            { { "Arrows" }, { "PgUp" }, { "PgDn" }, "fly the view" },
+            { { "Esc" }, "done" },
+        }
+        for _, r in ipairs(rows) do
+            local x = kx
+            for _, part in ipairs(r) do
+                if type(part) == "table" then x += keycap(d, x, ky, part[1]) + 6
+                else d:text(V(x + 8, ky + 6, 0), part, { size = 15, colour = UI.text }) end
+            end
+            ky += 40
+        end
+        -- the mouse
+        local mx, my = kx + 40, ky + 30
+        local tx = mx + 140
+        callout(d, V(mx + 16, my + 20, 0), V(tx, my + 4, 0), "Left: pick  ·  drag a handle  ·  drag empty space: turn the view", true)
+        callout(d, V(mx + 35, my + 22, 0), V(tx, my + 40, 0), "Wheel: zoom", true)
+        callout(d, V(mx + 54, my + 20, 0), V(tx, my + 76, 0), "Right drag: slide the view", true)
+        d:rect(V(mx, my, 0), V(mx + 70, my + 110, 0), { colour = "#2a313c", fill = true, rounding = 35 })
+        d:line(V(mx + 35, my + 2, 0), V(mx + 35, my + 46, 0), { colour = "#151a21", thickness = 2 })
+        d:line(V(mx + 2, my + 46, 0), V(mx + 68, my + 46, 0), { colour = "#151a21", thickness = 2 })
+        d:rect(V(mx + 31, my + 12, 0), V(mx + 39, my + 32, 0), { colour = "#444d5a", fill = true, rounding = 4 })
+        d:text(V(tx, my + 106, 0), "Ctrl + click: add to / take out of the group", { size = 14, colour = UI.text })
+        UI.footer(d, a, b, { { "b", "Close" } })
+    end
+    function UI.controlsMouse(c)
+        if not S.controlsOpen then return false end
+        if c.left and not S.mouse.left then
+            local px = c.position
+            local box = S.screen.controlsBox
+            local used = false
+            for _, tt in ipairs(ctiles) do
+                if px.x >= tt.a.x and px.x <= tt.b.x and px.y >= tt.a.y and px.y <= tt.b.y then tt.fn(); used = true end
+            end
+            if not used and box and not (px.x >= box.a.x and px.x <= box.b.x and px.y >= box.a.y and px.y <= box.b.y) then S.controlsOpen = false end
+        end
+        return true
+    end
+end)()
+
+local function drawMain(d)
     S.size = d:size()
     local cpos, f, r, u = camBasis()
     local probe = d:world_to_screen(cpos + f * 10 + r * 1 + u * 1)
@@ -3990,11 +4448,7 @@ reskate.on("draw", function(d)
         if math.abs(mx) > 1 and math.abs(my) > 1 then S.proj = V(mx, my, 0) end
     end
     S.screen = {}
-    if S.picker then
-        local ok, err = pcall(drawPicker, d)
-        if not ok then reskate.log("Quick Drop helper: add window: " .. tostring(err), "warn"); S.picker = nil end
-        return
-    end
+    if S.picker then return end
     pcall(drawGroup, d)
     pcall(drawGrid, d)
     if S.toolsWin then
@@ -4197,6 +4651,24 @@ reskate.on("draw", function(d)
                 d:world_line(c[e[1]], c[e[2]], { colour = col, thickness = 2 })
             end
         end
+    end
+end
+
+reskate.on("draw", function(d)
+    if not S.open then return end
+    local ok, err = pcall(drawMain, d)
+    if not ok and not S.drawWarned then S.drawWarned = true; reskate.log("Quick Drop helper: draw: " .. tostring(err), "warn") end
+    if S.ownPanel and not S.picker then
+        local okp, errp = pcall(UI.sidePanel, d)
+        if not okp and not S.panelWarned then S.panelWarned = true; reskate.log("Quick Drop helper: panel: " .. tostring(errp), "warn") end
+    end
+    if S.picker then
+        local okk, errk = pcall(drawPicker, d)
+        if not okk then reskate.log("Quick Drop helper: add window: " .. tostring(errk), "warn"); S.picker = nil end
+    end
+    if S.controlsOpen then
+        local okc, errc = pcall(UI.controlsWin, d)
+        if not okc then reskate.log("Quick Drop helper: controls: " .. tostring(errc), "warn"); S.controlsOpen = false end
     end
 end)
 
