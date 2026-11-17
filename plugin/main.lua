@@ -1866,10 +1866,7 @@ local function closeEditor()
 end
 
 reskate.input.bind("ddh_quickdrop_plus", "F6")
-do
-    local ok, why = pcall(reskate.input.bind, "ddh_quickdrop_plus_pad", "Pad.LB+Pad.RB")
-    if not ok then reskate.log("Quick Drop helper: could not bind LB+RB: " .. tostring(why), "warn") end
-end
+-- (the controller opens it with LB + D-pad right: watched in the tick, see padOpenTick)
 reskate.on("action", function(name)
     if name == "ddh_quickdrop_plus" or name == "ddh_quickdrop_plus_pad" then openEditor() end
 end)
@@ -2043,7 +2040,7 @@ local function oldPanel(ui)
         ui:info("Scroll", "zoom")
         ui:info("Arrows, PgUp, PgDn", "fly the view")
         ui:info("Shift", "bigger steps")
-        ui:info("Controller", "LB+RB opens")
+        ui:info("Controller", "LB + D-pad right opens")
         ui:info("Left stick", "fly (holding: move it)")
         ui:info("A", "pick up what the cross is on / put down")
         ui:info("B", "cancel (back where it was) / close")
@@ -2299,7 +2296,7 @@ local function newPanel(ui)
         if iy ~= nil and iy ~= (S.lookInvY or false) then S.lookInvY = iy; saveLook() end
         local ix = ui:toggle("invx2", "Invert look left / right", S.lookInvX or false)
         if ix ~= nil and ix ~= (S.lookInvX or false) then S.lookInvX = ix; saveLook() end
-        ui:info("LB + RB", "open / close")
+        ui:info("LB + D-pad right", "open")
         ui:info("A  /  hold A", "pick up, put down  /  select")
         ui:info("B", "cancel  /  close")
         ui:info("X  /  Y twice", "copy  /  remove")
@@ -3676,6 +3673,17 @@ reskate.on("tick", function(dt)
     end
 
     if not S.open then
+        -- the controller: hold LB and press D-pad right to open the editor
+        local pd = readPad()
+        if pd then
+            local rightNow = pd.right == true
+            if pd.lb and rightNow and not S.padOpenRight and S.clock - (S.closedAt or -1e9) > 400 then
+                S.padOpenRight = true
+                openEditor()
+                return
+            end
+            S.padOpenRight = rightNow
+        end
         -- quick keys while skating: hold Ctrl
         if reskate.input.allowed() and reskate.input.key("Ctrl") and S.target then
             local fine = reskate.input.key("Shift")
@@ -4411,7 +4419,7 @@ end
         end
         d:circle(vw, 8, { colour = LC, thickness = 2 }); d:circle(mn, 8, { colour = LC, thickness = 2 })
         d:circle(V(cx, cy - 72, 0), 16, { colour = LC, thickness = 3 })
-        d:text(V(cx, b.y - 70, 0), "LB + RB together opens and closes the editor", { size = 14, colour = UI.dim, align = "centre" })
+        d:text(V(cx, b.y - 70, 0), "LB + D-pad right opens the editor  ·  B closes it", { size = 14, colour = UI.dim, align = "centre" })
         -- the keyboard and mouse
         local kx = a.x + half + 20
         local ky = a.y + 68
