@@ -72,6 +72,7 @@ local S = {
 
 -- (functions kept in one table: the file has more of them than Luau allows locals at the top)
 local FN = {}
+S.FN = FN
 
 local function say(text, warn)
     S.msg = text
@@ -2838,16 +2839,72 @@ function FN.cycleSnap()
 end
 S.cycleSnap = FN.cycleSnap
 S.nextSnap = function() FN.nextSnapObject() end
--- L3: only the next object (round the nearby ones; never auto or off)
+-- L3: the nearest object first, then the next nearest, and round again. The order is taken at the first press and
+-- kept while L3 keeps being tapped (within 3 s), so it does not jump about as things move.
+function FN.l3Cycle(kind, makeList)
+    local cyc = S.l3Cycle
+    if not (cyc and cyc.kind == kind and S.clock - cyc.at < 3000 and #cyc.ids > 0) then
+        local list = makeList()
+        if #list == 0 then return nil end
+        cyc = { kind = kind, ids = list, i = 0 }
+        S.l3Cycle = cyc
+    end
+    cyc.at = S.clock
+    for _ = 1, #cyc.ids do
+        cyc.i = cyc.i % #cyc.ids + 1
+        local id = cyc.ids[cyc.i]
+        if S.known and S.known[id] then return id, cyc.i, #cyc.ids end
+    end
+    return nil
+end
+-- objects near a point, nearest first (their boxes' distance)
+function FN.nearestTo(p, maxN, skip)
+    local out = {}
+    for id, o in pairs(S.known or {}) do
+        if not (skip and skip[id]) then
+            local d = len(o.position - p)
+            if d < 40 then
+                local b = S.itemBox[o.item]
+                local gap = d - (b and len((b[2] - b[1]) * (o.scale or 1)) / 2 or 0)
+                out[#out + 1] = { id = id, gap = math.max(gap, 0), d = d }
+            end
+        end
+    end
+    table.sort(out, function(a, b) if math.abs(a.gap - b.gap) > 1e-3 then return a.gap < b.gap end return a.d < b.d end)
+    local ids = {}
+    for i, e in ipairs(out) do if i > (maxN or 8) then break end; ids[i] = e.id end
+    return ids
+end
+-- held: what it snaps to
 function FN.nextSnapObject()
-    local ch = FN.snapChoices()
-    if #ch == 0 then say("Nothing near to snap to.") return end
-    local at = 0
-    for i, c in ipairs(ch) do if c.id == S.snapPick then at = i end end
-    local nxt = ch[at % #ch + 1].id
-    S.snapPick = nxt
+    local id, i, n = FN.l3Cycle("snap", function()
+        local ids = {}
+        for k, c in ipairs(FN.snapChoices()) do ids[k] = c.id end
+        return ids
+    end)
+    if not id then say("Nothing near to snap to.") return end
+    S.snapPick = id
     S.snapLock, S.guides = nil, nil
-    say("Snap: only to " .. titleOf(S.known[nxt].item) .. "  (L3: the next one)")
+    say(string.format("Snap: %s  (%d of %d, L3: the next)", titleOf(S.known[id].item), i, n))
+end
+-- carrying a set: what it snaps to, nearest to the set first
+function FN.nextCarrySnap()
+    local c = S.carry
+    if not c then return end
+    local id, i, n = FN.l3Cycle("carry", function() return FN.nearestTo(c.pos, 8) end)
+    if not id then say("Nothing near to snap to.") return end
+    S.snapPick = id
+    c.guides = nil
+    say(string.format("Snap: %s  (%d of %d, L3: the next)", titleOf(S.known[id].item), i, n))
+end
+-- free: what the cross is on (A picks it up), nearest to where the cross points first
+function FN.nextAimObject()
+    local at = FN.crossPoint()
+    local id, i, n = FN.l3Cycle("aim", function() return FN.nearestTo(at, 8) end)
+    if not id then say("Nothing near.") return end
+    S.aimLock, S.aimLockAt = id, S.clock
+    S.aim = S.known[id]
+    say(string.format("%s  (%d of %d, L3: the next, A: pick up)", titleOf(S.known[id].item), i, n))
 end
 -- View: the snapping mode, auto -> one object (the nearest) -> off -> auto
 function FN.snapMode()
@@ -3845,8 +3902,14 @@ function FN.padEditor(sec)
         return
     end
     if S.carry then
-        -- carrying a set: left stick moves it, RT / LT up / down, LB / RB turn, right stick circles round it
+        -- carrying a set: left stick moves it, RT / LT up / down, LB / RB turn, right stick circles round it,
+        -- L3 tapped: snap to the nearest object, then the next
         local c = S.carry
+        if p.ls and not S.l3At then S.l3At = S.clock end
+        if not p.ls and S.l3At then
+            if S.clock - S.l3At < 300 then FN.nextCarrySnap() end
+            S.l3At = nil
+        end
         if padPress("a", p.a) then S.carryDrop() return end
         if padPress("b", p.b) then S.carryCancel() return end
         local st = STEPS[S.stepSize] or STEPS[2]
@@ -3898,7 +3961,9 @@ function FN.padEditor(sec)
     -- L3 tapped while holding: what it snaps to (auto, each nearby object, off); held: Fine
     if p.ls and not S.l3At then S.l3At = S.clock end
     if not p.ls and S.l3At then
-        if holding and S.clock - S.l3At < 300 then FN.nextSnapObject() end
+        if S.clock - S.l3At < 300 then
+            if holding then FN.nextSnapObject() else FN.nextAimObject() end
+        end
         S.l3At = nil
     end
     -- the step size chosen (Fine / Normal / Big); L3 held: Fine
@@ -4058,6 +4123,10 @@ function FN.padEditor(sec)
         if p.down then S.cam.goalDist = clamp((S.cam.goalDist or S.cam.dist) * (1 + 1.5 * sec), 0.5, 300) end
         -- what A would pick up
         S.aim = FN.aimedObject()
+        if S.aimLock then
+            local o = S.known and S.known[S.aimLock]
+            if o and S.clock - (S.aimLockAt or 0) < 6000 and lx == 0 and ly == 0 and up == 0 then S.aim = o else S.aimLock = nil end
+        end
         -- A held down: every object the cross passes over goes in the group
         local ah = S.aHold
         if ah and p.a and not ah.sweep and S.clock - ah.at > 300 then
@@ -5125,7 +5194,7 @@ function FN.drawMain(d)
             end
             local W, H = S.size.x, S.size.y
             UI.chip(d, W / 2 - 120, 24, "Carrying  " .. S.carry.set.name, UI.purple)
-            UI.promptRow(d, W / 2, H - 48, { { "a", "Put down" }, { "b", "Cancel" }, { "LB RB", "Turn" }, { "RT LT", "Up / down" } })
+            UI.promptRow(d, W / 2, H - 48, { { "a", "Put down" }, { "b", "Cancel" }, { "LB RB", "Turn" }, { "RT LT", "Up / down" }, { "L3", "Snap to next" } })
         end)
         return
     end
