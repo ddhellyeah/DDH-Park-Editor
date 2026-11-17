@@ -4322,6 +4322,9 @@ end
     end
 
     -- ---------------------------------------------------------------- the controls window: a controller and the keys
+    local PAD_BODY = { 0,-92,7.6,-92.2,18.3,-92.5,30.7,-92.8,43.4,-93.3,55,-94,65.4,-95,75.6,-96.2,85.6,-97.6,95.4,-98.9,105,-100,114.4,-101.2,123.7,-102.5,132.7,-103.6,141.5,-104.3,150,-104,158.3,-102.9,166.4,-101.2,174.1,-98.9,181.4,-95.8,188,-92,193.9,-87.5,199.1,-82.4,203.8,-76.4,208.1,-69.7,212,-62,215.5,-53.1,218.5,-43.2,221.2,-32.4,223.6,-21.3,226,-10,228.3,1.6,230.4,13.7,232.3,26,234.2,38.2,236,50,237.9,61.6,239.9,73.3,241.8,84.7,243.2,95.4,244,105,244.2,113.5,243.8,121.1,243,127.9,241.8,134.2,240,140,237.7,145.5,234.9,150.6,231.7,155.1,228,159,224,162,219.4,164.3,214.3,165.9,208.9,166.7,203.4,166.8,198,166,192.7,164.2,187.4,161.5,182.1,158.1,176.9,154.2,172,150,167.4,145.3,163,139.9,158.8,134.3,154.5,128.8,150,124,145.5,119.7,141,115.7,136.4,112.1,131.5,108.8,126,106,120,103.7,113.7,101.8,107,100.4,99.8,99.1,92,98,83.4,97,74,96.3,64.3,95.8,54.5,95.4,45,95,35.2,94.7,24.7,94.4,14.7,94.2,6.1,94.1,0,94,-6.1,94.1,-14.7,94.2,-24.7,94.4,-35.2,94.7,-45,95,-54.5,95.4,-64.3,95.8,-74,96.3,-83.4,97,-92,98,-99.8,99.1,-107,100.4,-113.7,101.8,-120,103.7,-126,106,-131.5,108.8,-136.4,112.1,-141,115.7,-145.5,119.7,-150,124,-154.5,128.8,-158.8,134.3,-163,139.9,-167.4,145.3,-172,150,-176.9,154.2,-182.1,158.1,-187.4,161.5,-192.7,164.2,-198,166,-203.4,166.8,-208.9,166.7,-214.3,165.9,-219.4,164.3,-224,162,-228,159,-231.7,155.1,-234.9,150.6,-237.7,145.5,-240,140,-241.8,134.2,-243,127.9,-243.8,121.1,-244.2,113.5,-244,105,-243.2,95.4,-241.8,84.7,-239.9,73.3,-237.9,61.6,-236,50,-234.2,38.2,-232.3,26,-230.4,13.7,-228.3,1.6,-226,-10,-223.6,-21.3,-221.2,-32.4,-218.5,-43.2,-215.5,-53.1,-212,-62,-208.1,-69.7,-203.8,-76.4,-199.1,-82.4,-193.9,-87.5,-188,-92,-181.4,-95.8,-174.1,-98.9,-166.4,-101.2,-158.3,-102.9,-150,-104,-141.5,-104.3,-132.7,-103.6,-123.7,-102.5,-114.4,-101.2,-105,-100,-95.4,-98.9,-85.6,-97.6,-75.6,-96.2,-65.4,-95,-55,-94,-43.4,-93.3,-30.7,-92.8,-18.3,-92.5,-7.6,-92.2,-0,-92 }
+    local PAD_INNER = { 0,84,3.5,84.1,8,84.1,13.5,84.2,19.6,84.3,26,84.4,32.6,84.6,39,84.8,45,85,50.9,85.2,57,85.5,63.1,85.8,69.3,86.1,75.4,86.4,81.3,86.9,86.8,87.4,92,88,96.8,88.7,101.3,89.4,105.5,90.2,109.6,91.1,113.4,92,117.1,93.2,120.6,94.5,124,96,127.3,97.8,130.4,99.8,133.3,102,136.1,104.4,138.8,106.8,141.3,109.3,143.7,111.7,146,114,148.2,116.3,150.2,118.6,152,120.9,153.8,123.2,155.4,125.5,157,127.8,158.5,129.9,160,132,161.5,134,163,136.1,164.5,138.2,165.9,140.1,167.2,142,168.3,143.6,169.3,144.9,170,146 }
+    local PAD_BUMP = { 98,-104,99.4,-105.1,101.1,-106.8,103.1,-108.7,105.4,-110.8,108,-112.9,111,-114.9,114.3,-116.6,118,-118,122.3,-119.1,127.2,-120,132.6,-120.8,138.2,-121.5,144,-122,149.7,-122.2,155.1,-122.2,160,-122,164.6,-121.5,169.2,-120.6,173.6,-119.5,177.9,-118.2,181.9,-116.8,185.6,-115.2,189,-113.6,192,-112,194.5,-110.2,196.7,-108,198.5,-105.7,200,-103.4,201.3,-101.1,202.3,-99,203.2,-97.3,204,-96 }
     local ctiles = {}
     local function keycap(d, x, y, k, wide)
         local w = wide or math.max(34, UI.textW(d, k, 13, "bold") + 18)
@@ -4331,7 +4334,7 @@ end
         return w
     end
     local function callout(d, from, to, text, right)
-        d:line(from, to, { colour = "#ffffff40", thickness = 1 })
+        d:line(from, to, { colour = "#ffffff2e", thickness = 1 })
         d:circle(to, 3, { colour = UI.accent, fill = true })
         d:text(V(right and to.x + 10 or to.x - 10, to.y - 9, 0), text, { size = 14, colour = UI.text, align = right and "left" or "right" })
     end
@@ -4352,62 +4355,51 @@ end
         local cx, cy = a.x + half / 2, a.y + 52 + (ph - 52) * 0.45
         d:text(V(a.x + 24, a.y + 68, 0), "CONTROLLER", { size = 13, colour = "#f0f3f680", font = "bold" })
         -- laid out like an Xbox pad: left stick high, d-pad low; right stick low, A B X Y high
-        local ls, rs = V(cx - 150, cy - 40, 0), V(cx + 75, cy + 55, 0)
-        local dp, ab = V(cx - 75, cy + 55, 0), V(cx + 150, cy - 40, 0)
-        local vw, mn = V(cx - 48, cy - 35, 0), V(cx + 48, cy - 35, 0)
-        local BP = { y = V(0, -27, 0), x = V(-27, 0, 0), b = V(27, 0, 0), a = V(0, 27, 0) }
+        local ls, rs = V(cx - 140, cy - 35, 0), V(cx + 70, cy + 48, 0)
+        local dp, ab = V(cx - 70, cy + 48, 0), V(cx + 140, cy - 38, 0)
+        local vw, mn = V(cx - 42, cy - 38, 0), V(cx + 42, cy - 38, 0)
+        local BP = { y = V(0, -26, 0), x = V(-26, 0, 0), b = V(26, 0, 0), a = V(0, 26, 0) }
         local lx, rx = cx - 265, cx + 265
-        callout(d, V(cx - 190, cy - 128, 0), V(lx, cy - 190, 0), "LT / RT   lower / raise", false)
-        callout(d, V(cx - 165, cy - 112, 0), V(lx, cy - 140, 0), "LB   turn  ·  clear group", false)
+        callout(d, V(cx - 175, cy - 116, 0), V(lx, cy - 190, 0), "LT / RT   lower / raise", false)
+        callout(d, V(cx - 130, cy - 118, 0), V(lx, cy - 140, 0), "LB   turn  ·  clear group", false)
         callout(d, ls, V(lx, cy - 60, 0), "Left stick   move  ·  L3 snap", false)
         callout(d, vw, V(lx, cy + 10, 0), "View   undo", false)
         callout(d, dp, V(lx, cy + 80, 0), "D-pad   size  ·  copy in a row", false)
-        callout(d, V(cx + 165, cy - 112, 0), V(rx, cy - 190, 0), "RB   turn  ·  add to group", true)
+        callout(d, V(cx + 130, cy - 118, 0), V(rx, cy - 190, 0), "RB   turn  ·  add to group", true)
         callout(d, ab + BP.y, V(rx, cy - 140, 0), "Y   remove  ·  leave group", true)
         callout(d, ab + BP.b, V(rx, cy - 95, 0), "B   cancel  /  close", true)
         callout(d, ab + BP.x, V(rx, cy - 55, 0), "X   copy", true)
         callout(d, ab + BP.a, V(rx, cy - 15, 0), "A   pick up  ·  hold select", true)
         callout(d, mn, V(rx, cy + 30, 0), "Menu   step size", true)
         callout(d, rs, V(rx, cy + 80, 0), "Right stick   look  ·  R3 tools", true)
-        -- the body (white, like the pad in the picture): the top, the grips going down and out
-        local body, edge = "#e9ebef", "#c9cdd4"
-        d:rect(V(cx - 205, cy - 125, 0), V(cx - 120, cy - 100, 0), { colour = "#d5d8de", fill = true, rounding = 12 })
-        d:rect(V(cx + 120, cy - 125, 0), V(cx + 205, cy - 100, 0), { colour = "#d5d8de", fill = true, rounding = 12 })
-        for _, g in ipairs({ { -1 }, { 1 } }) do
-            local sx = g[1]
-            d:circle(V(cx + sx * 175, cy + 105, 0), 68, { colour = edge, fill = true })
-            d:circle(V(cx + sx * 150, cy + 25, 0), 105, { colour = edge, fill = true })
+        -- the pad as a line drawing (its outline traced like the usual Xbox pad)
+        local LC, LC2 = "#45c8e4", "#45c8e499"
+        local function path(pts, sx, col, th)
+            local px, py = nil, nil
+            for i = 1, #pts, 2 do
+                local x, y = cx + pts[i] * sx, cy + pts[i + 1]
+                if px then d:line(V(px, py, 0), V(x, y, 0), { colour = col, thickness = th }) end
+                px, py = x, y
+            end
         end
-        d:rect(V(cx - 215, cy - 112, 0), V(cx + 215, cy + 62, 0), { colour = edge, fill = true, rounding = 70 })
-        for _, g in ipairs({ { -1 }, { 1 } }) do
-            local sx = g[1]
-            d:circle(V(cx + sx * 175, cy + 103, 0), 64, { colour = body, fill = true })
-            d:circle(V(cx + sx * 150, cy + 23, 0), 101, { colour = body, fill = true })
-        end
-        d:rect(V(cx - 211, cy - 108, 0), V(cx + 211, cy + 58, 0), { colour = body, fill = true, rounding = 66 })
-        d:text(V(cx - 162, cy - 124, 0), "LB", { size = 12, colour = "#5a606b", font = "bold", align = "centre" })
-        d:text(V(cx + 162, cy - 124, 0), "RB", { size = 12, colour = "#5a606b", font = "bold", align = "centre" })
-        -- the sticks: dark caps in a light ring
+        path(PAD_BODY, 1, LC, 3)
+        path(PAD_INNER, 1, LC2, 2); path(PAD_INNER, -1, LC2, 2)
+        path(PAD_BUMP, 1, LC, 3); path(PAD_BUMP, -1, LC, 3)
+        d:text(V(cx - 152, cy - 142, 0), "LB", { size = 12, colour = LC, font = "bold", align = "centre" })
+        d:text(V(cx + 152, cy - 142, 0), "RB", { size = 12, colour = LC, font = "bold", align = "centre" })
         for _, st2 in ipairs({ ls, rs }) do
-            d:circle(st2, 34, { colour = "#f7f8fa", fill = true })
-            d:circle(st2, 30, { colour = "#1d2026", fill = true })
-            d:circle(st2, 22, { colour = "#30343c", fill = true })
+            d:circle(st2, 30, { colour = LC, thickness = 3 })
+            d:circle(st2, 20, { colour = LC2, thickness = 2 })
         end
-        -- the d-pad: a dark disc with a cross
-        d:circle(dp, 32, { colour = "#1d2026", fill = true })
-        d:rect(dp - V(8, 24, 0), dp + V(8, 24, 0), { colour = "#3a3f48", fill = true, rounding = 3 })
-        d:rect(dp - V(24, 8, 0), dp + V(24, 8, 0), { colour = "#3a3f48", fill = true, rounding = 3 })
-        -- A B X Y: dark buttons with coloured letters
+        d:circle(dp, 32, { colour = LC2, thickness = 2 })
+        local cr = { -8, -26, 8, -26, 8, -8, 26, -8, 26, 8, 8, 8, 8, 26, -8, 26, -8, 8, -26, 8, -26, -8, -8, -8, -8, -26 }
+        for i = 1, #cr - 2, 2 do d:line(dp + V(cr[i], cr[i + 1], 0), dp + V(cr[i + 2], cr[i + 3], 0), { colour = LC, thickness = 3 }) end
         for k, off in pairs(BP) do
-            d:circle(ab + off, 14, { colour = "#15171c", fill = true })
-            d:text(ab + off - V(0, 10, 0), UI.BTN[k][1], { size = 17, colour = UI.BTN[k][2], font = "bold", align = "centre" })
+            d:circle(ab + off, 12, { colour = UI.BTN[k][2], thickness = 3 })
+            d:text(ab + off - V(0, 9, 0), UI.BTN[k][1], { size = 14, colour = UI.BTN[k][2], font = "bold", align = "centre" })
         end
-        -- view, menu, share and the middle button
-        for _, q in ipairs({ vw, mn }) do
-            d:circle(q, 11, { colour = "#c9cdd4", fill = true }); d:circle(q, 9, { colour = "#f7f8fa", fill = true })
-        end
-        d:rect(V(cx - 16, cy - 8, 0), V(cx + 16, cy + 8, 0), { colour = "#c9cdd4", fill = true, rounding = 8 })
-        d:circle(V(cx, cy - 82, 0), 17, { colour = "#1d2026", fill = true })
+        d:circle(vw, 8, { colour = LC, thickness = 2 }); d:circle(mn, 8, { colour = LC, thickness = 2 })
+        d:circle(V(cx, cy - 72, 0), 16, { colour = LC, thickness = 3 })
         d:text(V(cx, b.y - 70, 0), "LB + RB together opens and closes the editor", { size = 14, colour = UI.dim, align = "centre" })
         -- the keyboard and mouse
         local kx = a.x + half + 20
@@ -4441,10 +4433,10 @@ end
         callout(d, V(mx + 16, my + 20, 0), V(tx, my + 4, 0), "Left: pick  ·  drag a handle  ·  drag empty space: turn the view", true)
         callout(d, V(mx + 35, my + 22, 0), V(tx, my + 40, 0), "Wheel: zoom", true)
         callout(d, V(mx + 54, my + 20, 0), V(tx, my + 76, 0), "Right drag: slide the view", true)
-        d:rect(V(mx, my, 0), V(mx + 70, my + 110, 0), { colour = "#2a313c", fill = true, rounding = 35 })
-        d:line(V(mx + 35, my + 2, 0), V(mx + 35, my + 46, 0), { colour = "#151a21", thickness = 2 })
-        d:line(V(mx + 2, my + 46, 0), V(mx + 68, my + 46, 0), { colour = "#151a21", thickness = 2 })
-        d:rect(V(mx + 31, my + 12, 0), V(mx + 39, my + 32, 0), { colour = "#444d5a", fill = true, rounding = 4 })
+        d:rect(V(mx, my, 0), V(mx + 70, my + 110, 0), { colour = "#45c8e4", rounding = 35, thickness = 3 })
+        d:line(V(mx + 35, my + 3, 0), V(mx + 35, my + 46, 0), { colour = "#45c8e499", thickness = 2 })
+        d:line(V(mx + 4, my + 46, 0), V(mx + 66, my + 46, 0), { colour = "#45c8e499", thickness = 2 })
+        d:rect(V(mx + 31, my + 12, 0), V(mx + 39, my + 32, 0), { colour = "#45c8e4", rounding = 4, thickness = 2 })
         d:text(V(tx, my + 106, 0), "Ctrl + click: add to / take out of the group", { size = 14, colour = UI.text })
         UI.footer(d, a, b, { { "b", "Close" } })
     end
