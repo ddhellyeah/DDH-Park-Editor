@@ -9,11 +9,11 @@ Works with skate.'s own Quick Drop. Drop objects as normal, then press **F6** to
 - Click another placed object to pick it. Drag empty space to turn the view, right-drag to slide it, scroll to zoom, arrows and PgUp / PgDn to fly it
 - **G** steps (0.25 m, 15°, 0.1), **Shift** bigger steps, **Ctrl+Z** undo, **F** look at the object, **Esc** done
 - **T** snap to objects (on to begin with): while you drag, the object's sides meet or line up with the objects near it, and the turn ring catches their turn. What it snapped to is outlined in blue. Hold **Ctrl** to drag without it. Side by side, they share height: an object that meets another side to side takes its height (bottoms level, or tops level when that's less of a move, up to 1 m), whichever handle moves it. Among several objects the closest one comes first, and it keeps to the one it snapped to (no flicking) until another is clearly closer. Objects snap by their outlines: the shape they fill seen from above (a curved bench is a curve, not a box), side to side, and they turn to meet a side flat. Outlines come from the model itself where it can: the Object Maker's models (built in), or the game's model found by the object's name. Anything else is measured with rays to about half a millimetre, and after a snap the seam is checked and the outline fitted to the real side. When it meets an object that is turned, it takes that object's turn so the sides meet flat (pull it away and its own turn comes back). Works with objects from any mod: the Object Maker's sizes are built in (`plugin/sizes.lua`); anything else is measured with rays the first time it is near the picked object (keep it still a moment) and remembered from then on. If a size comes out wrong, pick the object and press **Measure it again**. Objects you can't skate on (no collision) can't be measured and snap by their middle point
-- The panel on the right: what's picked at the top, then **Add object / Undo / Done**, then four tabs:
-  - **Object**: Move / Turn / Size handles, exact position, turn, size and tilt (click a box and type), Straighten, Size 1, Look at it, and the step size (Fine / Normal / Big)
-  - **Snapping**: snap to objects on / off, what it snaps to (Auto / Next object / Off), grid snap, drag in steps
-  - **Park**: the group, copy tools, every object in the park (search, All / Near / DDH), save as park mod, and what to do when the park is locked
-  - **Help**: controller and mouse controls, invert look
+- The panel on the right (drawn by the editor itself): what's picked at the top, then **+ Add object / Undo / Controls**, then three tabs:
+  - **Edit**: Move / Turn / Size handles; position, height, turn, size and tilt with − / + buttons (by the step size) — click a number to type it; Straighten, Size 1, Look at it; step size (Fine / Normal / Big)
+  - **Snap**: snap to objects, what it snaps to (Auto / Next object / Off), grid, drag in steps
+  - **Park**: the group, copy tools, every object in the park (search, All / Near / DDH, scroll with the wheel), save as park mod
+  - **Controls** opens a picture of the controller and the keys with what each one does
 - On older ReSkate the panel falls back to the old sliders
 
 **Controller** (Xbox or PlayStation), like Quick Drop: **LB+RB** opens it.
