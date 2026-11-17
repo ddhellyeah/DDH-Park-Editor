@@ -3554,6 +3554,32 @@ end
         end
         return out
     end
+    -- where the carried set snaps to: each of its pieces is tried as if it were the held object; the smallest
+    -- move that meets something wins, and the whole set takes it
+    function S.carrySnap(at, allow)
+        local c = S.carry
+        if not (c and S.osnap and S.known) or S.snapPick == "off" then return nil end
+        local saveSel, saveT = S.sel, S.target
+        local best, bestG, bestCost = nil, nil, math.huge
+        for i, e in ipairs(c.set.objects) do
+            if i > 40 then break end
+            local p = at + rotY(V(e.x or 0, e.y or 0, e.z or 0), c.heading)
+            local h = wrap(c.heading + (e.h or 0))
+            local sc = clamp(e.s or 1, 0.1, 10)
+            if S.itemBox[e.item] then
+                S.sel = { id = "__carry", item = e.item }
+                S.target = { pos = p, heading = h, scale = sc }
+                local ok, out, g = pcall(objSnap, p, h, sc, allow, nil)
+                if ok and g and #g > 0 then
+                    local mv = out - p
+                    local cost = len(mv) - (g[1].kind == "touch" and 0.05 or 0)
+                    if cost < bestCost then best, bestG, bestCost = mv, g, cost end
+                end
+            end
+        end
+        S.sel, S.target = saveSel, saveT
+        return best, bestG
+    end
     function S.carryDrop()
         local c = S.carry
         if not c then return end
@@ -3643,7 +3669,12 @@ local function padEditor(sec)
         if lx ~= 0 or ly ~= 0 or up ~= 0 then
             local mv = (flat(f) * ly + flat(r) * lx) * st.speed * sec + V(0, up * st.speed * 0.6 * sec, 0)
             c.raw = (c.raw or c.pos) + mv
-            c.pos = gridSnap(c.raw)
+            -- snapping, like one object: the set moves as one to where its nearest piece meets something
+            local delta, guides = nil, nil
+            local okS, d1, g1 = pcall(S.carrySnap, c.raw, allowFree(lx ~= 0 or ly ~= 0, up ~= 0))
+            if okS then delta, guides = d1, g1 end
+            c.guides = guides
+            if delta then c.pos = c.raw + delta else c.pos = gridSnap(c.raw) end
         else
             c.raw = nil
         end
@@ -4802,6 +4833,9 @@ local function drawMain(d)
                     d:world_line(c.pos - V(0, 0, 0.4), c.pos + V(0, 0, 0.4), { colour = UI.purple, thickness = 3 })
                     d:world_line(c.pos, c.pos + V(0, 1, 0), { colour = UI.purple, thickness = 3 })
                 end
+            end
+            for _, gd in ipairs(S.carry.guides or {}) do
+                if gd.nb then drawShape(d, gd.nb.shape or gd.nb, "#35e0ff", 3, gd.nb.xf) end
             end
             local W, H = S.size.x, S.size.y
             UI.chip(d, W / 2 - 120, 24, "Carrying  " .. S.carry.set.name, UI.purple)
