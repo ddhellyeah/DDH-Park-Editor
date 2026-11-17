@@ -521,6 +521,20 @@ local function step(from, to, word)
         end
         table.insert(to, u.kind == "removed" and { kind = "unremoved", rec = rec } or { kind = "placed", rec = rec })
         say(string.format("%s: putting back %d object%s.", word == "undo" and "Undo" or "Redo", #u.items, #u.items == 1 and "" or "s"))
+    elseif u.kind == "swap" then
+        -- replaced: take the new ones away and put the old ones back (and the other way for redo)
+        local r = u.rec
+        r.cancelled = true
+        for i = #S.q, 1, -1 do if S.q[i].rec == r then table.remove(S.q, i) end end
+        local now = #r.ids > 0 and itemsOf(r.ids) or {}
+        queueRemove(r.ids, word)
+        r.ids = {}
+        local rec = queuePlace(u.items, word)
+        rec.onAll = function(r2)
+            if #r2.ids > 1 then S.group = {}; for _, id in ipairs(r2.ids) do S.group[id] = true end; S.gbase = nil end
+        end
+        table.insert(to, { kind = "swap", rec = rec, items = now })
+        say(string.format("%s: swapping %d object%s back.", word == "undo" and "Undo" or "Redo", #u.items, #u.items == 1 and "" or "s"))
     elseif u.kind == "unremoved" then
         local r = u.rec
         for i = #S.q, 1, -1 do if S.q[i].rec == r then table.remove(S.q, i) end end
@@ -1315,7 +1329,7 @@ end
 -- landing on what is under it: rays straight down at its middle and corners, from a little above its bottom (so it
 -- steps up onto things up to 1.5 m higher, and down onto anything lower); the held object itself is looked through
 S.landOn = true
-function FN.supportY(item, pos, heading, scale, selfId)
+function FN.supportY(item, pos, heading, scale, selfId, wantSlope)
     local b = S.itemBox[item]
     local lo, hi = V(-0.3, 0, -0.3), V(0.3, 1, 0.3)
     if b then lo, hi = b[1] * scale, b[2] * scale end
@@ -1350,15 +1364,45 @@ function FN.supportY(item, pos, heading, scale, selfId)
     local best = down(mx, mz)
     -- but it only steps down once it is off what it stands on: while a corner (a little in) still rests on it,
     -- it stays up there (else a box on top of another drops off as soon as its middle passes the edge)
+    local stays = false
     if best and best < bottom - 0.03 then
         for _, c in ipairs({ { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } }) do
             local y = down(mx + wx * c[1], mz + wz * c[2])
-            if y and math.abs(y - bottom) <= 0.03 then best = bottom; break end
+            if y and math.abs(y - bottom) <= 0.03 then best = bottom; stays = true; break end
         end
     end
     if not best then return nil end
-    return best - lo.y
+    -- the slope it stands on (asked for): the tilt that sets it flat on it, false on the level, nil when unsure
+    local sl = nil
+    if wantSlope and not stays then
+        local dd = math.max(0.15, math.min(wx, wz, 0.5))
+        local x1, x0, z1, z0 = down(mx + dd, mz), down(mx - dd, mz), down(mx, mz + dd), down(mx, mz - dd)
+        if x1 and x0 and z1 and z0 and math.max(math.abs(x1 - best), math.abs(x0 - best), math.abs(z1 - best), math.abs(z0 - best)) <= dd * 1.6 then
+            local gx, gz = (x1 - x0) / (2 * dd), (z1 - z0) / (2 * dd)
+            local ang = math.atan(math.sqrt(gx * gx + gz * gz))
+            if ang < math.rad(FN.SLOPE_MIN) then
+                sl = false
+            elseif ang <= math.rad(50) then
+                local nn = math.sqrt(gx * gx + 1 + gz * gz)
+                sl = { x = math.atan2(-gz, 1), z = math.asin(gx / nn) }
+            end
+        end
+    end
+    return best - lo.y, sl
 end
+FN.SLOPE_MIN = 5
+S.slopeOn = true
+-- the slope found while moving: tilt the held object to it (or level again when it was tilted by a slope)
+function FN.takeSlope(id, sl, setTl)
+    if not S.slopeOn or not id then return end
+    if sl then
+        setTl({ x = sl.x, z = sl.z }); S.slopeTilt = id; S.tiltSaveDue = true
+    elseif sl == false and S.slopeTilt == id then
+        setTl(nil); S.slopeTilt = nil; S.tiltSaveDue = true
+    end
+end
+-- landing may go on: not tilted, or tilted by a slope it stood on
+function FN.mayLand(id) return not tilted(id) or (S.slopeOn and S.slopeTilt == id) end
 
 local function allowFree(level, updown)   -- the controller: the ways it is being moved right now
     local flat = allowIn(UP)
@@ -2467,7 +2511,7 @@ function FN.newPanel(ui)
         ui:info("Sticks, RT / LT", "move, look, up / down")
         ui:info("LB / RB (holding)", "turn")
         ui:info("D-pad (holding)", "size, zoom")
-        ui:info("R3 / L3 (holding)", "copy tools / snap target")
+        ui:info("R3 / L3 (holding)", "copy tools (hold: no snap) / snap target")
         ui:info("Menu  /  View", "step size  /  undo")
         ui:heading("Mouse and keys")
         ui:info("Click  /  Ctrl+click", "pick  /  group")
@@ -3547,11 +3591,93 @@ function FN.crossPoint()
     if ok and type(hit) == "table" and hit.position and len(hit.position - (cpos + f * 200)) > 0.5 then return hit.position end
     return S.cam.target
 end
-function FN.pickerPlace()
+-- ---------------------------------------------------------------- the park at a glance, and stacked duplicates
+-- duplicates: the same object in the same place, turn and size as another (easy to make by copying twice);
+-- the first one stays
+function FN.parkStats()
+    if S.stats and S.stats.known == S.known and S.clock - S.stats.at < 700 then return S.stats end
+    local st = { at = S.clock, known = S.known, n = 0, kinds = 0, top = nil, topN = 0, dups = {} }
+    local by, cells = {}, {}
+    local ids = {}
+    for id in pairs(S.known or {}) do ids[#ids + 1] = id end
+    table.sort(ids)
+    for _, id in ipairs(ids) do
+        local o = S.known[id]
+        st.n += 1
+        if not by[o.item] then by[o.item] = 0; st.kinds += 1 end
+        by[o.item] += 1
+        if by[o.item] > st.topN then st.top, st.topN = o.item, by[o.item] end
+        local p = o.position
+        local key = string.format("%s|%d|%d|%d", o.item, math.floor(p.x * 20 + 0.5), math.floor(p.y * 20 + 0.5), math.floor(p.z * 20 + 0.5))
+        local first = cells[key]
+        if first then
+            local dh = math.abs(wrap((first.heading or 0) - (o.heading or 0)))
+            if len(first.position - p) < 0.02 and dh < math.rad(1) and math.abs((first.scale or 1) - (o.scale or 1)) < 0.01 then
+                st.dups[#st.dups + 1] = id
+            end
+        else
+            cells[key] = o
+        end
+    end
+    S.stats = st
+    return st
+end
+function FN.removeDuplicates()
+    S.stats = nil
+    local st = FN.parkStats()
+    if #st.dups == 0 then say("No stacked duplicates in this park.") return end
+    local rec = S.removeUndoable(st.dups, "Duplicates removed")
+    S.stats = nil
+    say(string.format("Removing %d stacked duplicate%s... (undo puts them back)", rec.total, rec.total == 1 and "" or "s"))
+end
+
+-- replace: what would be replaced (the group, else the picked object)
+function FN.replaceTargets()
+    local ids = {}
+    if groupCount() > 0 and (not S.sel or S.group[S.sel.id]) then
+        for id in pairs(S.group) do if S.known and S.known[id] then ids[#ids + 1] = id end end
+    elseif S.sel and S.known and S.known[S.sel.id] then
+        ids[1] = S.sel.id
+    end
+    table.sort(ids)
+    return ids
+end
+-- swap them for another object: same place, turn, size and tilt; one undo swaps them back
+function FN.replaceWith(key, title)
+    local ids = FN.replaceTargets()
+    if #ids == 0 then say("Pick an object (or make a group) first, then replace it.", true) return false end
+    send()
+    if S.grab then S.grab = nil; endHoldMove() end
+    local old = itemsOf(ids)
+    local new = {}
+    for i, c in ipairs(old) do new[i] = { item = key, pos = c.pos, heading = c.heading, scale = c.scale, tilt = c.tilt } end
+    local rec = queuePlace(new, "Replaced")
+    rec.quiet = false
+    rec.onAll = function(r)
+        if #r.ids > 1 then S.group = {}; for _, id in ipairs(r.ids) do S.group[id] = true end; S.gbase = nil end
+    end
+    queueRemove(ids, "Replaced")
+    pushUndo({ kind = "swap", rec = rec, items = old })
+    say(string.format("Replacing %d with %s...  (undo swaps back)", #ids, tostring(title or key)))
+    return true
+end
+function FN.openReplace()
+    if #FN.replaceTargets() == 0 then say("Pick an object (or make a group) first, then replace it.", true) return end
+    FN.openPicker()
+    if S.picker then S.picker.replace = true end
+end
+S.openReplace = FN.openReplace
+function FN.pickerPlace(asReplace)
     local pk = S.picker
     local tab = pk and pk.tabs[pk.tab]
     local it = tab and tab.items[pk.sel]
     if not it then return end
+    if (asReplace or pk.replace) and it.set then say("A set can't replace an object: choose an object.", true) return end
+    if (asReplace or pk.replace) and not it.set then
+        closePicker()
+        FN.replaceWith(it.key, it.title)
+        return
+    end
     local at = FN.crossPoint()
     if it.set then
         closePicker()
@@ -3583,6 +3709,10 @@ end
 function FN.pickerPad(p)
     if padPress("b", p.b) then closePicker() return end
     if padPress("a", p.a) then FN.pickerPlace() return end
+    if padPress("y", p.y) then
+        if #FN.replaceTargets() > 0 then FN.pickerPlace(true) else say("Select objects first (hold A over them), then Y here replaces them.", true) end
+        return
+    end
     if padPress("lb", p.lb) then FN.pickerTab(-1) end
     if padPress("rb", p.rb) then FN.pickerTab(1) end
     local lx, ly = stick(p.lx, p.ly)
@@ -3643,7 +3773,8 @@ function FN.drawPicker(d)
     S.screen.pickBox = { a = a, b = b }
     S.screen.pickTiles = {}
     d:rect(V(0, 0, 0), V(W, H, 0), { colour = "#00000066", fill = true })
-    UI.panelBox(d, a, b, "Add object")
+    local nRep = #FN.replaceTargets()
+    UI.panelBox(d, a, b, pk.replace and string.format("Replace %d with…", nRep) or "Add object")
     local items = pk.tabs[pk.tab].items
     local rows = math.ceil(#items / PICK_COLS)
     d:text(V(b.x - 20, a.y + 17, 0), string.format("%d objects", #items), { size = 15, colour = UI.dim, align = "right" })
@@ -3697,7 +3828,13 @@ function FN.drawPicker(d)
         local f0, f1 = pk.top / rows, math.min(1, (pk.top + PICK_ROWS) / rows)
         d:rect(V(x0, y0 + (y1 - y0) * f0, 0), V(x0 + 4, y0 + (y1 - y0) * f1, 0), { colour = UI.accent, fill = true, rounding = 2 })
     end
-    UI.footer(d, a, b, { { "a", "Add" }, { "b", "Close" }, { "LB RB", "Category" }, { "D-pad", "Choose" } })
+    if pk.replace then
+        UI.footer(d, a, b, { { "a", "Replace" }, { "b", "Close" }, { "LB RB", "Category" }, { "D-pad", "Choose" } })
+    elseif nRep > 0 then
+        UI.footer(d, a, b, { { "a", "Add" }, { "y", string.format("Replace %d", nRep) }, { "b", "Close" }, { "LB RB", "Category" }, { "D-pad", "Choose" } })
+    else
+        UI.footer(d, a, b, { { "a", "Add" }, { "b", "Close" }, { "LB RB", "Category" }, { "D-pad", "Choose" } })
+    end
 end
 
 -- ---------------------------------------------------------------- sets: a group saved to place again later (any map, any server)
@@ -3904,7 +4041,8 @@ end
     end
     -- a set seen from above: every object's outline, fitted into a box
     function UI.drawSetPreview(d, set, a, b, col)
-        local shapes = {}
+        local shapes, tops = {}, {}
+        local ylo, yhi = math.huge, -math.huge
         local lo, hi = V(math.huge, 0, math.huge), V(-math.huge, 0, -math.huge)
         for _, e in ipairs(set.objects) do
             local pts = localOutline(e.item)
@@ -3920,17 +4058,34 @@ end
                 w = { p + V(-0.4, 0, -0.4), p + V(0.4, 0, -0.4), p + V(0.4, 0, 0.4), p + V(-0.4, 0, 0.4) }
             end
             for _, q in ipairs(w) do lo = V(math.min(lo.x, q.x), 0, math.min(lo.z, q.z)); hi = V(math.max(hi.x, q.x), 0, math.max(hi.z, q.z)) end
+            local bx = S.itemBox[e.item]
+            local top = (e.y or 0) + (bx and bx[2].y * k or 0.5)
             shapes[#shapes + 1] = w
+            tops[#shapes] = top
+            ylo, yhi = math.min(ylo, top), math.max(yhi, top)
         end
+        -- low pieces first and dim, the highest last and brightest: the layout reads like a map
+        local order = {}
+        for i = 1, #shapes do order[i] = i end
+        table.sort(order, function(i, j) return tops[i] < tops[j] end)
+        local span = yhi - ylo
         local sw, sh = math.max(hi.x - lo.x, 0.1), math.max(hi.z - lo.z, 0.1)
         local kk = math.min((b.x - a.x) / sw, (b.y - a.y) / sh)
         local ox, oy = (a.x + b.x) / 2, (a.y + b.y) / 2
         local mx, mz = (lo.x + hi.x) / 2, (lo.z + hi.z) / 2
         local n = 0
-        for _, w in ipairs(shapes) do
+        local base = col or "#9fd8ff"
+        if #base == 9 then base = string.sub(base, 1, 7) end
+        for _, si in ipairs(order) do
+            local w = shapes[si]
+            local f = span > 0.05 and (tops[si] - ylo) / span or 1
+            local cc = base .. string.format("%02x", math.floor(110 + 145 * f))
+            local sp = {}
+            for i, q in ipairs(w) do sp[i] = V(ox + (q.x - mx) * kk, oy - (q.z - mz) * kk, 0) end
+            if #sp >= 3 and #sp <= 8 then pcall(d.poly, d, sp, { colour = base .. string.format("%02x", math.floor(20 + 50 * f)), fill = true }) end
             for i = 1, #w do
                 local p1, p2 = w[i], w[i % #w + 1]
-                d:line(V(ox + (p1.x - mx) * kk, oy - (p1.z - mz) * kk, 0), V(ox + (p2.x - mx) * kk, oy - (p2.z - mz) * kk, 0), { colour = col or "#9fd8ff", thickness = 2 })
+                d:line(V(ox + (p1.x - mx) * kk, oy - (p1.z - mz) * kk, 0), V(ox + (p2.x - mx) * kk, oy - (p2.z - mz) * kk, 0), { colour = cc, thickness = 2 })
                 n += 1
                 if n > 600 then return end
             end
@@ -3988,10 +4143,15 @@ function FN.padEditor(sec)
             c.raw = (c.raw or c.pos) + mv
             -- snapping, like one object: the set moves as one to where its nearest piece meets something
             local spos, guides, sh = nil, nil, nil
-            local okS, p1, g1, h1 = pcall(S.carrySnap, c.raw, allowFree(lx ~= 0 or ly ~= 0, up ~= 0))
-            if okS then spos, guides, sh = p1, g1, h1 end
-            c.guides = guides
-            if spos then c.pos, c.snapH = spos, sh else c.pos, c.snapH = FN.gridSnap(c.raw), nil end
+            if p.rs then
+                -- R3 held: no snapping
+                c.guides, c.pos, c.snapH = nil, c.raw, nil
+            else
+                local okS, p1, g1, h1 = pcall(S.carrySnap, c.raw, allowFree(lx ~= 0 or ly ~= 0, up ~= 0))
+                if okS then spos, guides, sh = p1, g1, h1 end
+                c.guides = guides
+                if spos then c.pos, c.snapH = spos, sh else c.pos, c.snapH = FN.gridSnap(c.raw), nil end
+            end
         else
             c.raw = nil
         end
@@ -4042,13 +4202,25 @@ function FN.padEditor(sec)
         end
     end
     if padPress("rs", p.rs) then
-        -- holding: the copy tools; free: look at the picked object
+        -- holding: tap for the copy tools, hold for no snapping (while held); free: look at the picked object
         if holding then
-            if S.toolsWin then S.toolsWin = nil else FN.openTools() end
+            S.r3 = { at = S.clock }
         elseif t then
             S.cam.goal = t.pos
         end
     end
+    if S.r3 then
+        if p.rs and holding then
+            if S.clock - S.r3.at > 250 then S.r3.long = true end
+        else
+            if not S.r3.long and holding then
+                if S.toolsWin then S.toolsWin = nil else FN.openTools() end
+            end
+            S.r3 = nil
+        end
+    end
+    S.noSnap = (S.r3 and S.r3.long) and true or false
+    if S.noSnap then S.guides = nil end
     if padPress("y", p.y) then
         -- holding: the held one (a group: all of it). Free, with objects selected: Y twice quickly removes every
         -- selected one; Y once on a selected one takes it out of the selection (held down: sweep to take more out).
@@ -4240,19 +4412,26 @@ function FN.padEditor(sec)
             S.padTilt0 = tl0 and { x = tl0.x, z = tl0.z } or nil
         end
         S.padRaw = (S.padRaw or t.pos) + mv
-        if S.landOn and up == 0 and (lx ~= 0 or ly ~= 0) and not tilted(S.sel.id) then
+        if S.landOn and up == 0 and (lx ~= 0 or ly ~= 0) and FN.mayLand(S.sel.id) and not S.noSnap then
             if S.clock - (S.landAt or -1e9) > 70 then
                 S.landAt = S.clock
-                local okL, y = pcall(FN.supportY, S.sel.item, S.padRaw, S.padHd0 or t.heading, t.scale, S.sel.id)
+                local okL, y, sl = pcall(FN.supportY, S.sel.item, S.padRaw, S.padHd0 or t.heading, t.scale, S.sel.id, true)
                 S.landY = okL and y or nil
+                if okL and y then FN.takeSlope(S.sel.id, sl, function(v) S.padTilt0 = v end) end
             end
             if S.landY then S.padRaw = V(S.padRaw.x, S.landY, S.padRaw.z) end
         else
             S.landY = nil
         end
         local ntl
-        t.pos, t.heading, S.guides, ntl = snapTurned(S.padRaw, S.padHd0 or t.heading, t.scale, allowFree(lx ~= 0 or ly ~= 0, up ~= 0), S.padTilt0)
-        t.pos = FN.gridSnap(t.pos, S.guides)
+        if S.noSnap then
+            -- R3 held: no snapping at all, it goes exactly where the stick takes it
+            t.pos, t.heading, S.guides, ntl = S.padRaw, S.padHd0 or t.heading, nil, S.padTilt0
+            S.snapLock = nil
+        else
+            t.pos, t.heading, S.guides, ntl = snapTurned(S.padRaw, S.padHd0 or t.heading, t.scale, allowFree(lx ~= 0 or ly ~= 0, up ~= 0), S.padTilt0)
+            t.pos = FN.gridSnap(t.pos, S.guides)
+        end
         S.tilt[S.sel.id] = ntl
         S.cam.goal = (S.cam.goal or S.cam.target) + mv
         S.cam.target += mv
@@ -4528,9 +4707,12 @@ reskate.on("tick", function(dt)
                             off = o2
                         end
                         t.pos = g.start.pos + off
-                        if S.landOn and math.abs(g.n.y) > 0.9 and not tilted(S.sel.id) then
-                            local okL, y = pcall(FN.supportY, S.sel.item, t.pos, g.start.heading, t.scale, S.sel.id)
-                            if okL and y then t.pos = V(t.pos.x, y, t.pos.z) end
+                        if S.landOn and math.abs(g.n.y) > 0.9 and FN.mayLand(S.sel.id) and toObjects then
+                            local okL, y, sl = pcall(FN.supportY, S.sel.item, t.pos, g.start.heading, t.scale, S.sel.id, true)
+                            if okL and y then
+                                t.pos = V(t.pos.x, y, t.pos.z)
+                                FN.takeSlope(S.sel.id, sl, function(v) g.start.tilt = v end)
+                            end
                         end
                         local ntl
                         if toObjects then t.pos, t.heading, S.guides, ntl = snapTurned(t.pos, g.start.heading, t.scale, allowIn(g.n), g.start.tilt) else t.heading, ntl = g.start.heading, g.start.tilt end
@@ -4635,7 +4817,10 @@ function UI.drawPadHud(d)
     if selecting then chips[#chips + 1] = { string.format("Selecting  %d", ng), UI.purple }
     elseif ng > 0 then chips[#chips + 1] = { string.format("Group  %d", ng), UI.purple } end
     chips[#chips + 1] = { "Steps  " .. (STEPS[S.stepSize] or STEPS[2]).name, UI.accent }
-    if S.grab then chips[#chips + 1] = { "Snap  " .. FN.snapLabel(), S.snapPick and UI.orange or "#35e0ff" } end
+    if S.grab then
+        if S.noSnap then chips[#chips + 1] = { "Snap  off (R3 held)", UI.orange }
+        else chips[#chips + 1] = { "Snap  " .. FN.snapLabel(), S.snapPick and UI.orange or "#35e0ff" } end
+    end
     if FN.gridSize() > 0 then chips[#chips + 1] = { "Grid  " .. FN.GRID_NAMES[S.gridI], UI.green } end
     local tot = 0
     for _, ch in ipairs(chips) do tot += UI.chipW(d, ch[1]) + 8 end
@@ -4656,7 +4841,7 @@ function UI.drawPadHud(d)
     elseif selecting then
         items = { { "a", "Let go: done" } }
     elseif S.grab then
-        items = { { "a", "Put down" }, { "b", "Cancel" }, { "x", "Copy" }, { "LB RB", "Turn" }, { "D-pad L R", "Zoom" }, { "R3", "Copy tools" }, { "View L3", "Snap" } }
+        items = { { "a", "Put down" }, { "b", "Cancel" }, { "x", "Copy" }, { "LB RB", "Turn" }, { "D-pad L R", "Zoom" }, { "R3", "Tools" }, { "Hold R3", "No snap" }, { "View L3", "Snap" } }
     elseif S.aim and S.group[S.aim.id] then
         items = { { "a", "Pick up all" }, { "x", "Copy all" }, { "y", "Take out  ·  twice: delete all" }, { "LB", "Clear group" } }
     elseif S.aim then
@@ -4665,6 +4850,107 @@ function UI.drawPadHud(d)
         items = { { "a", "Add object" }, { "Hold A", "Select" }, { "Menu", "Steps" }, { "b", "Close" } }
     end
     if items then UI.promptRow(d, W / 2, H - 48, items) end
+end
+
+-- ---------------------------------------------------------------- height and gap while holding
+-- how far one outline is from another seen from above (0 when they overlap)
+function FN.polyGap(A, B)
+    local function inside(q, P)
+        local c = false
+        local n = #P
+        for i = 1, n do
+            local a, b = P[i], P[i % n + 1]
+            if (a.z > q.z) ~= (b.z > q.z) and q.x < a.x + (q.z - a.z) / (b.z - a.z) * (b.x - a.x) then c = not c end
+        end
+        return c
+    end
+    local function segD(q, a, b)
+        local ab = V(b.x - a.x, 0, b.z - a.z)
+        local l2 = ab.x * ab.x + ab.z * ab.z
+        local k = l2 > 1e-12 and clamp(((q.x - a.x) * ab.x + (q.z - a.z) * ab.z) / l2, 0, 1) or 0
+        local dx, dz = q.x - (a.x + ab.x * k), q.z - (a.z + ab.z * k)
+        return math.sqrt(dx * dx + dz * dz)
+    end
+    for _, q in ipairs(A) do if inside(q, B) then return 0 end end
+    for _, q in ipairs(B) do if inside(q, A) then return 0 end end
+    local best = math.huge
+    for _, P in ipairs({ { A, B }, { B, A } }) do
+        local X, Y = P[1], P[2]
+        for _, q in ipairs(X) do
+            for i = 1, #Y do best = math.min(best, segD(q, Y[i], Y[i % #Y + 1])) end
+        end
+    end
+    return best
+end
+S.readoutOn = true
+-- what the held object is over (its height above it) and the nearest object beside it (the gap): looked at 10 times a second
+function FN.readout()
+    local t, sel = S.target, S.sel
+    if not (t and sel) then S.ro = nil return nil end
+    if S.ro and S.ro.id == sel.id and S.clock - S.ro.at < 100 then return S.ro end
+    local ro = { id = sel.id, at = S.clock }
+    local okL, y = pcall(FN.supportY, sel.item, t.pos, t.heading, t.scale, sel.id)
+    if okL and y then ro.h = t.pos.y - y; ro.groundY = y end
+    if S.itemBox[sel.item] then
+        local me = worldShape(sel.item, t.pos, t.heading, t.scale)
+        if me.pts and #me.pts >= 3 then
+            local skip = { [sel.id] = true }
+            for id in pairs(S.group) do skip[id] = true end
+            for _, id in ipairs(FN.nearestTo(t.pos, 6, skip)) do
+                local o = S.known and S.known[id]
+                if o and S.itemBox[o.item] then
+                    local sh = worldShape(o.item, o.position, o.heading or 0, o.scale or 1)
+                    -- only beside it (at the same height somewhere)
+                    if sh.pts and #sh.pts >= 3 and sh.ylo < me.yhi - 0.02 and sh.yhi > me.ylo + 0.02 then
+                        local g = FN.polyGap(me.pts, sh.pts)
+                        if g < 8 and (not ro.gap or g < ro.gap) then ro.gap, ro.gapName = g, titleOf(o.item) end
+                    end
+                end
+            end
+        end
+    end
+    S.ro = ro
+    return ro
+end
+
+-- the see-through copy, its shadow and the height / gap, while holding
+function FN.drawGhost(d, c, sh, p, center, moving)
+    local holdingIt = S.grab or (S.drag and S.drag.moved)
+    -- a see-through copy where it is going (while the game is still catching up)
+    if moving and holdingIt then
+        local FACES = { { 0, 2, 6, 4 }, { 1, 3, 7, 5 }, { 0, 1, 5, 4 }, { 2, 3, 7, 6 }, { 0, 1, 3, 2 }, { 4, 5, 7, 6 } }
+        for _, fc in ipairs(FACES) do
+            local sp = {}
+            for k = 1, 4 do sp[k] = d:world_to_screen(c[fc[k]]) end
+            if sp[1] and sp[2] and sp[3] and sp[4] then d:poly(sp, { colour = "#ffe0662a", fill = true }) end
+        end
+    end
+    -- its shadow on what is under it, with a line down to it when it is in the air; and the height and gap
+    if holdingIt and S.readoutOn then
+        local okR, ro = pcall(FN.readout)
+        if okR and ro then
+            local lines = {}
+            if ro.h and ro.groundY then
+                if ro.h > 0.02 and sh and sh.pts and #sh.pts >= 3 then
+                    local gy = V(0, ro.groundY - (p.y + (sh.ylo - p.y)), 0)
+                    local n = #sh.pts
+                    for i = 1, n do
+                        local a2, b2 = sh.pts[i] + V(0, sh.ylo - p.y, 0) + gy, sh.pts[i % n + 1] + V(0, sh.ylo - p.y, 0) + gy
+                        d:world_line(a2, b2, { colour = "#ffffff55", thickness = 2 })
+                    end
+                    local bc = V(p.x, sh.ylo, p.z)
+                    d:world_line(bc, V(p.x, ro.groundY, p.z), { colour = "#ffffff70", thickness = 2 })
+                end
+                lines[#lines + 1] = ro.h > 0.005 and string.format("height %.2f m", ro.h) or "resting"
+            end
+            if ro.gap then
+                lines[#lines + 1] = ro.gap < 0.005 and ("touching " .. FN.shortTitle(ro.gapName, 18)) or string.format("gap %.2f m to %s", ro.gap, FN.shortTitle(ro.gapName, 18))
+            end
+            if #lines > 0 then
+                d:text(center + V(16, 34, 0), table.concat(lines, "   ·   "), { size = 15, colour = "#ffffff", shadow = true })
+            end
+        end
+    end
 end
 
 -- an outline as it stands: round its base, round its top, and up its corners
@@ -4882,6 +5168,9 @@ end
                 btn(d, V(x, y, 0), V(x + qw, y + 34, 0), "Straighten", function() markUndo(); t.heading = round(t.heading, math.pi / 2); if S.tilt[S.sel.id] then S.tilt[S.sel.id] = nil; S.tiltSaveDue = true end; S.dirty = true end)
                 btn(d, V(x + qw + 8, y, 0), V(x + 2 * qw + 8, y + 34, 0), "Size 1", function() markUndo(); t.scale = 1; S.dirty = true end)
                 btn(d, V(x + 2 * qw + 16, y, 0), V(x + w, y + 34, 0), "Look at it", function() S.cam.goal = t.pos end)
+                y += 42
+                local nr = #FN.replaceTargets()
+                btn(d, V(x, y, 0), V(x + w, y + 34, 0), nr > 1 and string.format("Replace all %d with another object…", nr) or "Replace with another object…", function() FN.openReplace() end)
                 y += 48
             end
             y = label(d, x, y, "Step size")
@@ -4903,7 +5192,12 @@ end
             y = label(d, x, y, "Grid")
             y = seg(d, x, y, w, FN.GRID_NAMES_P, S.gridI or 1, function(i) S.gridI = i end) + 14
             y = switch(d, x, y, w, "Drag in steps   (G)", S.snap, function() S.snap = not S.snap end) + 8
-            y = switch(d, x, y, w, "Land on what is under it", S.landOn, function() S.landOn = not S.landOn end)
+            y = switch(d, x, y, w, "Land on what is under it", S.landOn, function() S.landOn = not S.landOn end) + 8
+            if S.landOn then
+                y = switch(d, x, y, w, "Tilt to match slopes", S.slopeOn, function() S.slopeOn = not S.slopeOn end) + 8
+            end
+            y = switch(d, x, y, w, "Show height and gap", S.readoutOn, function() S.readoutOn = not S.readoutOn end) + 6
+            d:text(V(x + 4, y, 0), "Hold R3 (or Ctrl) to move without snapping.", { size = 13, colour = UI.dim })
         elseif S.ptab == 4 then
             -- ---------------------------------------------------------------- sets
             local nm = #(S.setMembers and S.setMembers() or {})
@@ -4923,7 +5217,7 @@ end
             if #S.sets == 0 then
                 d:text(V(x + 4, y, 0), "None yet.", { size = 14, colour = UI.dim }); y += 26
             end
-            local rowH = 76
+            local rowH = 100
             local maxRows = math.max(2, math.floor((b.y - 120 - y) / rowH))
             for i, set in ipairs(S.sets) do
                 if i > maxRows then
@@ -4933,14 +5227,14 @@ end
                 local ra, rb = V(x, y, 0), V(x + w, y + rowH - 6, 0)
                 d:rect(ra, rb, { colour = UI.tile, fill = true, rounding = 9 })
                 -- its layout from above
-                local pa, pb2 = V(x + 6, y + 6, 0), V(x + 58, y + 34, 0)
+                local pa, pb2 = V(x + 6, y + 6, 0), V(x + 104, y + 58, 0)
                 d:rect(pa, pb2, { colour = "#00000040", fill = true, rounding = 6 })
-                pcall(UI.drawSetPreview, d, set, pa + V(3, 3, 0), pb2 - V(3, 3, 0), UI.purple)
+                pcall(UI.drawSetPreview, d, set, pa + V(4, 4, 0), pb2 - V(4, 4, 0), UI.purple)
                 local nmS = set.name
-                if #nmS > 22 then nmS = string.sub(nmS, 1, 21) .. "…" end
-                d:text(V(x + 66, y + 5, 0), nmS, { size = 15, colour = UI.text, font = "bold" })
-                d:text(V(x + 66, y + 23, 0), string.format("%d objects", #set.objects), { size = 12, colour = UI.dim })
-                local by = y + 38
+                if #nmS > 20 then nmS = string.sub(nmS, 1, 19) .. "…" end
+                d:text(V(x + 114, y + 9, 0), nmS, { size = 15, colour = UI.text, font = "bold" })
+                d:text(V(x + 114, y + 29, 0), string.format("%d objects", #set.objects), { size = 12, colour = UI.dim })
+                local by = y + 64
                 local bw4 = (w - 12 - 18) / 4
                 local bx = x + 6
                 btn(d, V(bx, by, 0), V(bx + bw4, by + 28, 0), "Place", function() S.carrySet(set, FN.crossPoint(), wrap(S.cam.yaw + math.pi)) end, "primary")
@@ -4986,7 +5280,25 @@ end
             btn(d, V(x, y, 0), V(x + a3, y + 30, 0), "Line up", function() S.arrange("lineup") end)
             btn(d, V(x + a3 + 6, y, 0), V(x + 2 * a3 + 6, y + 30, 0), "Space evenly", function() S.arrange("space") end)
             btn(d, V(x + 2 * a3 + 12, y, 0), V(x + w, y + 30, 0), "Same height", function() S.arrange("level") end)
-            y += 50
+            y += 40
+            -- the park at a glance
+            local okS, ps = pcall(FN.parkStats)
+            if okS and ps then
+                local line = string.format("%d object%s  ·  %d kind%s", ps.n, ps.n == 1 and "" or "s", ps.kinds, ps.kinds == 1 and "" or "s")
+                if ps.top and ps.topN > 1 then line = line .. string.format("  ·  most: %s ×%d", FN.shortTitle(titleOf(ps.top), 14), ps.topN) end
+                d:text(V(x + 4, y, 0), line, { size = 13, colour = UI.dim })
+                y += 22
+                if #ps.dups > 0 then
+                    local lbl = string.format("Remove %d stacked duplicate%s", #ps.dups, #ps.dups == 1 and "" or "s")
+                    if S.dupAsk and S.clock - S.dupAsk < 3000 then lbl = "Click again to remove them" end
+                    btn(d, V(x, y, 0), V(x + w, y + 30, 0), lbl, function()
+                        if S.dupAsk and S.clock - S.dupAsk < 3000 then S.dupAsk = nil; FN.removeDuplicates()
+                        else S.dupAsk = S.clock; say(string.format("%d object%s sit exactly on top of the same object. Click again to remove them.", #ps.dups, #ps.dups == 1 and "" or "s")) end
+                    end)
+                    y += 38
+                end
+            end
+            y += 6
             FN.rebuildList()
             y = label(d, x, y, string.format("Objects in this park  ·  %d", S.listMatched or 0))
             local sa, sb = V(x, y, 0), V(x + w, y + 32, 0)
@@ -5151,7 +5463,7 @@ end
         callout(d, ab + BP.x, V(rx, cy - 35, 0), "X   copy", true)
         callout(d, ab + BP.a, V(rx, cy + 5, 0), "A   pick up  ·  hold select", true)
         callout(d, mn, V(rx, cy + 45, 0), "Menu   step size", true)
-        callout(d, rs, V(rx, cy + 85, 0), "R-stick   look  ·  R3 tools", true)
+        callout(d, rs, V(rx, cy + 85, 0), "R-stick look · R3 tools, hold: no snap", true)
         -- the pad as a line drawing (its outline traced like the usual Xbox pad)
         local LC, LC2 = "#45c8e4", "#45c8e499"
         local function path(pts, sx, col, th)
@@ -5269,7 +5581,7 @@ function FN.drawMain(d)
             end
             local W, H = S.size.x, S.size.y
             UI.chip(d, W / 2 - 120, 24, "Carrying  " .. S.carry.set.name, UI.purple)
-            UI.promptRow(d, W / 2, H - 48, { { "a", "Put down" }, { "b", "Cancel" }, { "LB RB", "Turn" }, { "RT LT", "Up / down" }, { "L3", "Snap to next" } })
+            UI.promptRow(d, W / 2, H - 48, { { "a", "Put down" }, { "b", "Cancel" }, { "LB RB", "Turn" }, { "RT LT", "Up / down" }, { "L3", "Snap to next" }, { "Hold R3", "No snap" } })
         end)
         return
     end
@@ -5463,11 +5775,13 @@ function FN.drawMain(d)
     -- the object's box where it is going: shows at once while the game catches up
     if S.boxCorners and (S.mode ~= 3 or padMode) then
         local c = S.boxCorners
-        local col = (S.dirty or (S.drag and S.drag.moved) or not lastApplied()) and "#ffe066" or "#ffffff66"
+        local moving = S.dirty or (S.drag and S.drag.moved) or not lastApplied()
+        local col = moving and "#ffe066" or "#ffffff66"
         local sh = S.itemBox[S.sel.item] and worldShape(S.sel.item, p, t.heading, t.scale) or nil
         local tl = tilted(S.sel.id) and S.tilt[S.sel.id] or nil
         local xf = tl and function(v) return tiltPoint(p, t.heading, tl, v) end or nil
         if xf then for i = 0, 7 do c[i] = xf(c[i]) end end
+        pcall(FN.drawGhost, d, c, sh, p, center, moving)
         if not (sh and drawShape(d, sh, col, 2, xf)) then
             for _, e in ipairs(BOX_EDGES) do
                 d:world_line(c[e[1]], c[e[2]], { colour = col, thickness = 2 })
