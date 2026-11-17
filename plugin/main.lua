@@ -3722,22 +3722,45 @@ local function padEditor(sec)
         end
     end
     if padPress("y", p.y) then
-        -- holding: the held one (a group: all of it); free, on a group member: out of the group (keep Y down and
-        -- sweep to take more out); free otherwise: the one under the cross
+        -- holding: the held one (a group: all of it). Free, with objects selected: Y twice quickly removes every
+        -- selected one; Y once on a selected one takes it out of the selection (held down: sweep to take more out).
+        -- Free otherwise: Y twice removes the one under the cross.
+        local yt = S.yTap
         if holding then
             deletePress()
-        elseif S.aim and S.group[S.aim.id] then
-            S.group[S.aim.id] = nil
-            S.gbase = nil
-            S.yHold = { n = 1 }
+        elseif yt and S.clock - yt.at < 450 and groupCount() > 0 and (yt.sel or not S.aim or S.group[S.aim.id]) then
+            -- the second Y: every selected object goes
+            S.yTap, S.yHold = nil, nil
+            local rec = newRec("Removed")
+            if S.grab then S.grab = nil; endHoldMove() end
+            for gid in pairs(S.group) do table.insert(S.q, { op = "remove", id = gid, rec = rec }); rec.total += 1 end
+            S.group, S.gbase = {}, nil
+            S.aim = nil
+            say(string.format("Removing %d selected objects...", rec.total))
+        elseif groupCount() > 0 and (not S.aim or S.group[S.aim.id]) then
+            -- the first Y with a selection: wait a moment for a second one
+            S.yTap = { at = S.clock, id = S.aim and S.aim.id or nil, sel = true }
+            S.yHold = { n = 0, at = S.clock }
+            say(string.format("Y again: remove all %d selected.%s", groupCount(), S.aim and "  (once: take this one out)" or ""))
         else
             deletePress(S.aim)
         end
         t = S.target; holding = S.grab ~= nil
     end
-    if S.yHold and not p.y then
-        local n = groupCount()
-        say(string.format("Taken out of the group: %d.  Group: %d left.", S.yHold.n, n))
+    -- one Y on a selected object (no second one came): it leaves the selection
+    if S.yTap and S.clock - S.yTap.at >= 450 then
+        local yt = S.yTap
+        S.yTap = nil
+        if yt.id and S.group[yt.id] then
+            S.group[yt.id] = nil
+            S.gbase = nil
+            if S.yHold then S.yHold.n += 1 end
+        end
+    end
+    if S.yHold and not p.y and not S.yTap then
+        if S.yHold.n > 0 then
+            say(string.format("Taken out of the selection: %d.  %d left.", S.yHold.n, groupCount()))
+        end
         S.yHold = nil
     end
     if padPress("a", p.a) then
@@ -3828,7 +3851,7 @@ local function padEditor(sec)
             say("Selecting: move the cross over objects, let go of A when done.")
         end
         -- Y held (started on a group member): every member the cross passes over leaves the group
-        if S.yHold and p.y and S.aim and S.group[S.aim.id] then
+        if S.yHold and p.y and S.clock - (S.yHold.at or 0) > 300 and S.aim and S.group[S.aim.id] then
             S.group[S.aim.id] = nil
             S.gbase = nil
             S.yHold.n += 1
@@ -4273,7 +4296,7 @@ function UI.drawPadHud(d)
     elseif S.grab then
         items = { { "a", "Put down" }, { "b", "Cancel" }, { "x", "Copy" }, { "LB RB", "Turn" }, { "D-pad L R", "Row" }, { "R3", "Copy tools" }, { "L3", "Snap" } }
     elseif S.aim and S.group[S.aim.id] then
-        items = { { "a", "Pick up all" }, { "x", "Copy all" }, { "y", "Out of group" }, { "LB", "Clear group" } }
+        items = { { "a", "Pick up all" }, { "x", "Copy all" }, { "y", "Take out  ·  twice: delete all" }, { "LB", "Clear group" } }
     elseif S.aim then
         items = { { "a", "Pick up" }, { "Hold A", "Select" }, { "x", "Copy" }, { "y", "Remove" }, { "RB", "Group" } }
     else
