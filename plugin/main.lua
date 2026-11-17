@@ -2344,7 +2344,9 @@ local function dockedPanel(ui)
     oldPanel(ui)
 end
 do
-    local ok, why = pcall(reskate.ui.screen, TITLE)
+    -- a screen without ReSkate's panel (panel = false): the editor draws its own
+    -- (ReSkate still calls the function with panel = false, but shows nothing of it: it is left empty)
+    local ok, why = pcall(reskate.ui.screen, TITLE, function(ui) end, { panel = false })
     if ok then
         S.ownPanel = true
         reskate.log("Quick Drop helper: using its own drawn panel.")
