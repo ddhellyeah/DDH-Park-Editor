@@ -464,9 +464,9 @@ local function queueRemove(ids, label)
     local rec = { ids = {}, total = 0, done = 0, failed = 0, label = label, quiet = true }
     for _, id in ipairs(ids) do
         S.group[id] = nil
+        if S.gbase and (S.gbase.m[id] or S.gbase.leader == id) then S.gbase = nil end
         table.insert(S.q, { op = "remove", id = id, rec = rec }); rec.total += 1
     end
-    S.gbase = nil
     return rec
 end
 -- remove objects so that undo can bring them back
@@ -2837,6 +2837,35 @@ function FN.cycleSnap()
     else say("Snap: only to " .. titleOf(S.known[nxt].item) .. "  (again: the next one)") end
 end
 S.cycleSnap = FN.cycleSnap
+S.nextSnap = function() FN.nextSnapObject() end
+-- L3: only the next object (round the nearby ones; never auto or off)
+function FN.nextSnapObject()
+    local ch = FN.snapChoices()
+    if #ch == 0 then say("Nothing near to snap to.") return end
+    local at = 0
+    for i, c in ipairs(ch) do if c.id == S.snapPick then at = i end end
+    local nxt = ch[at % #ch + 1].id
+    S.snapPick = nxt
+    S.snapLock, S.guides = nil, nil
+    say("Snap: only to " .. titleOf(S.known[nxt].item) .. "  (L3: the next one)")
+end
+-- View: the snapping mode, auto -> one object (the nearest) -> off -> auto
+function FN.snapMode()
+    local cur = S.snapPick
+    if cur == nil then
+        local ch = FN.snapChoices()
+        if ch[1] then S.snapPick = ch[1].id else S.snapPick = "off" end
+    elseif cur == "off" then
+        S.snapPick = nil
+    else
+        S.snapPick = "off"
+    end
+    S.snapLock, S.guides = nil, nil
+    local sp = S.snapPick
+    if sp == nil then say("Snap: auto (the nearest object)")
+    elseif sp == "off" then say("Snap: off")
+    else say("Snap: one object, " .. titleOf(S.known[sp].item) .. "  (L3: the next one)") end
+end
 function FN.snapLabel()
     local sp = S.snapPick
     if sp == nil then return "auto" end
@@ -3853,6 +3882,7 @@ function FN.padEditor(sec)
     local t = S.target
     if S.grab and not (S.sel and S.sel.id == S.grab.id) then S.grab = nil end
     local holding = S.grab ~= nil
+    if holding then S.bump = nil end
     if S.toolsWin then
         if not (S.sel and S.target) then S.toolsWin = nil else FN.toolsPad(p) end
     end
@@ -3868,16 +3898,23 @@ function FN.padEditor(sec)
     -- L3 tapped while holding: what it snaps to (auto, each nearby object, off); held: Fine
     if p.ls and not S.l3At then S.l3At = S.clock end
     if not p.ls and S.l3At then
-        if holding and S.clock - S.l3At < 300 then FN.cycleSnap() end
+        if holding and S.clock - S.l3At < 300 then FN.nextSnapObject() end
         S.l3At = nil
     end
     -- the step size chosen (Fine / Normal / Big); L3 held: Fine
     local st = STEPS[S.stepSize] or STEPS[2]
     if p.ls then st = STEPS[1] end
     if padPress("back", p.back) then
-        if holding then S.grab = nil; endHoldMove() end
-        if p.lb then redo() else undo() end
-        t = S.target; holding = false
+        -- View: snapping auto / one object / off; LB + View: undo; RB + View: redo
+        if p.lb or p.rb then
+            if holding and S.bumpTurn and S.target then S.target.heading = S.bumpTurn.h; S.dirty = true end
+            S.bumpTurn = nil
+            if holding then S.grab = nil; endHoldMove() end
+            if p.rb then redo() else undo() end
+            t = S.target; holding = false
+        else
+            FN.snapMode()
+        end
     end
     if padPress("rs", p.rs) then
         -- holding: the copy tools; free: look at the picked object
@@ -3966,8 +4003,19 @@ function FN.padEditor(sec)
         if padStep("left", p.left) then FN.pickNext(-1) t = S.target end
         if padStep("right", p.right) then FN.pickNext(1) t = S.target end
         -- the group: RB puts the object under the cross in (or takes it out), LB clears it
-        if padPress("rb", p.rb) and not p.lb then FN.toggleGroup(S.aim) end
-        if padPress("lb", p.lb) and not p.rb then FN.clearGroup() end
+        -- (on letting go, and only when no other button went with it: LB + View is undo, RB + View redo)
+        for _, k in ipairs({ "lb", "rb" }) do
+            S.bump = S.bump or {}
+            if p[k] and not S.bump[k] then S.bump[k] = { used = false, aim = S.aim } end
+            if p[k] and S.bump[k] and (p.back or p.a or p.x or p.y or p.right or p.left or p.up or p.down or p.lb and p.rb) then S.bump[k].used = true end
+            if not p[k] and S.bump[k] then
+                local b = S.bump[k]
+                S.bump[k] = nil
+                if not b.used then
+                    if k == "rb" then FN.toggleGroup(b.aim or S.aim) else FN.clearGroup() end
+                end
+            end
+        end
     elseif not S.toolsWin then
         -- holding: D-pad left / right leaves a copy and steps along (a quick row)
         if padStep("rowl", p.left) then FN.rowStep(-1); t = S.target end
@@ -4076,6 +4124,9 @@ function FN.padEditor(sec)
 
     -- turn: bumpers, by the step size (Fine 1°, Normal 15°, Big 45°)
     local tstep = math.rad(st.deg)
+    -- (the turn a bumper made is taken back if View follows: LB + View is undo, RB + View redo)
+    if (p.lb or p.rb) and not S.bumpTurn then S.bumpTurn = { h = t.heading, at = S.clock } end
+    if not (p.lb or p.rb) then S.bumpTurn = nil end
     if padStep("lb", p.lb) then begin(); t.heading = wrap(round(t.heading + tstep, tstep)) end
     if padStep("rb", p.rb) then begin(); t.heading = wrap(round(t.heading - tstep, tstep)) end
     if p.lb or p.rb then active = true end
@@ -4462,7 +4513,7 @@ function UI.drawPadHud(d)
     elseif selecting then
         items = { { "a", "Let go: done" } }
     elseif S.grab then
-        items = { { "a", "Put down" }, { "b", "Cancel" }, { "x", "Copy" }, { "LB RB", "Turn" }, { "D-pad L R", "Row" }, { "R3", "Copy tools" }, { "L3", "Snap" } }
+        items = { { "a", "Put down" }, { "b", "Cancel" }, { "x", "Copy" }, { "LB RB", "Turn" }, { "D-pad L R", "Row" }, { "R3", "Copy tools" }, { "View L3", "Snap" } }
     elseif S.aim and S.group[S.aim.id] then
         items = { { "a", "Pick up all" }, { "x", "Copy all" }, { "y", "Take out  ·  twice: delete all" }, { "LB", "Clear group" } }
     elseif S.aim then
@@ -4700,7 +4751,7 @@ end
                 local cur = S.snapPick == nil and 1 or (S.snapPick == "off" and 3 or 2)
                 y = seg(d, x, y, w, { "Auto", "Next object", "Off" }, cur, function(i)
                     if i == 1 then S.snapPick = nil; S.snapLock = nil
-                    elseif i == 2 and S.cycleSnap then if S.snapPick == "off" then S.snapPick = nil end; S.cycleSnap(); if S.snapPick == nil then S.cycleSnap() end
+                    elseif i == 2 and S.nextSnap then S.nextSnap()
                     elseif i == 3 then S.snapPick = "off"; S.guides = nil end
                 end) + 6
                 d:text(V(x + 4, y, 0), "Tab, or tap L3 while holding, switches it.", { size = 13, colour = UI.dim })
@@ -4946,8 +4997,8 @@ end
         limL, limR = a.x + 16, a.x + half - 14
         callout(d, V(cx - 150, cy - 141, 0), V(lx, cy - 205, 0), "LT   lower", false)
         callout(d, V(cx - 125, cy - 112, 0), V(lx, cy - 150, 0), "LB   turn  ·  clear group", false)
-        callout(d, ls, V(lx, cy - 70, 0), "L-stick   move  ·  L3 snap", false)
-        callout(d, vw, V(lx, cy + 5, 0), "View   undo  ·  LB+View redo", false)
+        callout(d, ls, V(lx, cy - 70, 0), "L-stick   move  ·  L3 next snap", false)
+        callout(d, vw, V(lx, cy + 5, 0), "View   snap: auto / one / off", false)
         callout(d, dp, V(lx, cy + 80, 0), "D-pad   size  ·  row copy", false)
         callout(d, V(cx + 150, cy - 141, 0), V(rx, cy - 205, 0), "RT   raise", true)
         callout(d, V(cx + 125, cy - 112, 0), V(rx, cy - 160, 0), "RB   turn  ·  add to group", true)
@@ -4988,7 +5039,7 @@ end
         end
         d:circle(vw, 8, { colour = LC, thickness = 2 }); d:circle(mn, 8, { colour = LC, thickness = 2 })
         d:circle(V(cx, cy - 72, 0), 16, { colour = LC, thickness = 3 })
-        d:text(V(cx, b.y - 70, 0), "LB + D-pad right opens the editor  ·  B closes it", { size = 14, colour = UI.dim, align = "centre" })
+        d:text(V(cx, b.y - 70, 0), "LB + D-pad right opens  ·  B closes  ·  LB + View undo  ·  RB + View redo", { size = 14, colour = UI.dim, align = "centre" })
         -- the keyboard and mouse
         local kx = a.x + half + 20
         local ky = a.y + 68
