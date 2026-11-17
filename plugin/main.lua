@@ -3543,7 +3543,7 @@ end
         S.grab = nil
         S.padWait = true
         S.cam.goal = S.carry.pos
-        say("Carrying \"" .. set.name .. "\": move it, A (or click) puts it down, B (or right click) cancels.")
+        say("Carrying \"" .. set.name .. "\": move it, A puts it down, B cancels.")
     end
     function S.carryPlaces()
         local c = S.carry
@@ -4009,24 +4009,6 @@ reskate.on("tick", function(dt)
         if okp and used then
             S.mouse = { pos = c.position, left = c.left }
             S.hover = nil
-            c = nil
-        end
-    end
-    if c and S.carry then
-        local px = c.position
-        local box = S.screen and S.screen.panelBox
-        local overPanel = box and px.x >= box.a.x and px.x <= box.b.x and px.y >= box.a.y and px.y <= box.b.y
-        if not overPanel then
-            local o, dd = rayAt(px)
-            local okp, hit = pcall(reskate.world.pick, o, o + dd * 300)
-            if okp and type(hit) == "table" and hit.position then S.carry.pos = gridSnap(hit.position) end
-            if c.wheel and c.wheel ~= 0 then
-                local st = STEPS[S.stepSize] or STEPS[2]
-                S.carry.heading = wrap(S.carry.heading + math.rad(st.deg) * c.wheel)
-            end
-            if c.left and not S.mouse.left then S.carryDrop()
-            elseif c.right and not S.mouse.right then S.carryCancel() end
-            S.mouse = { pos = px, left = c.left, right = c.right }
             c = nil
         end
     end
@@ -4818,12 +4800,7 @@ local function drawMain(d)
             end
             local W, H = S.size.x, S.size.y
             UI.chip(d, W / 2 - 120, 24, "Carrying  " .. S.carry.set.name, UI.purple)
-            local padMode = S.padUsedAt and (not S.mouseUsedAt or S.padUsedAt >= S.mouseUsedAt)
-            if padMode then
-                UI.promptRow(d, W / 2, H - 48, { { "a", "Put down" }, { "b", "Cancel" }, { "LB RB", "Turn" }, { "RT LT", "Up / down" } })
-            else
-                UI.promptRow(d, W / 2, H - 48, { { "Click", "Put down" }, { "Right click", "Cancel" }, { "Wheel", "Turn" } })
-            end
+            UI.promptRow(d, W / 2, H - 48, { { "a", "Put down" }, { "b", "Cancel" }, { "LB RB", "Turn" }, { "RT LT", "Up / down" } })
         end)
         return
     end
