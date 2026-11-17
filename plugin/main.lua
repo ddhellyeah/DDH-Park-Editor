@@ -169,7 +169,15 @@ local function scan()
                     if x.tilt then S.tilt[o.id] = { x = x.tilt.x, z = x.tilt.z }; S.tiltSaveDue = true end
                     if x.rec then
                         if x.rec.cancelled then table.insert(S.q, { op = "remove", id = o.id, rec = { ids = {}, total = 1, done = 0, failed = 0, quiet = true } })
-                        else table.insert(x.rec.ids, o.id) end
+                        else
+                            table.insert(x.rec.ids, o.id)
+                            if x.rec.byIdx and x.idx then x.rec.byIdx[x.idx] = o.id end
+                            if x.rec.onAll and #x.rec.ids >= x.rec.total - x.rec.failed and x.rec.done + x.rec.failed >= x.rec.total then
+                                local f = x.rec.onAll
+                                x.rec.onAll = nil
+                                pcall(f, x.rec)
+                            end
+                        end
                     end
                 else
                     table.insert(keep, o)
@@ -2930,7 +2938,7 @@ local function qTick()
         table.remove(S.q, 1)
         r.done += 1
         if e.op == "place" then
-            table.insert(S.expectMany, { item = e.item, pos = e.pos, tilt = e.tilt, rec = r, at = S.clock })
+            table.insert(S.expectMany, { item = e.item, pos = e.pos, tilt = e.tilt, rec = r, at = S.clock, idx = e.idx })
         else
             S.tilt[e.id] = nil
             S.tiltSaveDue = true
@@ -3196,6 +3204,14 @@ local function pickerTabs()
         if string.find(string.lower(it.key), "bkddh", 1, true) then table.insert(mine.items, it) end
     end
     if #mine.items > 0 then tabs[1] = mine end
+    if S.loadSets then
+        local sets = S.loadSets()
+        if #sets > 0 then
+            local st = { name = "Sets", items = {} }
+            for _, set in ipairs(sets) do st.items[#st.items + 1] = { key = "set:" .. set.file, title = set.name, set = set } end
+            tabs[#tabs + 1] = st
+        end
+    end
     for _, it in ipairs(cat) do
         local c = tostring(it.category or "Other")
         if not byName[c] then byName[c] = { name = c, items = {} }; tabs[#tabs + 1] = byName[c] end
@@ -3242,6 +3258,11 @@ local function pickerPlace()
     local it = tab and tab.items[pk.sel]
     if not it then return end
     local at = crossPoint()
+    if it.set then
+        closePicker()
+        S.placeSet(it.set, at, wrap(S.cam.yaw + math.pi))
+        return
+    end
     -- facing the view, as Quick Drop does
     S.copyQ = { item = it.key, pos = at, heading = wrap(S.cam.yaw + math.pi), scale = 1, until_ = S.clock + 3000, grab = true }
     closePicker()
@@ -3356,7 +3377,10 @@ local function drawPicker(d)
                 local selected, hovered = i == pk.sel, i == pk.hover
                 d:rect(ta, tb, { colour = selected and UI.accentDim or (hovered and UI.tileHot or UI.tile), fill = true, rounding = 10 })
                 local path, u0, v0, k = UI.thumbOf(it.key)
-                if path then
+                if it.set then
+                    pcall(UI.drawSetPreview, d, it.set, ta + V(16, 16, 0), tb - V(16, 30, 0), UI.purple)
+                    d:text(V((ta.x + tb.x) / 2, tb.y - 24, 0), string.format("%d objects", #it.set.objects), { size = 13, colour = UI.dim, align = "centre" })
+                elseif path then
                     d:image(path, ta + V(8, 8, 0), tb - V(8, 8, 0), { uv = { u0, v0, u0 + k, v0 + k } })
                 elseif not pcall(UI.drawFootprint, d, it.key, ta + V(22, 22, 0), tb - V(22, 22, 0)) or not S.footDrawn then
                     -- no picture and no known shape: its initials, big
@@ -3380,6 +3404,173 @@ local function drawPicker(d)
     end
     UI.footer(d, a, b, { { "a", "Add" }, { "b", "Close" }, { "LB RB", "Category" }, { "D-pad", "Choose" } })
 end
+
+-- ---------------------------------------------------------------- sets: a group saved to place again later (any map, any server)
+-- Saved as files in the plugin's data folder ("sets/<name>.json"), so they can be shared: send the file, a friend
+-- puts it in their own sets folder. Each object: its item, place and turn next to the set's middle, size and tilt.
+;(function()
+    local FOLDER = "sets"
+    local function safeName(n)
+        n = string.gsub(tostring(n), "[^%w%-_ ]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if #n > 40 then n = string.sub(n, 1, 40) end
+        return n
+    end
+    function S.loadSets()
+        local out = {}
+        local ok, lst = pcall(reskate.files.list, FOLDER)
+        if ok and type(lst) == "table" then
+            for _, e in ipairs(lst) do
+                local name = type(e) == "table" and (e.name or e.path) or e
+                name = tostring(name)
+                local base = string.match(name, "([^/\\]+)$") or name
+                if string.lower(string.sub(base, -5)) == ".json" then
+                    local okr, txt = pcall(reskate.files.read, FOLDER .. "/" .. base)
+                    if okr and type(txt) == "string" then
+                        local okd, data = pcall(reskate.json.decode, txt)
+                        if okd and type(data) == "table" and type(data.objects) == "table" and #data.objects > 0 then
+                            out[#out + 1] = { name = tostring(data.name or string.sub(base, 1, -6)), file = base, objects = data.objects }
+                        end
+                    end
+                end
+            end
+        end
+        table.sort(out, function(a, b) return string.lower(a.name) < string.lower(b.name) end)
+        S.sets = out
+        S.setsAt = S.clock
+        return out
+    end
+    -- what would be saved: the group (with the picked one), or just the picked object
+    local function members()
+        local list = {}
+        local seen = {}
+        local function add(id, p)
+            local o = S.known and S.known[id]
+            if o and p and not seen[id] then
+                seen[id] = true
+                local tl = S.tilt[id]
+                list[#list + 1] = { id = id, item = o.item, pos = p.pos, heading = p.heading, scale = p.scale, tilt = tl }
+            end
+        end
+        if S.sel and S.target then add(S.sel.id, S.target) end
+        for id in pairs(S.group) do add(id, poseOf(id)) end
+        return list
+    end
+    S.setMembers = members
+    function S.saveSet(name)
+        local list = members()
+        if #list == 0 then say("Pick an object or make a group first, then save it as a set.", true) return end
+        name = safeName(name)
+        if name == "" then say("A set needs a name.", true) return end
+        -- the middle (x, z) at the lowest point, turned like the first one
+        local lo, hi, ymin = V(math.huge, 0, math.huge), V(-math.huge, 0, -math.huge), math.huge
+        for _, m in ipairs(list) do
+            lo = V(math.min(lo.x, m.pos.x), 0, math.min(lo.z, m.pos.z)); hi = V(math.max(hi.x, m.pos.x), 0, math.max(hi.z, m.pos.z))
+            ymin = math.min(ymin, m.pos.y)
+        end
+        local O = V((lo.x + hi.x) / 2, ymin, (lo.z + hi.z) / 2)
+        local h0 = list[1].heading
+        local objs = {}
+        for _, m in ipairs(list) do
+            local off = rotY(m.pos - O, -h0)
+            local e = { item = m.item, x = math.floor(off.x * 1000 + 0.5) / 1000, y = math.floor(off.y * 1000 + 0.5) / 1000, z = math.floor(off.z * 1000 + 0.5) / 1000,
+                h = math.floor(wrap(m.heading - h0) * 1e5 + 0.5) / 1e5, s = math.floor(m.scale * 1000 + 0.5) / 1000 }
+            if m.tilt then e.tx, e.tz = m.tilt.x, m.tilt.z end
+            objs[#objs + 1] = e
+        end
+        local data = { format = "ddh-park-set", version = 1, name = name, objects = objs }
+        local file = string.gsub(name, " ", "_") .. ".json"
+        local ok, why = pcall(reskate.files.write, FOLDER .. "/" .. file, reskate.json.encode(data, true))
+        if not ok or why == false then say("Set not saved: " .. tostring(why), true) return end
+        S.loadSets()
+        say(string.format("Saved the set \"%s\" (%d object%s). Find it under Sets, or in Add object.", name, #objs, #objs == 1 and "" or "s"))
+        reskate.log(string.format("Quick Drop helper: saved set %s with %d objects", file, #objs))
+    end
+    function S.deleteSet(set)
+        local ok = pcall(reskate.files.remove, FOLDER .. "/" .. set.file)
+        S.loadSets()
+        say(ok and ("Deleted the set \"" .. set.name .. "\".") or "Could not delete it.", not ok)
+    end
+    function S.openSetsFolder()
+        pcall(reskate.files.write, FOLDER .. "/READ ME.txt", "Sets saved with the DDH Park Editor. Share a set by sending its .json file; put sets you get here.\n")
+        pcall(reskate.files.reveal, FOLDER)
+    end
+    -- place a set: its middle where the cross is, facing the view; then it is held (controller) or picked as a group
+    function S.placeSet(set, at, heading)
+        local have = {}
+        for _, it in ipairs(reskate.objects.catalog()) do have[it.key] = true end
+        at = at or (S.cam and S.cam.target) or V(0, 0, 0)
+        heading = heading or wrap(S.cam.yaw + math.pi)
+        local list, missing = {}, 0
+        for i, e in ipairs(set.objects) do
+            if have[e.item] then
+                local off = rotY(V(e.x or 0, e.y or 0, e.z or 0), heading)
+                list[#list + 1] = { item = e.item, pos = at + off, heading = wrap(heading + (e.h or 0)), scale = clamp(e.s or 1, 0.1, 10),
+                    tilt = (e.tx or e.tz) and { x = e.tx or 0, z = e.tz or 0 } or nil, first = i == 1 }
+            else
+                missing += 1
+            end
+        end
+        if #list == 0 then say("None of this set's objects are installed (their mods are missing).", true) return end
+        local rec = { ids = {}, byIdx = {}, total = 0, done = 0, failed = 0, label = "Set \"" .. set.name .. "\"" }
+        for i, c in ipairs(list) do
+            if i > 200 then break end
+            table.insert(S.q, { op = "place", item = c.item, pos = c.pos, heading = c.heading, scale = c.scale, tilt = c.tilt, rec = rec, idx = i })
+            rec.total += 1
+        end
+        table.insert(S.undo, { kind = "placed", rec = rec })
+        -- all there: they become the group; the first is picked (and held, with the controller)
+        rec.onAll = function(r)
+            S.group = {}
+            for _, id in ipairs(r.ids) do S.group[id] = true end
+            S.gbase = nil
+            local lead = S.known and S.known[r.byIdx[1] or r.ids[1]]
+            if lead and S.open then
+                select(lead)
+                local padMode = S.padUsedAt and (not S.mouseUsedAt or S.padUsedAt >= S.mouseUsedAt)
+                if padMode then
+                    startGrab()
+                    if S.grab then S.grab.copyRec = r end
+                end
+            end
+            say(string.format("Placed the set \"%s\": %d objects, picked as a group.%s", set.name, #r.ids, missing > 0 and string.format(" %d left out (mod missing).", missing) or ""))
+        end
+        say(string.format("Placing the set \"%s\" (%d objects)...%s", set.name, rec.total, missing > 0 and string.format(" %d left out: their mod is missing.", missing) or ""), missing > 0)
+    end
+    -- a set seen from above: every object's outline, fitted into a box
+    function UI.drawSetPreview(d, set, a, b, col)
+        local shapes = {}
+        local lo, hi = V(math.huge, 0, math.huge), V(-math.huge, 0, -math.huge)
+        for _, e in ipairs(set.objects) do
+            local pts = localOutline(e.item)
+            local c, s, k = math.cos(e.h or 0), math.sin(e.h or 0), e.s or 1
+            local w = {}
+            if pts and #pts >= 3 then
+                for i, q in ipairs(pts) do
+                    local x, z = q.x * k, q.z * k
+                    w[i] = V((e.x or 0) + x * c + z * s, 0, (e.z or 0) - x * s + z * c)
+                end
+            else
+                local p = V(e.x or 0, 0, e.z or 0)
+                w = { p + V(-0.4, 0, -0.4), p + V(0.4, 0, -0.4), p + V(0.4, 0, 0.4), p + V(-0.4, 0, 0.4) }
+            end
+            for _, q in ipairs(w) do lo = V(math.min(lo.x, q.x), 0, math.min(lo.z, q.z)); hi = V(math.max(hi.x, q.x), 0, math.max(hi.z, q.z)) end
+            shapes[#shapes + 1] = w
+        end
+        local sw, sh = math.max(hi.x - lo.x, 0.1), math.max(hi.z - lo.z, 0.1)
+        local kk = math.min((b.x - a.x) / sw, (b.y - a.y) / sh)
+        local ox, oy = (a.x + b.x) / 2, (a.y + b.y) / 2
+        local mx, mz = (lo.x + hi.x) / 2, (lo.z + hi.z) / 2
+        local n = 0
+        for _, w in ipairs(shapes) do
+            for i = 1, #w do
+                local p1, p2 = w[i], w[i % #w + 1]
+                d:line(V(ox + (p1.x - mx) * kk, oy - (p1.z - mz) * kk, 0), V(ox + (p2.x - mx) * kk, oy - (p2.z - mz) * kk, 0), { colour = col or "#9fd8ff", thickness = 2 })
+                n += 1
+                if n > 600 then return end
+            end
+        end
+    end
+end)()
 
 local function padEditor(sec)
     local p = readPad()
@@ -4115,7 +4306,7 @@ end
         tw.apply(v)
     end)
 
-    local TABS = { "Edit", "Snap", "Park" }
+    local TABS = { "Edit", "Snap", "Park", "Sets" }
     function UI.sidePanel(d)
         tiles = {}
         local W, H = S.size.x, S.size.y
@@ -4158,7 +4349,7 @@ end
         end
         -- the everyday buttons
         local bw = (w - 16) / 3
-        btn(d, V(x, y, 0), V(x + bw, y + 36, 0), "+  Add object", function() if S.openPicker then S.openPicker() end end, "primary")
+        btn(d, V(x, y, 0), V(x + bw, y + 36, 0), "+  Add", function() if S.openPicker then S.openPicker() end end, "primary")
         btn(d, V(x + bw + 8, y, 0), V(x + 2 * bw + 8, y + 36, 0), "Undo", function() undo() end)
         btn(d, V(x + 2 * bw + 16, y, 0), V(x + w, y + 36, 0), "Controls", function() S.controlsOpen = true end)
         y += 48
@@ -4232,6 +4423,47 @@ end
             y = label(d, x, y, "Grid")
             y = seg(d, x, y, w, GRID_NAMES_P, S.gridI or 1, function(i) S.gridI = i end) + 14
             y = switch(d, x, y, w, "Drag in steps   (G)", S.snap, function() S.snap = not S.snap end)
+        elseif S.ptab == 4 then
+            -- ---------------------------------------------------------------- sets
+            local nm = #(S.setMembers and S.setMembers() or {})
+            d:text(V(x + 4, y, 0), nm > 0 and string.format("Saves the %s (%d object%s)", nm > 1 and "group" or "picked object", nm, nm == 1 and "" or "s")
+                or "Pick an object or make a group,", { size = 13, colour = UI.dim })
+            d:text(V(x + 4, y + 18, 0), nm > 0 and "to place again on any map or server." or "then save it here.", { size = 13, colour = UI.dim })
+            y += 42
+            btn(d, V(x, y, 0), V(x + w, y + 38, 0), nm > 0 and string.format("Save as a set  (%d)", nm) or "Save as a set", function()
+                if nm == 0 then say("Pick an object or make a group first.", true) return end
+                local ok = pcall(reskate.ui.dialog, "ddh_setname", { title = "Save as a set", message = "A name for it (letters, numbers, spaces).", field = { text = "My set", max = 40 },
+                    buttons = { { id = "apply", label = "Save" }, { id = "close", label = "Cancel" } } })
+                if ok then S.typing = true end
+            end, nm > 0 and "primary" or nil)
+            y += 52
+            if not S.sets or S.clock - (S.setsAt or -1e9) > 5000 then S.loadSets() end
+            y = label(d, x, y, string.format("Saved sets  ·  %d", #S.sets))
+            if #S.sets == 0 then
+                d:text(V(x + 4, y, 0), "None yet.", { size = 14, colour = UI.dim }); y += 26
+            end
+            local rowH = 46
+            local maxRows = math.max(2, math.floor((b.y - 120 - y) / rowH))
+            for i, set in ipairs(S.sets) do
+                if i > maxRows then
+                    d:text(V(x + 4, y, 0), string.format("+%d more (in Add object > Sets)", #S.sets - maxRows), { size = 13, colour = UI.dim }); y += 24
+                    break
+                end
+                local ra, rb = V(x, y, 0), V(x + w, y + rowH - 6, 0)
+                d:rect(ra, rb, { colour = UI.tile, fill = true, rounding = 9 })
+                local nmS = set.name
+                if #nmS > 20 then nmS = string.sub(nmS, 1, 19) .. "…" end
+                d:text(V(x + 12, y + 5, 0), nmS, { size = 15, colour = UI.text, font = "bold" })
+                d:text(V(x + 12, y + 23, 0), string.format("%d objects", #set.objects), { size = 12, colour = UI.dim })
+                btn(d, V(rb.x - 132, y + 6, 0), V(rb.x - 52, y + rowH - 12, 0), "Place", function() S.placeSet(set, crossPoint(), wrap(S.cam.yaw + math.pi)) end, "primary")
+                btn(d, V(rb.x - 46, y + 6, 0), V(rb.x - 6, y + rowH - 12, 0), "×", function()
+                    if S.delSetAsk == set.file and S.clock - (S.delSetAt or 0) < 3000 then S.delSetAsk = nil; S.deleteSet(set)
+                    else S.delSetAsk, S.delSetAt = set.file, S.clock; say("Click × again to delete \"" .. set.name .. "\".") end
+                end)
+                y += rowH
+            end
+            local pb = b.y - 56
+            btn(d, V(x, pb, 0), V(x + w, pb + 34, 0), "Open the sets folder  (to share them)", function() S.openSetsFolder() end)
         else
             y = label(d, x, y, ng > 0 and string.format("Group  ·  %d objects", ng) or "Group")
             local gw = (w - 8) / 2
@@ -4292,12 +4524,20 @@ end
             end
         end
         -- the last message, along the bottom
-        if S.msg ~= "" and S.clock < S.msgUntil and S.ptab ~= 3 then
+        if S.msg ~= "" and S.clock < S.msgUntil and S.ptab ~= 3 and S.ptab ~= 4 then
             local msg = S.msg
             if #msg > 52 then msg = string.sub(msg, 1, 50) .. "…" end
             d:text(V(x + 4, b.y - 30, 0), msg, { size = 13, colour = UI.dim })
         end
     end
+    reskate.on("throwdown_ui", function(e)
+        if e.action ~= "dialog" or e.args[1] ~= "ddh_setname" then return end
+        local what = e.args[2]
+        if what ~= "apply" and what ~= "cancel" and what ~= "close" then return end
+        S.typing = false
+        if what ~= "cancel" then pcall(reskate.ui.close_dialog, "ddh_setname") end
+        if what == "apply" and S.saveSet then S.saveSet(tostring(e.args[3] or "")) end
+    end)
     reskate.on("throwdown_ui", function(e)
         if e.action ~= "dialog" or e.args[1] ~= "ddh_search" then return end
         local what = e.args[2]
