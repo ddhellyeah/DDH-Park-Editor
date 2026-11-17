@@ -4346,44 +4346,66 @@ end
         d:text(V((ca.x + cb.x) / 2, ca.y + 4, 0), "×", { size = 24, colour = UI.dim, align = "centre" })
         ctiles[#ctiles + 1] = { a = ca, b = cb, fn = function() S.controlsOpen = false end }
         -- the controller, drawn (what each button does first, so the pad sits on top of the lines)
-        local half = pw * 0.6
+        local half = pw * 0.64
         local cx, cy = a.x + half / 2, a.y + 52 + (ph - 52) * 0.45
         d:text(V(a.x + 24, a.y + 68, 0), "CONTROLLER", { size = 13, colour = "#f0f3f680", font = "bold" })
-        local ls, rs = V(cx - 110, cy - 10, 0), V(cx + 60, cy + 40, 0)
-        local dp, ab = V(cx - 60, cy + 40, 0), V(cx + 115, cy - 10, 0)
-        local vw, mn = V(cx - 24, cy - 26, 0), V(cx + 24, cy - 26, 0)
-        local BP = { y = V(0, -22, 0), x = V(-22, 0, 0), b = V(22, 0, 0), a = V(0, 22, 0) }
-        local lx, rx = cx - 235, cx + 235
-        callout(d, V(cx - 150, cy - 85, 0), V(lx, cy - 170, 0), "LT / RT   lower / raise", false)
-        callout(d, V(cx - 120, cy - 82, 0), V(lx, cy - 125, 0), "LB   turn  ·  clear group", false)
-        callout(d, ls, V(lx, cy - 60, 0), "Left stick   move  ·  L3 snap target", false)
-        callout(d, dp, V(lx, cy + 30, 0), "D-pad   size  ·  copy in a row", false)
-        callout(d, vw, V(lx, cy + 110, 0), "View   undo", false)
-        callout(d, V(cx + 120, cy - 82, 0), V(rx, cy - 170, 0), "RB   turn  ·  add to group", true)
-        callout(d, ab + BP.y, V(rx, cy - 115, 0), "Y   remove  ·  leave group", true)
-        callout(d, ab + BP.x, V(rx, cy - 75, 0), "X   copy", true)
-        callout(d, ab + BP.b, V(rx, cy - 35, 0), "B   cancel  /  close", true)
-        callout(d, ab + BP.a, V(rx, cy + 5, 0), "A   pick up  ·  hold: select", true)
-        callout(d, rs, V(rx, cy + 65, 0), "Right stick   look  ·  R3 copy tools", true)
-        callout(d, mn, V(rx, cy + 115, 0), "Menu   Fine / Normal / Big", true)
-        local bodyC = "#2a313c"
-        d:circle(V(cx - 120, cy + 40, 0), 82, { colour = bodyC, fill = true })
-        d:circle(V(cx + 120, cy + 40, 0), 82, { colour = bodyC, fill = true })
-        d:rect(V(cx - 150, cy - 60, 0), V(cx + 150, cy + 60, 0), { colour = bodyC, fill = true, rounding = 50 })
-        d:rect(V(cx - 190, cy - 92, 0), V(cx - 70, cy - 70, 0), { colour = "#3a4250", fill = true, rounding = 10 })
-        d:rect(V(cx + 70, cy - 92, 0), V(cx + 190, cy - 70, 0), { colour = "#3a4250", fill = true, rounding = 10 })
-        d:text(V(cx - 130, cy - 89, 0), "LB", { size = 12, colour = UI.dim, font = "bold", align = "centre" })
-        d:text(V(cx + 130, cy - 89, 0), "RB", { size = 12, colour = UI.dim, font = "bold", align = "centre" })
+        -- laid out like an Xbox pad: left stick high, d-pad low; right stick low, A B X Y high
+        local ls, rs = V(cx - 150, cy - 40, 0), V(cx + 75, cy + 55, 0)
+        local dp, ab = V(cx - 75, cy + 55, 0), V(cx + 150, cy - 40, 0)
+        local vw, mn = V(cx - 48, cy - 35, 0), V(cx + 48, cy - 35, 0)
+        local BP = { y = V(0, -27, 0), x = V(-27, 0, 0), b = V(27, 0, 0), a = V(0, 27, 0) }
+        local lx, rx = cx - 265, cx + 265
+        callout(d, V(cx - 190, cy - 128, 0), V(lx, cy - 190, 0), "LT / RT   lower / raise", false)
+        callout(d, V(cx - 165, cy - 112, 0), V(lx, cy - 140, 0), "LB   turn  ·  clear group", false)
+        callout(d, ls, V(lx, cy - 60, 0), "Left stick   move  ·  L3 snap", false)
+        callout(d, vw, V(lx, cy + 10, 0), "View   undo", false)
+        callout(d, dp, V(lx, cy + 80, 0), "D-pad   size  ·  copy in a row", false)
+        callout(d, V(cx + 165, cy - 112, 0), V(rx, cy - 190, 0), "RB   turn  ·  add to group", true)
+        callout(d, ab + BP.y, V(rx, cy - 140, 0), "Y   remove  ·  leave group", true)
+        callout(d, ab + BP.b, V(rx, cy - 95, 0), "B   cancel  /  close", true)
+        callout(d, ab + BP.x, V(rx, cy - 55, 0), "X   copy", true)
+        callout(d, ab + BP.a, V(rx, cy - 15, 0), "A   pick up  ·  hold select", true)
+        callout(d, mn, V(rx, cy + 30, 0), "Menu   step size", true)
+        callout(d, rs, V(rx, cy + 80, 0), "Right stick   look  ·  R3 tools", true)
+        -- the body (white, like the pad in the picture): the top, the grips going down and out
+        local body, edge = "#e9ebef", "#c9cdd4"
+        d:rect(V(cx - 205, cy - 125, 0), V(cx - 120, cy - 100, 0), { colour = "#d5d8de", fill = true, rounding = 12 })
+        d:rect(V(cx + 120, cy - 125, 0), V(cx + 205, cy - 100, 0), { colour = "#d5d8de", fill = true, rounding = 12 })
+        for _, g in ipairs({ { -1 }, { 1 } }) do
+            local sx = g[1]
+            d:circle(V(cx + sx * 175, cy + 105, 0), 68, { colour = edge, fill = true })
+            d:circle(V(cx + sx * 150, cy + 25, 0), 105, { colour = edge, fill = true })
+        end
+        d:rect(V(cx - 215, cy - 112, 0), V(cx + 215, cy + 62, 0), { colour = edge, fill = true, rounding = 70 })
+        for _, g in ipairs({ { -1 }, { 1 } }) do
+            local sx = g[1]
+            d:circle(V(cx + sx * 175, cy + 103, 0), 64, { colour = body, fill = true })
+            d:circle(V(cx + sx * 150, cy + 23, 0), 101, { colour = body, fill = true })
+        end
+        d:rect(V(cx - 211, cy - 108, 0), V(cx + 211, cy + 58, 0), { colour = body, fill = true, rounding = 66 })
+        d:text(V(cx - 162, cy - 124, 0), "LB", { size = 12, colour = "#5a606b", font = "bold", align = "centre" })
+        d:text(V(cx + 162, cy - 124, 0), "RB", { size = 12, colour = "#5a606b", font = "bold", align = "centre" })
+        -- the sticks: dark caps in a light ring
         for _, st2 in ipairs({ ls, rs }) do
-            d:circle(st2, 24, { colour = "#151a21", fill = true }); d:circle(st2, 16, { colour = "#444d5a", fill = true })
+            d:circle(st2, 34, { colour = "#f7f8fa", fill = true })
+            d:circle(st2, 30, { colour = "#1d2026", fill = true })
+            d:circle(st2, 22, { colour = "#30343c", fill = true })
         end
-        d:rect(dp - V(6, 20, 0), dp + V(6, 20, 0), { colour = "#151a21", fill = true, rounding = 3 })
-        d:rect(dp - V(20, 6, 0), dp + V(20, 6, 0), { colour = "#151a21", fill = true, rounding = 3 })
+        -- the d-pad: a dark disc with a cross
+        d:circle(dp, 32, { colour = "#1d2026", fill = true })
+        d:rect(dp - V(8, 24, 0), dp + V(8, 24, 0), { colour = "#3a3f48", fill = true, rounding = 3 })
+        d:rect(dp - V(24, 8, 0), dp + V(24, 8, 0), { colour = "#3a3f48", fill = true, rounding = 3 })
+        -- A B X Y: dark buttons with coloured letters
         for k, off in pairs(BP) do
-            d:circle(ab + off, 11, { colour = UI.BTN[k][2], fill = true })
-            d:text(ab + off - V(0, 8, 0), UI.BTN[k][1], { size = 13, colour = "#0d1117", font = "bold", align = "centre" })
+            d:circle(ab + off, 14, { colour = "#15171c", fill = true })
+            d:text(ab + off - V(0, 10, 0), UI.BTN[k][1], { size = 17, colour = UI.BTN[k][2], font = "bold", align = "centre" })
         end
-        d:circle(vw, 7, { colour = "#151a21", fill = true }); d:circle(mn, 7, { colour = "#151a21", fill = true })
+        -- view, menu, share and the middle button
+        for _, q in ipairs({ vw, mn }) do
+            d:circle(q, 11, { colour = "#c9cdd4", fill = true }); d:circle(q, 9, { colour = "#f7f8fa", fill = true })
+        end
+        d:rect(V(cx - 16, cy - 8, 0), V(cx + 16, cy + 8, 0), { colour = "#c9cdd4", fill = true, rounding = 8 })
+        d:circle(V(cx, cy - 82, 0), 17, { colour = "#1d2026", fill = true })
         d:text(V(cx, b.y - 70, 0), "LB + RB together opens and closes the editor", { size = 14, colour = UI.dim, align = "centre" })
         -- the keyboard and mouse
         local kx = a.x + half + 20
