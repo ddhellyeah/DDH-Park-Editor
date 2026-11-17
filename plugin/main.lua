@@ -1392,6 +1392,18 @@ function FN.supportY(item, pos, heading, scale, selfId, wantSlope)
 end
 FN.SLOPE_MIN = 5
 S.slopeOn = true
+-- Landing only trusts the game's rays when they see the object resting where the hold starts: in some spots
+-- (parts of a street) the rays pass through the ground, and it would drop far under it. Not trusted, it may
+-- still climb onto things (and is trusted from there on), but never goes down.
+function FN.landTrust(item, pos, heading, scale, id)
+    local ok, y = pcall(FN.supportY, item, pos, heading, scale, id)
+    return ok and y ~= nil and math.abs(y - pos.y) < 0.05
+end
+function FN.landTo(trusted, cur, y)
+    if trusted then return y, true end
+    if y >= cur - 0.01 then return y, y > cur + 0.01 end
+    return cur, false
+end
 -- the slope found while moving: tilt the held object to it (or level again when it was tilted by a slope)
 function FN.takeSlope(id, sl, setTl)
     if not S.slopeOn or not id then return end
@@ -3634,7 +3646,8 @@ end
 -- replace: what would be replaced (the group, else the picked object)
 function FN.replaceTargets()
     local ids = {}
-    if groupCount() > 0 and (not S.sel or S.group[S.sel.id]) then
+    local ng = groupCount()
+    if ng > 0 and (not S.sel or S.group[S.sel.id] or ng >= 2) then
         for id in pairs(S.group) do if S.known and S.known[id] then ids[#ids + 1] = id end end
     elseif S.sel and S.known and S.known[S.sel.id] then
         ids[1] = S.sel.id
@@ -4410,6 +4423,7 @@ function FN.padEditor(sec)
             S.padHd0 = t.heading
             local tl0 = S.tilt[S.sel.id]
             S.padTilt0 = tl0 and { x = tl0.x, z = tl0.z } or nil
+            S.landTrust = FN.landTrust(S.sel.item, t.pos, t.heading, t.scale, S.sel.id)
         end
         S.padRaw = (S.padRaw or t.pos) + mv
         if S.landOn and up == 0 and (lx ~= 0 or ly ~= 0) and FN.mayLand(S.sel.id) and not S.noSnap then
@@ -4417,9 +4431,13 @@ function FN.padEditor(sec)
                 S.landAt = S.clock
                 local okL, y, sl = pcall(FN.supportY, S.sel.item, S.padRaw, S.padHd0 or t.heading, t.scale, S.sel.id, true)
                 S.landY = okL and y or nil
-                if okL and y then FN.takeSlope(S.sel.id, sl, function(v) S.padTilt0 = v end) end
+                if okL and y and (S.landTrust or y > S.padRaw.y + 0.01) then FN.takeSlope(S.sel.id, sl, function(v) S.padTilt0 = v end) end
             end
-            if S.landY then S.padRaw = V(S.padRaw.x, S.landY, S.padRaw.z) end
+            if S.landY then
+                local ny, tr = FN.landTo(S.landTrust, S.padRaw.y, S.landY)
+                if tr then S.landTrust = true end
+                S.padRaw = V(S.padRaw.x, ny, S.padRaw.z)
+            end
         else
             S.landY = nil
         end
@@ -4708,10 +4726,14 @@ reskate.on("tick", function(dt)
                         end
                         t.pos = g.start.pos + off
                         if S.landOn and math.abs(g.n.y) > 0.9 and FN.mayLand(S.sel.id) and toObjects then
+                            if g.landTrust == nil then g.landTrust = FN.landTrust(S.sel.item, g.start.pos, g.start.heading, t.scale, S.sel.id) end
                             local okL, y, sl = pcall(FN.supportY, S.sel.item, t.pos, g.start.heading, t.scale, S.sel.id, true)
-                            if okL and y then
+                            local tr = false
+                            if okL and y then y, tr = FN.landTo(g.landTrust, t.pos.y, y) end
+                            if tr then g.landTrust = true end
+                            if okL and y and (g.landTrust or tr or y >= t.pos.y - 0.01) then
                                 t.pos = V(t.pos.x, y, t.pos.z)
-                                FN.takeSlope(S.sel.id, sl, function(v) g.start.tilt = v end)
+                                if g.landTrust then FN.takeSlope(S.sel.id, sl, function(v) g.start.tilt = v end) end
                             end
                         end
                         local ntl
@@ -4990,6 +5012,7 @@ end
     local function btn(d, a, b, label, fn, style)
         local h = hot(a, b)
         local col = style == "primary" and (h and "#ffe27a" or UI.accent) or (style == "on" and (h and "#ffffff40" or "#ffffff33") or (h and UI.tileHot or UI.tile))
+        if style == "danger" then col = h and "#f85149cc" or "#f8514966" end
         d:rect(a, b, { colour = col, fill = true, rounding = 9 })
         if style == "on" then d:rect(a, b, { colour = UI.accent, rounding = 9, thickness = 2 }) end
         d:text(V((a.x + b.x) / 2, (a.y + b.y) / 2 - 9, 0), label, { size = 15, colour = style == "primary" and "#0d1117" or UI.text, font = (style == "primary" or style == "on") and "bold" or nil, align = "centre" })
@@ -5155,7 +5178,7 @@ end
                 y = stepRow(d, x, y, w, "Size", string.format("%.2f×", t.scale), function() setS(t.scale - st.size) end, function() setS(t.scale + st.size) end,
                     function() typeOne("Size", t.scale, "%.2f", setS) end) + 4
                 local tl = S.tilt[S.sel.id] or { x = 0, z = 0 }
-                local function setT(tx, tz) markUndo(); S.tilt[S.sel.id] = (math.abs(tx) < 1e-6 and math.abs(tz) < 1e-6) and nil or { x = wrap(tx), z = wrap(tz) }; S.tiltSaveDue = true end
+                local function setT(tx, tz) markUndo(); if math.abs(tx) < 1e-6 and math.abs(tz) < 1e-6 then S.tilt[S.sel.id] = nil else S.tilt[S.sel.id] = { x = wrap(tx), z = wrap(tz) } end; S.tiltSaveDue = true end
                 local dd = math.rad(st.deg)
                 y = stepRow(d, x, y, w, "Tilt forward", string.format("%.1f°", math.deg(tl.x)), function() setT(tl.x - dd, tl.z) end, function() setT(tl.x + dd, tl.z) end,
                     function() typeOne("Tilt forward (degrees)", math.deg(tl.x), "%.1f", function(v) setT(math.rad(v), tl.z) end) end) + 4
@@ -5314,7 +5337,7 @@ end
             y = seg(d, x, y, w, { "All", "Near", "DDH" }, S.listFilter, function(i) S.listFilter = i; S.listKey = nil; S.listTop = 0 end) + 8
             -- the list: as many rows as fit, the wheel scrolls it
             local rowH = 30
-            local bottom = b.y - 70
+            local bottom = b.y - 112
             local rows = math.max(3, math.floor((bottom - y) / rowH))
             local n = #(S.listObjs or {})
             S.listTop = clamp(S.listTop or 0, 0, math.max(0, n - rows))
@@ -5326,6 +5349,7 @@ end
                 local ra, rb = V(x, y + (r - 1) * rowH, 0), V(x + w, y + r * rowH - 2, 0)
                 local on = S.sel and S.sel.id == o.id
                 if on then d:rect(ra, rb, { colour = UI.accentDim, fill = true, rounding = 7 })
+                elseif S.group[o.id] then d:rect(ra, rb, { colour = "#c49bff2a", fill = true, rounding = 7 })
                 elseif hot(ra, rb) then d:rect(ra, rb, { colour = UI.tile, fill = true, rounding = 7 }) end
                 local name = titleOf(o.item)
                 if #name > 30 then name = string.sub(name, 1, 29) .. "…" end
@@ -5333,6 +5357,15 @@ end
                 d:text(V(x + 20, ra.y + 6, 0), name, { size = 14, colour = on and UI.accent or UI.text })
                 d:text(V(rb.x - 8, ra.y + 6, 0), string.format("%.0f m", len(o.position - (S.cam.target or o.position))), { size = 13, colour = UI.dim, align = "right" })
                 tileAdd(ra, rb, function()
+                    if reskate.input.key("Ctrl") then
+                        -- Ctrl+click: in or out of the selection (the picked one joins first)
+                        if S.sel and not S.group[S.sel.id] and groupCount() == 0 and S.sel.id ~= o.id then S.group[S.sel.id] = true end
+                        if S.group[o.id] then S.group[o.id] = nil else S.group[o.id] = true end
+                        S.gbase = nil
+                        local n = groupCount()
+                        say(n > 0 and string.format("%d selected  (Ctrl+click adds or removes)", n) or "Nothing selected.")
+                        return
+                    end
                     send(); select(o); S.cam.goal = o.position; S.listKey = nil; say("Picked " .. titleOf(o.item))
                 end)
             end
@@ -5342,9 +5375,27 @@ end
                 d:rect(V(lb2.x + 4, la.y + (lb2.y - la.y) * f0, 0), V(lb2.x + 7, la.y + (lb2.y - la.y) * f1, 0), { colour = UI.accent, fill = true, rounding = 2 })
             end
             local pb = b.y - 56
+            -- delete the selected ones (the group, else the picked one): click twice; undo puts them back
+            local delIds = FN.replaceTargets()
+            local nd = #delIds
+            local dl = nd > 1 and string.format("Delete %d selected", nd) or (nd == 1 and "Delete picked" or "Delete  (pick or Ctrl+click objects)")
+            if nd > 0 and S.listDelAsk and S.clock - S.listDelAsk < 3000 then dl = string.format("Click again to delete %d", nd) end
+            btn(d, V(x, pb - 42, 0), V(x + w, pb - 8, 0), dl, function()
+                if nd == 0 then say("Pick an object, or Ctrl+click objects in the list, then Delete.", true) return end
+                if S.listDelAsk and S.clock - S.listDelAsk < 3000 then
+                    S.listDelAsk = nil
+                    if S.grab then S.grab = nil; endHoldMove() end
+                    local rec = S.removeUndoable(delIds, "Deleted")
+                    S.group, S.gbase = {}, nil
+                    say(string.format("Deleting %d object%s...  (Undo puts them back)", rec.total, rec.total == 1 and "" or "s"))
+                else
+                    S.listDelAsk = S.clock
+                    say(string.format("Click Delete again to delete %d object%s.", nd, nd == 1 and "" or "s"))
+                end
+            end, nd > 0 and "danger" or nil)
             btn(d, V(x, pb, 0), V(x + w, pb + 34, 0), "Save as park mod  (for online)", function() FN.saveParkModSay() end)
             if S.blocked or #miss > 0 then
-                btn(d, V(x, pb - 42, 0), V(x + w, pb - 8, 0), "Park locked: check again", function()
+                btn(d, V(x, pb - 84, 0), V(x + w, pb - 50, 0), "Park locked: check again", function()
                     S.blocked = nil; pcall(findMissing)
                     if #(S.missing or {}) == 0 then say("No missing objects found. Try moving something again.") else say("Fix: run Clean out park.exe with the game closed.", true) end
                 end)
