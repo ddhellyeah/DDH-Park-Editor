@@ -803,7 +803,26 @@ end
 -- landing on what is under it: rays straight down at its middle and corners, from a little above its bottom (so it
 -- steps up onto things up to 1.5 m higher, and down onto anything lower); the held object itself is looked through
 S.landOn = true
+-- (the same question asked again within a moment, by the landing and the height readout, gets the same answer
+-- without casting the rays again: rays are what takes time, and the game stops a plugin that takes too long)
+S.supCache = {}
 function FN.supportY(item, pos, heading, scale, selfId, wantSlope)
+    local key = string.format("%s|%.3f|%.3f|%.3f|%.4f|%.3f|%s|%s", item, pos.x, pos.y, pos.z, heading, scale, tostring(selfId), tostring(wantSlope and S.slopeOn))
+    local c = S.supCache[key]
+    if c and S.clock - c.at < 120 then return c.y, c.sl end
+    -- while it is being moved, asked at most 20 times a second: in between, the last answer for that object
+    -- (nearly the same spot) stands
+    local l = S.supLast
+    if l and l.id == selfId and l.item == item and S.clock - l.at < 50 and math.abs(l.pos.x - pos.x) < 0.3 and math.abs(l.pos.z - pos.z) < 0.3 and math.abs(l.pos.y - pos.y) < 0.3 then
+        return l.y, l.sl
+    end
+    if S.clock - (S.supCacheAt or -1e9) > 1000 then S.supCache = {}; S.supCacheAt = S.clock end
+    local y, sl = FN.supportYNow(item, pos, heading, scale, selfId, wantSlope)
+    S.supCache[key] = { y = y, sl = sl, at = S.clock }
+    S.supLast = { id = selfId, item = item, pos = pos, y = y, sl = sl, at = S.clock }
+    return y, sl
+end
+function FN.supportYNow(item, pos, heading, scale, selfId, wantSlope)
     local b = S.itemBox[item]
     local lo, hi = V(-0.3, 0, -0.3), V(0.3, 1, 0.3)
     if b then lo, hi = b[1] * scale, b[2] * scale end
@@ -874,7 +893,7 @@ function FN.supportY(item, pos, heading, scale, selfId, wantSlope)
             local ok, h = pcall(reskate.world.raycast, a, z2)
             local hp = ok and h or nil
             if type(hp) == "table" and hp.position then hp = hp.position end
-            if hp and hp.y and hp.y <= a.y + 1e-3 and hp.y > z2.y + 1e-3 and (not y or hp.y > y) then
+            if hp and hp.y and hp.y <= a.y + 1e-3 and hp.y > z2.y + 1e-3 and (not y or hp.y > y + 0.02) then
                 -- this ray can't tell what it hit, and it may be the held object itself (where the game still
                 -- has it): ask the other ray what stands right there, and leave it out if that's the held one
                 local okc, c = pcall(reskate.world.pick, V(wpt.x, hp.y + 0.05, wpt.z), V(wpt.x, hp.y - 0.05, wpt.z))
@@ -898,7 +917,7 @@ function FN.supportY(item, pos, heading, scale, selfId, wantSlope)
     if not best then return nil end
     -- the slope it stands on (asked for): the tilt that sets it flat on it, false on the level, nil when unsure
     local sl = nil
-    if wantSlope and not stays then
+    if wantSlope and S.slopeOn and not stays then
         local dd = math.max(0.15, math.min(wx, wz, 0.5))
         local x1, x0, z1, z0 = down(mx + dd, mz), down(mx - dd, mz), down(mx, mz + dd), down(mx, mz - dd)
         if x1 and x0 and z1 and z0 and math.max(math.abs(x1 - best), math.abs(x0 - best), math.abs(z1 - best), math.abs(z0 - best)) <= dd * 1.6 then

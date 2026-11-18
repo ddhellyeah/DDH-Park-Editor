@@ -74,3 +74,5 @@ Needs ReSkate 2.1.2 or newer. Unzip into ReSkate's `Mods` folder.
 **3.1.5:** tilt snapping is gone: objects no longer take the tilt of a tilted object they meet, and no longer tilt to match slopes they land on (the "Tilt to match slopes" switch is gone). It got in the way of ordinary snapping, and tilts don't show online. Tilting by hand (the tilt rings, offline) still works.
 
 **3.1.6:** fixes ReSkate stopping the plugin ("took too long a tick") right after making a copy: the check that keeps an object from snapping onto its own copy was working out the held object's shape again on every snap test. It's now worked out once per place.
+
+**3.1.7:** less work while moving objects, so ReSkate doesn't stop the plugin for taking too long: the check for what's under a held object runs at most 20 times a second and is shared with the height readout (4 times a second now), and it no longer casts the slope rays now that slope tilting is gone.

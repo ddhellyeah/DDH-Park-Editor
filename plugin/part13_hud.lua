@@ -115,7 +115,7 @@ S.readoutOn = true
 function FN.readout()
     local t, sel = S.target, S.sel
     if not (t and sel) then S.ro = nil return nil end
-    if S.ro and S.ro.id == sel.id and S.clock - S.ro.at < 100 then return S.ro end
+    if S.ro and S.ro.id == sel.id and S.clock - S.ro.at < 250 then return S.ro end
     local ro = { id = sel.id, at = S.clock }
     local okL, y = pcall(FN.supportY, sel.item, t.pos, t.heading, t.scale, sel.id)
     if okL and y then ro.h = t.pos.y - y; ro.groundY = y end
