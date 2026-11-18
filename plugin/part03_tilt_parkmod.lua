@@ -145,6 +145,57 @@ local function axesOf(pos, q, scale)
     return { position = pos, right = qrot(q, V(1, 0, 0)) * scale, up = qrot(q, V(0, 1, 0)) * scale, forward = qrot(q, V(0, 0, 1)) * scale }
 end
 
+-- The model (blueprint) to make a tilted copy from. Quick Drop objects aren't among the models the game lists
+-- with a mesh, so: that list by name first, then what a ray straight down onto the object hits, then every
+-- blueprint the game has (with or without a mesh) by name. What's found (or not) is written to the log.
+S.bkModel = S.bkModel or {}
+function FN.modelForOnline(o)
+    local m = FN.modelFor and FN.modelFor(o.item)
+    if m then return m end
+    local c = S.bkModel[o.item]
+    if c ~= nil then return c end
+    local key = string.lower(o.item)
+    local p = o.position
+    local okP, hit = pcall(reskate.world.pick, p + V(0, 6, 0), p - V(0, 1, 0))
+    local ho = okP and type(hit) == "table" and hit.object or nil
+    local picked = ho and ho.blueprint or nil
+    if picked and ho.position and len(ho.position - p) < 0.5 then
+        S.bkModel[o.item] = picked
+        reskate.log("Quick Drop helper: tilt: model for " .. o.item .. " (from a ray onto it): " .. picked)
+        return picked
+    end
+    if not S.allBp then
+        S.allBp = {}
+        local seen = {}
+        for _, pre in ipairs({ "items/bk", "" }) do
+            local okB, l = pcall(reskate.entities.blueprints, pre ~= "" and pre or nil, false)
+            if okB and type(l) == "table" then
+                for _, nm in ipairs(l) do if not seen[nm] then seen[nm] = true; S.allBp[#S.allBp + 1] = nm end end
+            end
+        end
+    end
+    local hits, near = {}, {}
+    for _, nm in ipairs(S.allBp) do
+        local l = string.lower(nm)
+        if string.find(l, key, 1, true) then hits[#hits + 1] = nm
+        elseif #near < 8 and (string.find(l, "bkddh", 1, true) or string.find(l, "own_bk", 1, true)) then near[#near + 1] = nm end
+    end
+    if #hits > 0 then
+        -- the one with a mesh rather than only a collision shape, when there are several
+        local best = hits[1]
+        for _, nm in ipairs(hits) do if not string.find(string.lower(nm), "physics", 1, true) then best = nm break end end
+        S.bkModel[o.item] = best
+        reskate.log("Quick Drop helper: tilt: model for " .. o.item .. ": " .. best .. (#hits > 1 and (" (also: " .. table.concat(hits, " | ", 2, math.min(#hits, 5)) .. ")") or ""))
+        return best
+    end
+    -- (only remembered once the game listed anything, so it is looked for again otherwise)
+    if #S.allBp > 0 then S.bkModel[o.item] = false end
+    reskate.log(string.format("Quick Drop helper: tilt: no model for %s. Ray onto it: %s. Blueprints listed: %d. Build Kit-like names: %s",
+        o.item, tostring(picked or (ho and "an object with no blueprint") or (hit and "the ground") or "nothing"), #S.allBp,
+        #near > 0 and table.concat(near, " | ") or "none"), "warn")
+    return false
+end
+
 -- online: a tilted copy in its place, the game's flat one underground; o is the object where it is placed
 function FN.holdEntity(o)
     local id = o.id
@@ -155,7 +206,7 @@ function FN.holdEntity(o)
         if S.clock < (S.tiltAt[id] or 0) then return end
         if S.noBury and S.clock < (S.noBury[id] or 0) then return end
         if FN.entityCount() >= MAX_ENTITIES then S.tiltWhy = "at most " .. MAX_ENTITIES .. " tilted objects online" return end
-        local bp = FN.modelFor and FN.modelFor(o.item)
+        local bp = FN.modelForOnline(o)
         if not bp then
             S.tiltAt[id] = S.clock + 5000
             local plain = "online, " .. titleOf(o.item) .. " can't be tilted (its model wasn't found)"
