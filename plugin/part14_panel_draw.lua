@@ -253,9 +253,6 @@ local wrap = PE.wrap
             y = seg(d, x, y, w, FN.GRID_NAMES_P, S.gridI or 1, function(i) S.gridI = i end) + 14
             y = switch(d, x, y, w, "Drag in steps   (G)", S.snap, function() S.snap = not S.snap end) + 8
             y = switch(d, x, y, w, "Land on what is under it", S.landOn, function() S.landOn = not S.landOn end) + 8
-            if S.landOn then
-                y = switch(d, x, y, w, "Tilt to match slopes", S.slopeOn, function() S.slopeOn = not S.slopeOn end) + 8
-            end
             y = switch(d, x, y, w, "Show height and gap", S.readoutOn, function() S.readoutOn = not S.readoutOn end) + 6
             d:text(V(x + 4, y, 0), "Hold R3 (or Ctrl) to move without snapping.", { size = 13, colour = UI.dim })
         elseif S.ptab == 4 then
