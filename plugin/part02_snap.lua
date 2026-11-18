@@ -904,7 +904,8 @@ function FN.supportY(item, pos, heading, scale, selfId, wantSlope)
     return best - lo.y, sl
 end
 FN.SLOPE_MIN = 5
-S.slopeOn = true
+-- tilting to match slopes is switched off (tilts don't show online, and it got in the way of snapping)
+S.slopeOn = false
 -- Landing only trusts the game's rays when they see the object resting where the hold starts: in some spots
 -- (parts of a street) the rays pass through the ground, and it would drop far under it. Not trusted, it may
 -- still climb onto things (and is trusted from there on), but never goes down.
@@ -919,6 +920,7 @@ function FN.landTo(trusted, cur, y)
 end
 -- the slope found while moving: tilt the held object to it (or level again when it was tilted by a slope)
 function FN.takeSlope(id, sl, setTl)
+    if true then return end
     if not S.slopeOn or not id then return end
     if sl then
         setTl({ x = sl.x, z = sl.z }); S.slopeTilt = id; S.tiltSaveDue = true
@@ -1056,17 +1058,8 @@ local function alignSnap(pos, base, scale, allow, baseTilt)
         local n = near[i]
         local ntl = tiltOf(n.o.id)
         if ntl then
-            -- a tilted one: stand like it
-            local opts = FN.standsLike(n.o.heading or 0, ntl)
-            table.sort(opts, function(a, b) return turnApart(a.h, a.tl, base, bt) < turnApart(b.h, b.tl, base, bt) end)
-            for _, op in ipairs(opts) do
-                if turnApart(op.h, op.tl, base, bt) > 1e-3 and turnApart(op.h, op.tl, base, bt) <= math.rad(100) then
-                    tries += 1
-                    if tries > 6 then break end
-                    local p2, g2 = try(n, op.h, op.tl)
-                    if p2 then return p2, op.h, g2, op.tl end
-                end
-            end
+            -- a tilted one: no longer taken on (an object doesn't take another's tilt when it meets it: tilts
+            -- don't show online, and it got in the way of ordinary snapping)
         elseif not bt then
             -- both flat: a turn about up that sets two long sides together
             local me = worldShape(S.sel.item, pos, base, scale)
