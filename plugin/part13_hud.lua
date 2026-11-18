@@ -141,16 +141,97 @@ function FN.readout()
     return ro
 end
 
+-- an outline seen from above (points going round) cut into triangles, so a curved or L-shaped top fills
+-- right. Gives triangles as three point numbers each.
+function FN.outlineTriangles(pts)
+    local n = #pts
+    local idx = {}
+    for i = 1, n do idx[i] = i end
+    local area = 0
+    for i = 1, n do
+        local a, b = pts[i], pts[i % n + 1]
+        area += a.x * b.z - b.x * a.z
+    end
+    local sgn = area >= 0 and 1 or -1
+    local function turn(a, b, c) return ((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)) * sgn end
+    local tris = {}
+    local guard = 0
+    while #idx > 3 and guard < 4 * n do
+        guard += 1
+        local m = #idx
+        local cut = false
+        for i = 1, m do
+            local ia, ib, ic = idx[(i - 2) % m + 1], idx[i], idx[i % m + 1]
+            local a, b, c = pts[ia], pts[ib], pts[ic]
+            local tb = turn(a, b, c)
+            if math.abs(tb) < 1e-9 then
+                -- a point on a straight side: no triangle, just leave it out
+                table.remove(idx, i); cut = true; break
+            elseif tb > 0 then
+                local free = true
+                for _, j in ipairs(idx) do
+                    if j ~= ia and j ~= ib and j ~= ic then
+                        local q = pts[j]
+                        if turn(a, b, q) >= 0 and turn(b, c, q) >= 0 and turn(c, a, q) >= 0 then free = false break end
+                    end
+                end
+                if free then
+                    tris[#tris + 1] = { ia, ib, ic }
+                    table.remove(idx, i); cut = true; break
+                end
+            end
+        end
+        if not cut then break end
+    end
+    -- what is left (3 points, or an outline too odd to cut): a fan
+    for i = 2, #idx - 1 do tris[#tris + 1] = { idx[1], idx[i], idx[i + 1] } end
+    return tris
+end
+
 -- the see-through copy, its shadow and the height / gap, while holding
-function FN.drawGhost(d, c, sh, p, center, moving)
+function FN.drawGhost(d, c, sh, p, center, moving, xf)
     local holdingIt = S.grab or (S.drag and S.drag.moved)
-    -- a see-through copy where it is going (while the game is still catching up)
+    -- a see-through copy where it is going (while the game is still catching up). Drawn from the same outline as
+    -- the yellow lines, so the two always match; only an object with no outline uses its box.
     if moving and holdingIt then
-        local FACES = { { 0, 2, 6, 4 }, { 1, 3, 7, 5 }, { 0, 1, 5, 4 }, { 2, 3, 7, 6 }, { 0, 1, 3, 2 }, { 4, 5, 7, 6 } }
-        for _, fc in ipairs(FACES) do
-            local sp = {}
-            for k = 1, 4 do sp[k] = d:world_to_screen(c[fc[k]]) end
-            if sp[1] and sp[2] and sp[3] and sp[4] then d:poly(sp, { colour = "#ffe0662a", fill = true }) end
+        local FILL = { colour = "#ffe0662a", fill = true }
+        local pts = sh and sh.pts
+        if pts and #pts >= 3 then
+            local W = xf or function(v) return v end
+            local n = #pts
+            local base, up = UP * (sh.ylo - p.y), UP * (sh.yhi - sh.ylo)
+            local lo, hi = {}, {}
+            for i = 1, n do
+                lo[i] = d:world_to_screen(W(pts[i] + base))
+                hi[i] = d:world_to_screen(W(pts[i] + base + up))
+            end
+            -- the sides
+            for i = 1, n do
+                local j = i % n + 1
+                if lo[i] and lo[j] and hi[j] and hi[i] then d:poly({ lo[i], lo[j], hi[j], hi[i] }, FILL) end
+            end
+            -- the top and the bottom (the triangles are worked out once per object and kept)
+            S.ghostTris = S.ghostTris or {}
+            local key = S.sel and S.sel.item or ""
+            local gt = S.ghostTris[key]
+            if not (gt and gt.n == n) then
+                local ok, tris = pcall(FN.outlineTriangles, pts)
+                gt = { n = n, tris = ok and tris or {} }
+                S.ghostTris[key] = gt
+            end
+            for _, tr in ipairs(gt.tris) do
+                local a, b, e = hi[tr[1]], hi[tr[2]], hi[tr[3]]
+                if a and b and e then d:poly({ a, b, e }, FILL) end
+                a, b, e = lo[tr[1]], lo[tr[2]], lo[tr[3]]
+                if a and b and e then d:poly({ a, b, e }, FILL) end
+            end
+        else
+            local FACES = { { 0, 2, 6, 4 }, { 1, 3, 7, 5 }, { 0, 1, 5, 4 }, { 2, 3, 7, 6 }, { 0, 1, 3, 2 }, { 4, 5, 7, 6 } }
+            for _, fc in ipairs(FACES) do
+                local sp = {}
+                for k = 1, 4 do sp[k] = d:world_to_screen(c[fc[k]]) end
+                if sp[1] and sp[2] and sp[3] and sp[4] then d:poly(sp, FILL) end
+            end
         end
     end
     -- its shadow on what is under it, with a line down to it when it is in the air; and the height and gap

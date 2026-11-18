@@ -56,3 +56,5 @@ Tilting: the game saves only a turn about up, so this plugin holds tilted object
 Needs ReSkate 2.1.2 or newer. Unzip into ReSkate's `Mods` folder.
 
 **3.0.0:** works the same as 2.60.2 in game. The plugin's code is now split into smaller files (`plugin/main.lua` plus `part01` … `part14`), and the list of placeable objects is fetched once instead of over and over (smoother Park tab on big parks). When updating, replace the whole `DDH Park Editor` folder so no part file is missing.
+
+**3.0.1:** the see-through copy shown while you move an object now has exactly the same shape as its yellow outline (it used the game's own box for the object, which could be bigger and off to one side).
