@@ -536,10 +536,21 @@ end
 -- of the same object. Otherwise it snaps back onto itself.
 S.snapIgnore = {}
 -- the picked object (where it is going) and o overlap: their boxes as they stand, a little shrunk
+-- (the picked object's box where it is going, worked out once for each place it goes to: this is asked many
+-- times a tick while snapping, and working the box out each time was too slow for the game's time limit)
+local function heldSolid()
+    local t = S.target
+    local tl = tiltOf(S.sel.id)
+    local c = S.heldSolidC
+    if c and c.id == S.sel.id and c.pos == t.pos and c.h == t.heading and c.sc == t.scale and c.tl == tl then return c.ok, c.so end
+    local ok, so = pcall(worldSolid, S.sel.item, t.pos, t.heading, t.scale, tl)
+    S.heldSolidC = { id = S.sel.id, pos = t.pos, h = t.heading, sc = t.scale, tl = tl, ok = ok, so = so }
+    return ok, so
+end
 function FN.overlapsHeld(o)
     local t = S.target
     if not (t and S.sel and o) then return false end
-    local okA, a = pcall(worldSolid, S.sel.item, t.pos, t.heading, t.scale, tiltOf(S.sel.id))
+    local okA, a = heldSolid()
     local okB, b = pcall(placedSolid, o)
     if okA and okB and a and b and a.x0 and b.x0 and a.x0 < math.huge and b.x0 < math.huge then
         local m = 0.02
