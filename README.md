@@ -54,7 +54,7 @@ Online: press **Save as park mod (for online)** in the panel. It writes the whol
 Tilting: the game saves only a turn about up, so this plugin holds tilted objects itself and remembers each tilt per map, putting it back whenever the park loads. While you move a tilted object it shows flat for a moment. Tilted objects snap too, face to face: brought against a tilted object (its side or its top), an object takes its tilt so the two sit flat, and gets its own back when pulled away. A park with objects from a mod that is not installed cannot be changed at all, by this or by Quick Drop.
 
 - **Offline:** the object itself is held tilted (fixed, skateable). At most 32 tilted objects.
-- **Online (in a session):** the game won't let plugins hold objects there, so the plugin puts a tilted, skateable copy of the object in its place and moves the game's flat one 30 m underground so the two don't get in each other's way. Your tilts are sent to everyone in the session who has the DDH Park Editor, and theirs show for you the same way. Players without the plugin don't see tilted objects at all (they're underground for them): for everyone to see them, save the park as a park mod and let the host load it. Only your own objects can be tilted online. If the game closes while you're online, your tilted objects stay underground until the plugin runs again, and then it puts them back.
+- **Online (in a session):** the game won't let plugins tilt objects there, so tilts don't show live. To have them online, save the park as a park mod (Park tab) and let the host load it: everyone sees the tilts, even without this plugin (game maps only).
 
 Needs ReSkate 2.1.2 or newer. Unzip into ReSkate's `Mods` folder.
 
@@ -65,3 +65,5 @@ Needs ReSkate 2.1.2 or newer. Unzip into ReSkate's `Mods` folder.
 **3.1.0:** tilts work online: a tilted copy shows in place of each tilted object, shared with everyone in the session who has this plugin (see Tilting). The park mod save now uses where tilted objects were placed.
 
 **3.1.1:** online tilts look harder for each object's model (Quick Drop objects aren't in the game's usual model list), and write what they found to the ReSkate log.
+
+**3.1.2:** online tilted copies are switched off again (after testing world objects in a session, players stopped seeing each other's Quick Drop objects until the game restarted). Online, tilts show for everyone through a park mod. Offline tilts work as before.

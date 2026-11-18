@@ -303,8 +303,21 @@ function FN.holdPhysics(o)
         reskate.log("Quick Drop helper: tilt: the game refused the turn for " .. titleOf(o.item) .. ": " .. tostring(ok and r2 or r1))
     end
 end
+-- Online tilted copies (world objects) are switched off: after testing them, players in the session stopped
+-- seeing each other's Quick Drop objects until the game was restarted. Online, tilts show through a park mod.
+FN.ONLINE_COPIES = false
 function FN.holdTilted(o)
-    if FN.online() then FN.holdEntity(o) else FN.holdPhysics(o) end
+    if FN.online() then
+        if FN.ONLINE_COPIES then FN.holdEntity(o) return end
+        local plain = "online, tilts show for everyone only through a park mod (Park tab: Save as park mod)"
+        if S.tiltWhy ~= plain then
+            reskate.log("Quick Drop helper: tilt: " .. plain)
+            pcall(reskate.ui.toast, "Tilt: " .. plain)
+        end
+        S.tiltWhy = plain
+        return
+    end
+    FN.holdPhysics(o)
 end
 
 -- kept tilts: storage "tilts" = { [map] = { { item, x, y, z, turn, tilt x, tilt z }, ... } }
@@ -488,6 +501,7 @@ function FN.applyRemote()
     end
 end
 function FN.netTick()
+    if not FN.ONLINE_COPIES then return end
     if not FN.online() then
         if next(S.remoteSets) then S.remoteSets = {}; S.remoteDirty = true end
     else
