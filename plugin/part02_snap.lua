@@ -116,8 +116,12 @@ local function modelNames()
         #own > 0 and (", such as " .. table.concat(own, " | ")) or ""))
     return S.bpNames
 end
-local function tryNamed(o)
-    local key = string.lower(o.item)
+-- the model (blueprint) an item is made from, found by its name; false when none is (remembered per map)
+S.modelOf = {}
+function FN.modelFor(item)
+    local m = S.modelOf[item]
+    if m ~= nil then return m end
+    local key = string.lower(item)
     local short = string.gsub(key, "_+%d+$", "")
     short = string.gsub(short, "_+$", "")
     -- its own name first; else its name without the number, when only one model has it
@@ -128,6 +132,12 @@ local function tryNamed(o)
         if #short > 8 and string.find(l, short, 1, true) then alt = nm; alts += 1 end
     end
     if not best and alts == 1 then best = alt end
+    -- (an empty list means the models weren't readable yet: not remembered, so it is looked for again)
+    if best or #modelNames() > 0 then S.modelOf[item] = best or false end
+    return best or false
+end
+local function tryNamed(o)
+    local best = FN.modelFor(o.item)
     if not best then return false end
     local ok, a, b = pcall(reskate.entities.bounds, best)
     if ok and type(a) == "table" and a.min then a, b = a.min, a.max end
@@ -305,7 +315,7 @@ local function stepMeasure()
         S.measure = nil
         if not lo then measureFailed(o.item, hi) return end
         local now = {}
-        for _, q in ipairs(reskate.objects.list()) do now[q.id] = q end
+        for _, q in ipairs(FN.objectsNow()) do now[q.id] = q end
         if not stillThere(o, now) then S.boxNext[o.item] = S.clock + 800 return end
         S.itemBox[o.item] = { lo, hi }
         saveSize(o.item, lo, hi)

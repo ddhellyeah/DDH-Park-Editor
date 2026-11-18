@@ -13,6 +13,8 @@
         "throwdowns",
         "storage",
         "objects.physics",
-        "files"
+        "files",
+        "net.session",
+        "session.read"
     ]
 }

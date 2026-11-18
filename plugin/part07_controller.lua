@@ -152,7 +152,7 @@ local function padPress(key, down)
 end
 
 function FN.pickNext(dir)
-    local list = reskate.objects.list()
+    local list = FN.objectsNow()
     if #list == 0 then say("No placed objects in this park.") return end
     table.sort(list, function(a, b) return tostring(a.id) < tostring(b.id) end)
     local at = 0
@@ -647,7 +647,7 @@ function FN.qTick()
     if e.op == "place" then
         ok, why = reskate.objects.place(e.item, e.pos, e.heading, e.scale)
     else
-        if not (S.known and S.known[e.id]) then ok = true else letGo(e.id); ok, why = reskate.objects.remove(e.id) end
+        if not (S.known and S.known[e.id]) then ok = true else S.buried[e.id] = nil; letGo(e.id); ok, why = reskate.objects.remove(e.id) end
     end
     local r = e.rec
     if ok then
