@@ -54,3 +54,5 @@ Online: press **Save as park mod (for online)** in the panel. It writes the whol
 Tilting: the game saves only a turn about up, so this plugin holds tilted objects itself (fixed, skateable) and remembers each tilt per map, putting it back whenever the park loads. Offline only, at most 32 tilted objects, and only while this plugin runs; while you move a tilted object it shows flat for a moment. Tilted objects snap too, face to face: brought against a tilted object (its side or its top), an object takes its tilt so the two sit flat, and gets its own back when pulled away. A park with objects from a mod that is not installed cannot be changed at all, by this or by Quick Drop.
 
 Needs ReSkate 2.1.2 or newer. Unzip into ReSkate's `Mods` folder.
+
+**3.0.0:** works the same as 2.60.2 in game. The plugin's code is now split into smaller files (`plugin/main.lua` plus `part01` … `part14`), and the list of placeable objects is fetched once instead of over and over (smoother Park tab on big parks). When updating, replace the whole `DDH Park Editor` folder so no part file is missing.
