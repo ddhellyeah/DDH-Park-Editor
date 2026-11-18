@@ -97,7 +97,7 @@ function FN.rebuildList()
     local q = string.lower(S.search or "")
     local from = S.cam.target or V(0, 0, 0)
     local rows = {}
-    local all = reskate.objects.list()
+    local all = FN.objectsNow()
     S.listTotal = #all
     for _, o in ipairs(all) do
         local title = titleOf(o.item)

@@ -51,10 +51,15 @@ Without opening it: hold **Ctrl** and use [ ] (turn), PgUp / PgDn (height), Z / 
 
 Online: press **Save as park mod (for online)** in the panel. It writes the whole park on this map, tilts and all, as a park mod and opens its folder: copy that folder into ReSkate's `Mods` folder, then Build > Park mods > Load (in multiplayer the host loads it, and everyone sees the tilts). Park mods only work on the game's own maps.
 
-Tilting: the game saves only a turn about up, so this plugin holds tilted objects itself (fixed, skateable) and remembers each tilt per map, putting it back whenever the park loads. Offline only, at most 32 tilted objects, and only while this plugin runs; while you move a tilted object it shows flat for a moment. Tilted objects snap too, face to face: brought against a tilted object (its side or its top), an object takes its tilt so the two sit flat, and gets its own back when pulled away. A park with objects from a mod that is not installed cannot be changed at all, by this or by Quick Drop.
+Tilting: the game saves only a turn about up, so this plugin holds tilted objects itself and remembers each tilt per map, putting it back whenever the park loads. While you move a tilted object it shows flat for a moment. Tilted objects snap too, face to face: brought against a tilted object (its side or its top), an object takes its tilt so the two sit flat, and gets its own back when pulled away. A park with objects from a mod that is not installed cannot be changed at all, by this or by Quick Drop.
+
+- **Offline:** the object itself is held tilted (fixed, skateable). At most 32 tilted objects.
+- **Online (in a session):** the game won't let plugins hold objects there, so the plugin puts a tilted, skateable copy of the object in its place and moves the game's flat one 30 m underground so the two don't get in each other's way. Your tilts are sent to everyone in the session who has the DDH Park Editor, and theirs show for you the same way. Players without the plugin don't see tilted objects at all (they're underground for them): for everyone to see them, save the park as a park mod and let the host load it. Only your own objects can be tilted online. If the game closes while you're online, your tilted objects stay underground until the plugin runs again, and then it puts them back.
 
 Needs ReSkate 2.1.2 or newer. Unzip into ReSkate's `Mods` folder.
 
 **3.0.0:** works the same as 2.60.2 in game. The plugin's code is now split into smaller files (`plugin/main.lua` plus `part01` … `part14`), and the list of placeable objects is fetched once instead of over and over (smoother Park tab on big parks). When updating, replace the whole `DDH Park Editor` folder so no part file is missing.
 
 **3.0.1:** the see-through copy shown while you move an object now has exactly the same shape as its yellow outline (it used the game's own box for the object, which could be bigger and off to one side).
+
+**3.1.0:** tilts work online: a tilted copy shows in place of each tilted object, shared with everyone in the session who has this plugin (see Tilting). The park mod save now uses where tilted objects were placed.

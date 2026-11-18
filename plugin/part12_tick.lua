@@ -116,7 +116,7 @@ reskate.on("tick", function(dt)
             if press("Left") then ch(function() t.pos -= r * st end) end
             if press("U") then undo() end
         else
-            for _, k in ipairs({ "[", "]", "PageUp", "PageDown", "X", "Z", "Up", "Down", "Right", "Left", "U" }) do S.tiltHeld[k] = false end
+            for _, k in ipairs({ "[", "]", "PageUp", "PageDown", "X", "Z", "Up", "Down", "Right", "Left", "U" }) do S.held[k] = false end
         end
         send()
         return

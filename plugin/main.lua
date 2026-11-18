@@ -168,17 +168,43 @@ local function findMissing(blockedKey)
     return out
 end
 
+-- Online, a tilted object is shown by a tilted copy, and the game's flat one is kept this far underground
+-- (see tilting, in part03)
+FN.BURY = 30
+FN.BURYV = V(0, FN.BURY, 0)
+S.buried = {}
+-- an object as the editor sees it: a tilted one where it was placed, not where the game has it (its tilted body
+-- offline, or underground online)
+function FN.realObject(o)
+    local h = S.tiltHeld and S.tiltHeld[o.id]
+    if h then
+        h.reported, h.reportedHeading = o.position, o.heading
+        return { id = o.id, item = o.item, position = h.pos, heading = h.heading, scale = o.scale }
+    end
+    local b = S.buried[o.id]
+    if b then
+        if len(o.position - (b.pos - FN.BURYV)) < 0.05 then
+            return { id = o.id, item = o.item, position = b.pos, heading = o.heading, scale = o.scale }
+        end
+        -- no longer underground (put back, or moved by something else), unless it is just being put there
+        if S.clock > (b.wait or 0) then S.buried[o.id] = nil end
+    end
+    return o
+end
+-- the park objects, as the editor sees them
+function FN.objectsNow()
+    local out = {}
+    for i, o in ipairs(reskate.objects.list()) do out[i] = FN.realObject(o) end
+    return out
+end
+
 -- new objects (from Quick Drop or anything else) become the picked one
 local function scan()
     local list = reskate.objects.list()
     local now = {}
     for _, o in ipairs(list) do
-        -- an object held tilted: where it was placed (not where its tilted body is)
-        local h = S.tiltHeld and S.tiltHeld[o.id]
-        if h then
-            h.reported, h.reportedHeading = o.position, o.heading
-            o = { id = o.id, item = o.item, position = h.pos, heading = h.heading, scale = o.scale }
-        end
+        -- an object held tilted: where it was placed (not where its tilted body is, or underground)
+        o = FN.realObject(o)
         now[o.id] = o
     end
     if S.known == nil then

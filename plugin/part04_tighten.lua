@@ -166,7 +166,7 @@ function FN.stepTighten()
     if not j.co then
         if S.dirty or S.clock - j.at < 350 or not lastApplied() then return end
         local objs = {}
-        for _, o in ipairs(reskate.objects.list()) do objs[o.id] = o end
+        for _, o in ipairs(FN.objectsNow()) do objs[o.id] = o end
         local me = objs[j.id]
         if not me or len(me.position - S.target.pos) > 0.002 then return end
         j.co = coroutine.create(FN.tightenJob)

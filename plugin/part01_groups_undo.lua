@@ -3,6 +3,8 @@
 -- is taken from PE here, and what it makes that later parts use is put in PE at the end.
 return function(PE)
 
+local FN = PE.FN
+
 local S = PE.S
 local V = PE.V
 local cross = PE.cross
@@ -131,7 +133,7 @@ function S.removeUndoable(ids, label)
 end
 local function restorePose(u)
     if not S.sel or S.sel.id ~= u.id then
-        for _, o in ipairs(reskate.objects.list()) do if o.id == u.id then select(o) end end
+        for _, o in ipairs(FN.objectsNow()) do if o.id == u.id then select(o) end end
     end
     if S.sel and S.sel.id == u.id then
         S.target = { pos = u.pos, heading = u.heading, scale = u.scale }

@@ -30,13 +30,13 @@ function FN.clickPick(px, toGroup)
     if not hit then return end
     local at = (hit.object and hit.object.position) or hit.position
     local best, bd = nil, hit.object and 1.5 or 0
-    for _, ob in ipairs(reskate.objects.list()) do
+    for _, ob in ipairs(FN.objectsNow()) do
         local dd = len(ob.position - at)
         if dd < bd then best, bd = ob, dd end
     end
     if not best and hit.object then
         bd = 6
-        for _, ob in ipairs(reskate.objects.list()) do
+        for _, ob in ipairs(FN.objectsNow()) do
             local dd = len(ob.position - hit.position)
             if dd < bd then best, bd = ob, dd end
         end
@@ -118,6 +118,9 @@ reskate.on("level_loaded", function()
     S.measure = nil
     S.bpNames = nil
     S.tiltHeld, S.tilt, S.tiltAt, S.tiltSrc, S.level = {}, {}, {}, {}, nil
+    -- (online tilts: the game takes the tilted copies away with the level)
+    S.buried, S.buryQ, S.tiltRemote, S.entOf, S.modelOf, S.netParts, S.noBury = {}, {}, {}, {}, {}, {}, {}
+    S.netDue = true
     S.group, S.gt, S.gs, S.q, S.expectMany, S.gbase, S.toolsWin = {}, {}, {}, {}, {}, nil, nil
 end)
 
