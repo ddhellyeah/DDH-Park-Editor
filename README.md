@@ -67,3 +67,5 @@ Needs ReSkate 2.1.2 or newer. Unzip into ReSkate's `Mods` folder.
 **3.1.1:** online tilts look harder for each object's model (Quick Drop objects aren't in the game's usual model list), and write what they found to the ReSkate log.
 
 **3.1.2:** online tilted copies are switched off again (after testing world objects in a session, players stopped seeing each other's Quick Drop objects until the game restarted). Online, tilts show for everyone through a park mod. Offline tilts work as before.
+
+**3.1.3:** objects no longer snap onto themselves while the game catches up: landing ignores every place the held object was just sent to, and an object doesn't snap or land onto a copy of itself (or a stack of the same object) it's standing inside of, until it's moved clear.

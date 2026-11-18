@@ -531,6 +531,31 @@ local function placedSolid(o)
     return so
 end
 
+-- Objects the picked one stands inside of are never snapped to, until it has been moved clear of them: a copy just
+-- made of it (which the game puts there a moment later, where it was), or the one it was copied from, or a stack
+-- of the same object. Otherwise it snaps back onto itself.
+S.snapIgnore = {}
+-- the picked object (where it is going) and o overlap: their boxes as they stand, a little shrunk
+function FN.overlapsHeld(o)
+    local t = S.target
+    if not (t and S.sel and o) then return false end
+    local okA, a = pcall(worldSolid, S.sel.item, t.pos, t.heading, t.scale, tiltOf(S.sel.id))
+    local okB, b = pcall(placedSolid, o)
+    if okA and okB and a and b and a.x0 and b.x0 and a.x0 < math.huge and b.x0 < math.huge then
+        local m = 0.02
+        return a.x0 < b.x1 - m and b.x0 < a.x1 - m and a.y0 < b.y1 - m and b.y0 < a.y1 - m and a.z0 < b.z1 - m and b.z0 < a.z1 - m
+    end
+    -- (no size known for one of them: the same spot)
+    return len(o.position - t.pos) < 0.05
+end
+-- every object the picked one is inside of right now: not snapped to until it is clear of them
+function FN.ignoreOverlapping()
+    if not (S.sel and S.known) then return end
+    for id, o in pairs(S.known) do
+        if id ~= S.sel.id and FN.overlapsHeld(o) then S.snapIgnore[id] = true end
+    end
+end
+
 -- Moves pos so the picked object's faces meet or line up with the faces of the objects near it (tilted or not).
 -- allow(direction, metres) answers how such a move may be made for the handle in use: the move as a vector and
 -- the direction it goes along, or nil when that handle cannot go that way.
@@ -539,6 +564,11 @@ end
 S.snapPick = nil
 function FN.snapAllowed(id)
     if follower(id) then return false end
+    if S.snapIgnore[id] then
+        local o = S.known and S.known[id]
+        if o and FN.overlapsHeld(o) then return false end
+        S.snapIgnore[id] = nil
+    end
     local sp = S.snapPick
     if sp == nil then return true end
     if sp == "off" then return false end
@@ -772,6 +802,20 @@ function FN.supportY(item, pos, heading, scale, selfId, wantSlope)
     local wx, wz = (hi.x - lo.x) * 0.4, (hi.z - lo.z) * 0.4
     local me = selfId and S.known and S.known[selfId]
     local mine = { me and me.position, S.lastSent and S.lastSent.id == selfId and S.lastSent.pos or nil }
+    -- (where it was sent lately: the game may still have it at any of them; where it is held tilted; and the
+    -- objects it is inside of, like a copy just made of it)
+    local hist = S.sentHist
+    if hist and hist.id == selfId then
+        for _, e in ipairs(hist) do if S.clock - e.at < 4000 then mine[#mine + 1] = e.pos end end
+    end
+    local th = selfId and S.tiltHeld and S.tiltHeld[selfId]
+    if type(th) == "table" and th.posed then mine[#mine + 1] = th.posed end
+    if selfId == (S.sel and S.sel.id) then
+        for iid in pairs(S.snapIgnore or {}) do
+            local io = S.known and S.known[iid]
+            if io and FN.overlapsHeld(io) then mine[#mine + 1] = io.position end
+        end
+    end
     -- (and the ones it takes along)
     if S.gbase and S.gbase.leader == selfId then
         for fid in pairs(S.gbase.m) do local fo = S.known and S.known[fid]; if fo then mine[#mine + 1] = fo.position end end
