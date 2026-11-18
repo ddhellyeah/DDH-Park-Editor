@@ -138,11 +138,17 @@ local function select(o, blueprint)
     S.edit = {}
     S.guides, S.padRaw, S.tighten, S.snapLock = nil, nil, nil, nil
     if S.grab and not (o and o.id == S.grab.id) then S.grab = nil end
-    if not o then S.sel, S.target, S.dirty = nil, nil, false return end
+    if not o then S.sel, S.target, S.dirty = nil, nil, false; S.snapIgnore = {} return end
+    local same = S.sel and S.sel.id == o.id
     S.sel = { id = o.id, item = o.item, bp = blueprint, pos0 = o.position, h0 = o.heading or 0 }
     if S.open and S.cam.goal then S.cam.goal = o.position end
     S.target = { pos = o.position, heading = o.heading or 0, scale = o.scale or 1 }
     S.dirty = false
+    -- a newly picked object doesn't snap onto what it stands inside of (a stack of the same object, its original)
+    if not same then
+        S.snapIgnore = {}
+        if FN.ignoreOverlapping then pcall(FN.ignoreOverlapping) end
+    end
 end
 
 local function fmt(o)
@@ -234,6 +240,8 @@ local function scan()
                 end
                 if hit then
                     local x = table.remove(S.expectMany, hit)
+                    -- copies made where the held objects are: not snapped onto until moved clear of them
+                    if S.sel and S.snapIgnore then S.snapIgnore[o.id] = true end
                     if x.tilt then S.tilt[o.id] = { x = x.tilt.x, z = x.tilt.z }; S.tiltSaveDue = true end
                     if x.rec then
                         if x.rec.cancelled then table.insert(S.q, { op = "remove", id = o.id, rec = { ids = {}, total = 1, done = 0, failed = 0, quiet = true } })
@@ -265,6 +273,9 @@ local function scan()
             if ec.grab and S.open then
                 select(o)
                 if S.startGrab then S.startGrab(); if S.grab then S.grab.fresh = true end end
+            elseif S.sel and S.snapIgnore then
+                -- dropped where the held one was: the held one doesn't snap back onto it until moved clear
+                S.snapIgnore[o.id] = true
             end
         elseif #fresh == 1 then
             local o = fresh[1]
@@ -334,6 +345,13 @@ local function send()
     S.lastSend = S.clock
     if ok then
         S.lastSent = { id = S.sel.id, pos = t.pos, heading = t.heading, scale = t.scale, at = S.clock }
+        -- the places it was sent to lately: while the game catches up, the object can be at any of them (and
+        -- must not be mistaken for another object, or it lands on top of itself)
+        S.sentHist = S.sentHist or {}
+        local hist = S.sentHist
+        if hist.id ~= S.sel.id then hist = { id = S.sel.id }; S.sentHist = hist end
+        hist[#hist + 1] = { pos = t.pos, at = S.clock }
+        while #hist > 16 or (hist[1] and S.clock - hist[1].at > 4000) do table.remove(hist, 1) end
         -- still dragging: keep going with the next place
         S.dirty = false
     elseif BUSY[why] then
