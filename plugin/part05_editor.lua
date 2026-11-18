@@ -120,6 +120,7 @@ reskate.on("level_loaded", function()
     S.tiltHeld, S.tilt, S.tiltAt, S.tiltSrc, S.level = {}, {}, {}, {}, nil
     -- (online tilts: the game takes the tilted copies away with the level)
     S.buried, S.buryQ, S.tiltRemote, S.entOf, S.modelOf, S.netParts, S.noBury = {}, {}, {}, {}, {}, {}, {}
+    S.bkModel, S.allBp = {}, nil
     S.netDue = true
     S.group, S.gt, S.gs, S.q, S.expectMany, S.gbase, S.toolsWin = {}, {}, {}, {}, {}, nil, nil
 end)

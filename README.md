@@ -63,3 +63,5 @@ Needs ReSkate 2.1.2 or newer. Unzip into ReSkate's `Mods` folder.
 **3.0.1:** the see-through copy shown while you move an object now has exactly the same shape as its yellow outline (it used the game's own box for the object, which could be bigger and off to one side).
 
 **3.1.0:** tilts work online: a tilted copy shows in place of each tilted object, shared with everyone in the session who has this plugin (see Tilting). The park mod save now uses where tilted objects were placed.
+
+**3.1.1:** online tilts look harder for each object's model (Quick Drop objects aren't in the game's usual model list), and write what they found to the ReSkate log.
