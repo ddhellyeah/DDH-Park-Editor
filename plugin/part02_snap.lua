@@ -816,9 +816,30 @@ function FN.supportY(item, pos, heading, scale, selfId, wantSlope)
             if io and FN.overlapsHeld(io) then mine[#mine + 1] = io.position end
         end
     end
+    -- the way it has come lately, in order: where the game had it, each place it was sent to, where it is going
+    local path = {}
+    if me then path[#path + 1] = me.position end
+    if hist and hist.id == selfId then
+        for _, e in ipairs(hist) do if S.clock - e.at < 4000 then path[#path + 1] = e.pos end end
+    end
+    if S.sel and S.sel.id == selfId and S.target then path[#path + 1] = S.target.pos end
     -- (and the ones it takes along)
     if S.gbase and S.gbase.leader == selfId then
         for fid in pairs(S.gbase.m) do local fo = S.known and S.known[fid]; if fo then mine[#mine + 1] = fo.position end end
+    end
+    -- an object standing at hp is the held one itself (or one it takes along)
+    local function isOwn(hp)
+        for _, mp in pairs(mine) do if mp and len(hp - mp) < 0.05 then return true end end
+        -- the game moves an object to its new place over a moment, so it can be anywhere on the way between
+        -- the places it was sent to: anywhere along that path counts as itself too
+        for i = 1, #path - 1 do
+            local a, b = path[i], path[i + 1]
+            local ab = b - a
+            local l2 = dot(ab, ab)
+            local t = l2 > 1e-9 and clamp(dot(hp - a, ab) / l2, 0, 1) or 0
+            if len(a + ab * t - hp) < 0.05 then return true end
+        end
+        return false
     end
     -- the first thing (not mine) straight down from a point
     local function pickDown(from, to)
@@ -826,10 +847,7 @@ function FN.supportY(item, pos, heading, scale, selfId, wantSlope)
             local ok, hit = pcall(reskate.world.pick, from, to)
             if not (ok and type(hit) == "table" and hit.position) then return nil end
             if hit.position.y <= to.y + 1e-3 then return nil end   -- (the end of the ray: nothing there)
-            local own = false
-            if hit.object and hit.object.position then
-                for _, mp in pairs(mine) do if mp and len(hit.object.position - mp) < 0.05 then own = true end end
-            end
+            local own = hit.object and hit.object.position and isOwn(hit.object.position)
             if not own then return hit.position.y end
             from = hit.position - V(0, 0.02, 0)
         end
@@ -845,7 +863,13 @@ function FN.supportY(item, pos, heading, scale, selfId, wantSlope)
             local ok, h = pcall(reskate.world.raycast, a, z2)
             local hp = ok and h or nil
             if type(hp) == "table" and hp.position then hp = hp.position end
-            if hp and hp.y and hp.y <= a.y + 1e-3 and hp.y > z2.y + 1e-3 and (not y or hp.y > y) then y = hp.y end
+            if hp and hp.y and hp.y <= a.y + 1e-3 and hp.y > z2.y + 1e-3 and (not y or hp.y > y) then
+                -- this ray can't tell what it hit, and it may be the held object itself (where the game still
+                -- has it): ask the other ray what stands right there, and leave it out if that's the held one
+                local okc, c = pcall(reskate.world.pick, V(wpt.x, hp.y + 0.05, wpt.z), V(wpt.x, hp.y - 0.05, wpt.z))
+                local mineThere = okc and type(c) == "table" and c.object and c.object.position and isOwn(c.object.position)
+                if not mineThere then y = hp.y end
+            end
         end
         return y
     end
