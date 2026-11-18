@@ -869,7 +869,7 @@ function FN.drawMain(d)
         local tl = tilted(S.sel.id) and S.tilt[S.sel.id] or nil
         local xf = tl and function(v) return tiltPoint(p, t.heading, tl, v) end or nil
         if xf then for i = 0, 7 do c[i] = xf(c[i]) end end
-        pcall(FN.drawGhost, d, c, sh, p, center, moving)
+        pcall(FN.drawGhost, d, c, sh, p, center, moving, xf)
         if not (sh and PE.drawShape(d, sh, col, 2, xf)) then
             for _, e in ipairs(BOX_EDGES) do
                 d:world_line(c[e[1]], c[e[2]], { colour = col, thickness = 2 })
