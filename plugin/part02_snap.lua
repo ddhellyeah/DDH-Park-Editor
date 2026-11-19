@@ -1281,9 +1281,32 @@ local function matchSnap(pos, base, scale, noTurn)
     local cd, sd = math.cos(d), math.sin(d)
     local v = F.c - pos
     local fc = pos + V(v.x * cd + v.z * sd, v.y, -v.x * sd + v.z * cd)
-    local m = E.c - fc
-    local np = pos + V(m.x, 0, m.z)
-    S.matchLock = { id = best.o.id }
+    -- up to the other side (closing the gap)
+    local m = E.n * dot(E.c - fc, E.n)
+    -- and along it: to its middle, or flush with either end of it, whichever is nearest (a short piece against a
+    -- long one can stop at either end); the stop it is at is kept until another is clearly nearer
+    local u = V(E.u.x, 0, E.u.z)
+    local ul = len(u)
+    local stop = nil
+    if ul > 1e-6 then
+        u = u * (1 / ul)
+        local at = dot(fc - E.o, u)
+        local hw = F.ulen * 0.5
+        local stops = { E.ulen * 0.5, hw, E.ulen - hw }
+        local k, kd = 1, math.huge
+        for i, c in ipairs(stops) do
+            local dd = math.abs(c - at)
+            if lock and lock.id == best.o.id and lock.stop == i then dd -= 0.15 end
+            if dd < kd then k, kd = i, dd end
+        end
+        stop = k
+        m += u * (stops[k] - at)
+    end
+    -- and level with it: bottoms at the same height (so copings meet without a step), when they are close already
+    local dy = E.o.y - F.o.y
+    if math.abs(dy) > 0.3 then dy = 0 end
+    local np = pos + V(m.x, dy, m.z)
+    S.matchLock = { id = best.o.id, stop = stop }
     return np, hd, { { o = best.o, nb = FN.placedShape(best.o), kind = "match" } }
 end
 FN.matchSnap = matchSnap
