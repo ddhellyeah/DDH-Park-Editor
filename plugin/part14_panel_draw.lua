@@ -231,6 +231,24 @@ local wrap = PE.wrap
         tw.apply(v)
     end)
 
+    -- what a snap did, in words: from By Sides' own words, else from Classic's guides
+    function FN.snapWords(guides)
+        local g = guides and guides[1]
+        if not g then return nil end
+        if g.label then return g.label end
+        local main, height, lined = nil, nil, false
+        for _, q in ipairs(guides) do
+            if q.height then height = q.height
+            elseif q.kind == "touch" and not main then main = q.corner and "Corner on its side" or "Side to side"
+            elseif q.kind == "match" and not main then main = "Same size, edges together"
+            elseif q.kind == "turn" then main = main or "Same turn"
+            elseif q.kind == "level" then lined = true end
+        end
+        main = main or (lined and "Lined up" or "Snapped")
+        if lined and main ~= "Lined up" then main = main .. "  ·  lined up" end
+        if height then main = main .. "  ·  " .. height .. " level" end
+        return main
+    end
     -- ---- the park's list in groups: DDH's objects by Quick Drop's families (groups.lua), the others by their
     -- category in the catalog; groups in the families' order, then the categories A to Z. Each group: a heading
     -- ({ head, n, open }), then its objects ({ o, indent }) unless folded (S.listFold, by name). Not grouped:
@@ -475,10 +493,6 @@ local wrap = PE.wrap
             return
         end
         local a, b = V(left, 14, 0), V(right, 60, 0)
-        S.screen.snapBox = { a = a, b = b }
-        d:rect(a + V(0, 3, 0), b + V(0, 3, 0), { colour = "#00000055", fill = true, rounding = 14 })
-        d:rect(a, b, { colour = "#161b22", fill = true, rounding = 14 })
-        arrowTab(d, V(cx - 36, b.y + 4, 0), V(cx + 36, b.y + 24, 0), "up", function() toggleHide("snap") end)
         -- the pieces and their share of the width
         local cur = S.snapPick == nil and 1 or (S.snapPick == "off" and 3 or 2)
         local nextName = "Next"
@@ -492,6 +506,11 @@ local wrap = PE.wrap
                 "Snap to objects: its sides go flat against other objects' sides when brought near.  T" },
             { 175, function(x, y, w) capSeg(d, x, y, w, "By", { "Sides", "Classic" }, S.snapStyle == "classic" and 2 or 1, function(i) FN.setSnapStyle(i == 2 and "classic" or "match") end) end,
                 "Sides: a side snaps flat to a side of about the same size, lined up at its ends or middle. Classic: sides meet and line up with anything near." },
+            { 205, function(x, y, w)
+                local cur = ({ auto = 1, bottoms = 2, tops = 3 })[S.snapLevel or "auto"] or 1
+                capSeg(d, x, y, w, "Level", { "Auto", "Bottoms", "Tops" }, cur, function(i) FN.setSnapLevel(({ "auto", "bottoms", "tops" })[i]) end)
+            end,
+                "Heights when sides meet. Bottoms: bottoms level. Tops: tops level, so you skate from one onto the other (a ledge's low end onto a platform). Auto: bottoms, or tops when lifted and nearer." },
             { 205, function(x, y, w) capSeg(d, x, y, w, "To", { "Auto", nextName, "Off" }, cur, function(i)
                 if i == 1 then S.snapPick = nil; S.snapLock = nil
                 elseif i == 2 and S.nextSnap then S.nextSnap()
@@ -537,6 +556,7 @@ local wrap = PE.wrap
         local needs = {
             pillNeed("Snap  (T)"),
             segNeed("By", { "Sides", "Classic" }),
+            segNeed("Level", { "Auto", "Bottoms", "Tops" }),
             segNeed("To", { "Auto", nextName, "Off" }),
             measure(d, "Strength 100%", 13, nil)[1] + 80,
             segNeed("Grid m", { "Off", "0.25", "0.5", "1", "2" }),
@@ -544,17 +564,37 @@ local wrap = PE.wrap
             pillNeed("Land"),
             pillNeed("Height / gap"),
         }
-        local gap, total, needAll = 8, 0, 0
-        for i, pt in ipairs(parts) do total += pt[1]; needAll += needs[i] end
-        local room = (b.x - a.x) - 16 - gap * (#parts - 1)
-        local spare = room - needAll
-        local x = a.x + 8
+        -- in rows: as many pieces as fit on a row at their own width, the rest on the next row; each row's spare
+        -- room shared out by the pieces' weights (so nothing is ever squeezed: the bar grows a row instead)
+        local gap = 8
+        local room = (right - left) - 16
+        local rowsL, rowN, rowW = {}, {}, 0
+        for i in ipairs(parts) do
+            local add = (#rowN > 0 and gap or 0) + needs[i]
+            if #rowN > 0 and rowW + add > room then rowsL[#rowsL + 1] = rowN; rowN, rowW = {}, 0; add = needs[i] end
+            rowN[#rowN + 1] = i; rowW += add
+        end
+        rowsL[#rowsL + 1] = rowN
+        local ROW = 40
+        b = V(right, 14 + 12 + ROW * #rowsL - (ROW - 34), 0)
+        S.screen.snapBox = { a = a, b = b }
+        d:rect(a + V(0, 3, 0), b + V(0, 3, 0), { colour = "#00000055", fill = true, rounding = 14 })
+        d:rect(a, b, { colour = "#161b22", fill = true, rounding = 14 })
+        arrowTab(d, V(cx - 36, b.y + 4, 0), V(cx + 36, b.y + 24, 0), "up", function() toggleHide("snap") end)
         local hint, hx = nil, 0
-        for i, pt in ipairs(parts) do
-            local w = spare >= 0 and (needs[i] + spare * pt[1] / total) or (needs[i] * room / needAll)
-            pt[2](x, a.y + 6, w)
-            if pt[3] and hot(V(x, a.y, 0), V(x + w, b.y, 0)) then hint, hx = pt[3], x + w / 2 end
-            x += w + gap
+        for r, row in ipairs(rowsL) do
+            local need, wsum = gap * (#row - 1), 0
+            for _, i in ipairs(row) do need += needs[i]; wsum += parts[i][1] end
+            local spare = room - need
+            local x = a.x + 8
+            local y = a.y + 6 + (r - 1) * ROW
+            for _, i in ipairs(row) do
+                local pt = parts[i]
+                local w = spare >= 0 and (needs[i] + spare * pt[1] / wsum) or (needs[i] * (room - gap * (#row - 1)) / (need - gap * (#row - 1)))
+                pt[2](x, y, w)
+                if pt[3] and hot(V(x, y - 6, 0), V(x + w, y + 34, 0)) then hint, hx = pt[3], x + w / 2 end
+                x += w + gap
+            end
         end
         -- what the control under the mouse does: a box under the bar, by it
         if hint then
@@ -575,7 +615,7 @@ local wrap = PE.wrap
 
     -- (the tabs, and the number each stands for in S.ptab: the park has its own panel on the left, snapping a bar
     -- along the top)
-    local TABS, TAB_IDS = { "Edit", "Sets" }, { 1, 4 }
+    local TABS, TAB_IDS = { "Edit", "Sets", "History" }, { 1, 4, 5 }
     -- the plugin's version, from its manifest (read once)
     local version = nil
     do
@@ -642,7 +682,7 @@ local wrap = PE.wrap
         y += 48
         -- tabs
         S.ptab = S.ptab or 1
-        if S.ptab ~= 1 and S.ptab ~= 4 then S.ptab = 1 end
+        if S.ptab ~= 1 and S.ptab ~= 4 and S.ptab ~= 5 then S.ptab = 1 end
         local tw = w / #TABS
         for i, n in ipairs(TABS) do
             local ta, tb = V(x + (i - 1) * tw, y, 0), V(x + i * tw, y + 34, 0)
@@ -669,6 +709,7 @@ local wrap = PE.wrap
                 btn(d, V(x + qw + 8, y, 0), V(x + 2 * qw + 8, y + 34, 0), "Size 1", function() markUndo(); t.scale = 1; S.dirty = true end)
                 btn(d, V(x + 2 * qw + 16, y, 0), V(x + w, y + 34, 0), "Look at it", function() S.cam.goal = t.pos end)
                 y += 42
+                y = switch(d, x, y, w, "Measure   (M)", S.measureOn, function() FN.toggleMeasure() end) + 8
                 local nr = #FN.replaceTargets()
                 btn(d, V(x, y, 0), V(x + w, y + 34, 0), nr > 1 and string.format("Replace all %d with another object…", nr) or "Replace with another object…", function() FN.openReplace() end)
                 y += 48
@@ -741,8 +782,43 @@ local wrap = PE.wrap
             local pb = b.y - 56
             btn(d, V(x, pb, 0), V(x + w, pb + 34, 0), "Open the sets folder  (to share them)", function() S.openSetsFolder() end)
         end
+        if S.ptab == 5 then
+            -- ---------------------------------------------------------------- history: the steps undo goes back
+            -- through, newest first; clicking one undoes back to before it (one step at a time)
+            local list = S.undo or {}
+            fitText(d, x + 4, y, "Click a step to undo back to before it.", w - 8, { size = 13, colour = UI.dim })
+            y += 24
+            if (S.undoLeft or 0) > 0 then
+                fitText(d, x + 4, y, string.format("Undoing...  %d to go", S.undoLeft), w - 8, { size = 13, colour = UI.accent }); y += 22
+            end
+            y = label(d, x, y, string.format("Steps  ·  %d", #list))
+            if #list == 0 then fitText(d, x + 4, y, "Nothing to undo yet.", w - 8, { size = 14, colour = UI.dim }); y += 26 end
+            local rowH = 34
+            local maxRows = math.max(3, math.floor((b.y - 110 - y) / rowH))
+            for k = 1, math.min(#list, maxRows) do
+                local idx = #list - k + 1
+                local u = list[idx]
+                local ra, rb = V(x, y, 0), V(x + w, y + rowH - 4, 0)
+                local h = hot(ra, rb)
+                d:rect(ra, rb, { colour = h and UI.tileHot or UI.tile, fill = true, rounding = 8 })
+                local ago = u.at and math.max(0, (S.clock - u.at) / 1000) or nil
+                local agoS = ago and (ago < 60 and string.format("%.0f s", ago) or (ago < 3600 and string.format("%.0f min", ago / 60) or string.format("%.0f h", ago / 3600))) or ""
+                local okN, nmS = pcall(FN.undoName, u)
+                local agoW = 58
+                fitText(d, x + 10, y + 7, (okN and nmS) or "A step", w - 20 - agoW, { size = 14, colour = UI.text })
+                textIn(d, V(rb.x - agoW, y, 0), V(rb.x - 6, rb.y, 0), agoS, { size = 12, colour = UI.dim, align = "right" }, 2)
+                tileAdd(ra, rb, function() FN.undoSteps(k) end)
+                y += rowH
+            end
+            if #list > maxRows then fitText(d, x + 4, y, string.format("+%d older", #list - maxRows), w - 8, { size = 13, colour = UI.dim }); y += 22 end
+            local nr = #(S.redo or {})
+            if nr > 0 then
+                y += 6
+                fitText(d, x + 4, y, string.format("%d step%s can be redone  (Redo, or Ctrl+Y)", nr, nr == 1 and "" or "s"), w - 8, { size = 13, colour = UI.dim })
+            end
+        end
         -- the last message, along the bottom
-        if S.msg ~= "" and S.clock < S.msgUntil and S.ptab ~= 3 and S.ptab ~= 4 then
+        if S.msg ~= "" and S.clock < S.msgUntil and S.ptab ~= 3 and S.ptab ~= 4 and S.ptab ~= 5 then
             local msg = S.msg
             fitText(d, x + 4, b.y - 30, msg, w - 8, { size = 13, colour = UI.dim })
         end
@@ -1237,7 +1313,6 @@ function FN.drawMain(d)
     -- what it is snapped to: that object's box (or its point), and how; and the sides that meet lit up
     if S.guides then
         pcall(FN.drawMeeting, d, p, t)
-        local WORDS = { touch = "touching", level = "lined up", turn = "same turn", match = S.snapStyle == "classic" and "same size" or "sides match" }
         local seen = {}
         for _, gd in ipairs(S.guides) do
             local id = gd.o.id
@@ -1254,11 +1329,22 @@ function FN.drawMain(d)
                     d:world_line(q - V(0, 0, 0.4), q + V(0, 0, 0.4), { colour = "#35e0ff", thickness = 3 })
                     d:world_line(q, q + V(0, 0.8, 0), { colour = "#35e0ff", thickness = 3 })
                 end
-                local sp = d:world_to_screen(gd.nb.p)
-                if sp then d:text(sp + V(10, -12, 0), WORDS[gd.kind] or "snap", { size = 16, colour = "#35e0ff", shadow = true }) end
             end
         end
+        -- how it snapped, in words, in a tag by the held object
+        local words = FN.snapWords(S.guides)
+        if words then
+            local okM, mm = pcall(function() return d:measure(words, { size = 14, font = "bold" }) end)
+            local mw, mh = (okM and mm and mm.x) or #words * 8, (okM and mm and mm.y) or 18
+            local ta = center + V(16, 58, 0)
+            local tb = ta + V(mw + 20, mh + 10, 0)
+            d:rect(ta, tb, { colour = "#0d1117d0", fill = true, rounding = 8 })
+            d:rect(V(ta.x, ta.y + 5, 0), V(ta.x + 3, tb.y - 5, 0), { colour = "#35e0ff", fill = true, rounding = 2 })
+            d:text(V(ta.x + 11, ta.y + 5, 0), words, { size = 14, colour = "#35e0ff", font = "bold" })
+        end
     end
+    -- measuring: to the objects selected with it, or the nearest
+    if S.measureOn and FN.drawMeasure then FN.drawMeasure(d) end
     -- the object's box where it is going: shows at once while the game catches up
     if S.boxCorners and (S.mode ~= 3 or padMode) then
         local c = S.boxCorners
@@ -1337,25 +1423,25 @@ end
 reskate.on("draw", function(d)
     if not S.open then return end
     local ok, err = pcall(FN.drawMain, d)
-    if not ok and not S.drawWarned then S.drawWarned = true; reskate.log("Quick Drop helper: draw: " .. tostring(err), "warn") end
+    if not ok then FN.problem("drawing", err) end
     if S.ownPanel and not S.picker then
         local okp, errp = pcall(UI.sidePanel, d)
-        if not okp and not S.panelWarned then S.panelWarned = true; reskate.log("Quick Drop helper: panel: " .. tostring(errp), "warn") end
+        if not okp then FN.problem("the panel", errp) end
         -- the picked object's position, turn, size and tilt along the bottom (the controller's view draws them under
         -- its prompts itself)
         local padView = S.padUsedAt ~= nil and (not S.mouseUsedAt or S.padUsedAt > S.mouseUsedAt) and S.clock - S.padUsedAt < 60000
         if not padView then
             local okr, errr = pcall(UI.padRows, d, true)
-            if not okr and not S.rowsWarned then S.rowsWarned = true; reskate.log("Quick Drop helper: rows: " .. tostring(errr), "warn") end
+            if not okr then FN.problem("the bottom rows", errr) end
         end
     end
     if S.picker then
         local okk, errk = pcall(FN.drawPicker, d)
-        if not okk then reskate.log("Quick Drop helper: add window: " .. tostring(errk), "warn"); S.picker = nil end
+        if not okk then FN.problem("the add window", errk); S.picker = nil end
     end
     if S.controlsOpen then
         local okc, errc = pcall(UI.controlsWin, d)
-        if not okc then reskate.log("Quick Drop helper: controls: " .. tostring(errc), "warn"); S.controlsOpen = false end
+        if not okc then FN.problem("the controls window", errc); S.controlsOpen = false end
     end
 end)
 

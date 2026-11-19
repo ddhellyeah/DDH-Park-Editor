@@ -822,11 +822,12 @@ local function objSnap(pos, heading, scale, allow, tl)
     -- (only bottoms level now: tops level made a shorter object float or sink next to a taller one. And when
     -- it sits on what is under it, that decides its height, not the object beside it)
     local grounded = S.landOn and S.sel and not S.lifted[S.sel.id]
-    if first and first.kind == "touch" and first.fit and not first.corner and not grounded then
+    local lvMode = S.snapLevel or "auto"
+    if first and first.kind == "touch" and first.fit and not first.corner and (not grounded or lvMode ~= "auto") then
         local f = first.fit
-        local m = f.bottom
+        local m = lvMode == "tops" and f.top or f.bottom
         if math.abs(m) > 1e-4 and math.abs(m) <= HEIGHT_FIT then
-            local c = { mv = f.v * m, dir = f.v, cost = math.abs(m), rank = 1, o = first.o, nb = first.nb, kind = "level", near = first.near }
+            local c = { mv = f.v * m, dir = f.v, cost = math.abs(m), rank = 1, o = first.o, nb = first.nb, kind = "level", near = first.near, height = lvMode == "tops" and "tops" or "bottoms" }
             picked[1] = c
             out = out + c.mv
         end
@@ -1159,24 +1160,8 @@ local function snapTo(pos, heading, scale, allow)
         S.snapLock = (g and g[1] and g[1].o) and g[1].o.id or nil
         return p, g
     end
-    if not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(p), "warn") end
+    if FN.problem then FN.problem("snapping", p) elseif not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(p), "warn") end
     return pos, nil
-end
--- Moving with a turn: when the picked object comes to meet a nearby object that is turned differently, it
--- takes that object's turn (or the nearest quarter turn of it) so the two sides meet flat. base is the turn it
--- had when the move began, so pulling it away again gives that turn back.
--- the ways of standing exactly like a tilted object, about up by quarter turns (when they can be written as a turn
--- about up then a tilt about x then z)
-function FN.standsLike(h, tl)
-    local out = { { h = h, tl = { x = tl.x, z = tl.z } }, { h = wrap(h + math.pi), tl = { x = -tl.x, z = -tl.z } } }
-    if math.abs(tl.x) < 1e-4 then
-        out[#out + 1] = { h = wrap(h + math.pi / 2), tl = { x = -tl.z, z = 0 } }
-        out[#out + 1] = { h = wrap(h - math.pi / 2), tl = { x = tl.z, z = 0 } }
-    elseif math.abs(tl.z) < 1e-4 then
-        out[#out + 1] = { h = wrap(h + math.pi / 2), tl = { x = 0, z = tl.x } }
-        out[#out + 1] = { h = wrap(h - math.pi / 2), tl = { x = 0, z = -tl.x } }
-    end
-    return out
 end
 local function turnApart(h1, t1, h2, t2)
     local a, b = fullTurn(h1, t1), fullTurn(h2, t2)
@@ -1261,6 +1246,17 @@ do
     local ok, v = pcall(reskate.storage.get, "snapStyle")
     if ok and (v == "match" or v == "classic") then S.snapStyle = v end
 end
+-- how heights are matched when sides meet: "auto", "bottoms" or "tops" (kept between games)
+S.snapLevel = "auto"
+do
+    local ok, v = pcall(reskate.storage.get, "snapLevel")
+    if ok and (v == "auto" or v == "bottoms" or v == "tops") then S.snapLevel = v end
+end
+function FN.setSnapLevel(v)
+    S.snapLevel = v
+    S.matchLock = nil
+    pcall(reskate.storage.set, "snapLevel", v)
+end
 function FN.setSnapStyle(v)
     S.snapStyle = v
     S.matchLock = nil
@@ -1287,20 +1283,33 @@ sideTop = function(F, so, item, scale)
     local top0 = F.o.y + F.vlen
     local w = FN.outlineOf and FN.outlineOf(item)
     local sh = so and so.shape
-    if not (w and sh and sh.p and sh.ax) then return top0 end
+    if not (w and sh and sh.p and sh.ax) then return top0, nil end
     local p, X, Y, Z = sh.p, sh.ax * scale, UP * scale, sh.az * scale
     local best = -math.huge
+    local pts = {}
     for i = 1, #w - 2, 3 do
         local q = p + X * w[i] + Y * w[i + 1] + Z * w[i + 2]
         local r = q - F.o
         local dn = dot(r, F.n)
         if dn > -0.08 and dn < 0.08 then
             local du = dot(r, F.u)
-            if du > -0.03 and du < F.ulen + 0.03 and q.y > best then best = q.y end
+            if du > -0.03 and du < F.ulen + 0.03 then
+                pts[#pts + 1] = { du, q.y }
+                if q.y > best then best = q.y end
+            end
         end
     end
-    return best > -math.huge and best or top0
+    if best == -math.huge then return top0, nil end
+    -- its lip: where along the side the top is, when the top is a point or a short stretch (a quarter pipe's
+    -- coping, a bank's top edge), not the whole width (a box)
+    local u0, u1 = math.huge, -math.huge
+    for _, q in ipairs(pts) do
+        if q[2] >= best - 0.02 then u0 = math.min(u0, q[1]); u1 = math.max(u1, q[1]) end
+    end
+    local lip = (u1 - u0) < F.ulen * 0.5 and (u0 + u1) * 0.5 or nil
+    return best, lip
 end
+
 -- Stacking: the held object sitting on (or just above) another one's top is lined up with it: turned the same way
 -- (or a quarter turn from it), and along each of that object's two ways across, centred on it or flush with
 -- either edge of it, whichever is nearest. Its height is that object's top.
@@ -1371,7 +1380,10 @@ stackSnap = function(me, pos, base, scale, noTurn, reach)
     end
     local np = V(pos.x + mv.x, T.o.y + (pos.y - me.shape.ylo), pos.z + mv.z)
     S.stackLock = { id = o.id, stack = stops }
-    return np, hd, { { o = o, nb = FN.placedShape(o), kind = "stack" } }
+    local centred = (stops[1] == 1 or stops[1] == nil) and (stops[2] == 1 or stops[2] == nil)
+    local edge = stops[1] and stops[1] > 1 or stops[2] and stops[2] > 1
+    local how = "On top" .. (edge and "  ·  flush with an edge" or (centred and (stops[1] or stops[2]) and "  ·  centred" or ""))
+    return np, hd, { { o = o, nb = FN.placedShape(o), kind = "stack", label = how } }
 end
 local function matchSnap(pos, base, scale, noTurn)
     if not (S.osnap and S.sel and S.known and S.itemBox[S.sel.item]) then return pos, base, nil end
@@ -1458,10 +1470,20 @@ local function matchSnap(pos, base, scale, noTurn)
         -- the stops: middle to middle, flush with either end (an inside corner), or just past
         -- either end, corner to corner (an outside corner)
         local stops = { E.ulen * 0.5, hw, E.ulen - hw, -hw, E.ulen + hw }
+        -- copings together: both sides have a lip (their top is a point along them): my lip where its lip is
+        local _, lipE = sideTop(E, best.nb, best.o.item, best.o.scale or 1)
+        local _, lipF = sideTop(F, me, S.sel.item, scale)
+        if lipE and lipF then
+            local lq = F.o + F.u * lipF - pos
+            local lw = pos + V(lq.x * cd + lq.z * sd, lq.y, -lq.x * sd + lq.z * cd)
+            stops[6] = at + (lipE - dot(lw - E.o, u))
+        end
         local k, kd = 1, math.huge
         for i, c in ipairs(stops) do
             local dd = math.abs(c - at)
             if lock and lock.id == best.o.id and lock.stop == i then dd -= 0.15 end
+            -- (copings together first, when about as near)
+            if i == 6 then dd -= 0.1 end
             if dd < kd then k, kd = i, dd end
         end
         stop = k
@@ -1470,17 +1492,35 @@ local function matchSnap(pos, base, scale, noTurn)
     -- and level with it: bottoms at the same height (so copings meet without a step), when they are close already.
     -- Lifted by hand (or not landing): tops level too, whichever is nearer, each side's top where that side is
     -- (a sloped ledge's low end against a platform's side: its top goes on from the platform's top, to skate up it)
-    local dy = E.o.y - F.o.y
-    local lifted = (S.sel and S.lifted[S.sel.id]) or not S.landOn
-    local tops = false
-    if lifted then
-        local dt = sideTop(E, best.nb, best.o.item, best.o.scale or 1) - sideTop(F, me, S.sel.item, scale)
-        if math.abs(dt) < math.abs(dy) then dy, tops = dt, true end
-        if math.abs(dy) > math.max(0.3, 0.6 * SNAP_K) then dy, tops = 0, false end
-    elseif math.abs(dy) > 0.3 then dy = 0 end
+    -- (the Level choice on the snap bar: Bottoms, Tops, or Auto: bottoms, and when lifted by hand (or not
+    -- landing) whichever is nearer)
+    local mode = S.snapLevel or "auto"
+    local db = E.o.y - F.o.y
+    local function dTop() return sideTop(E, best.nb, best.o.item, best.o.scale or 1) - sideTop(F, me, S.sel.item, scale) end
+    local dy, lv = 0, nil
+    if mode == "bottoms" then
+        if math.abs(db) <= math.max(0.3, 0.6 * SNAP_K) then dy, lv = db, "bottoms" end
+    elseif mode == "tops" then
+        local dt = dTop()
+        if math.abs(dt) <= math.max(0.5, 1.5 * SNAP_K) then dy, lv = dt, "tops" end
+    elseif stop == 6 then
+        -- copings together: tops level too, so they meet without a step
+        local dt = dTop()
+        if math.abs(dt) <= math.max(0.5, 1.5 * SNAP_K) then dy, lv = dt, "tops" end
+    else
+        local lifted = (S.sel and S.lifted[S.sel.id]) or not S.landOn
+        if lifted then
+            local dt = dTop()
+            if math.abs(dt) < math.abs(db) then dy, lv = dt, "tops" else dy, lv = db, "bottoms" end
+            if math.abs(dy) > math.max(0.3, 0.6 * SNAP_K) then dy, lv = 0, nil end
+        elseif math.abs(db) <= 0.3 then dy, lv = db, "bottoms" end
+    end
     local np = pos + V(m.x, dy, m.z)
     S.matchLock = { id = best.o.id, stop = stop }
-    return np, hd, { { o = best.o, nb = FN.placedShape(best.o), kind = "match" } }
+    -- what it did, in words (shown by the held object)
+    local how = ({ "Side to side, middles", "Flush with its end", "Flush with its end", "Corner to corner", "Corner to corner", "Copings together" })[stop or 1]
+    if lv then how = how .. "  ·  " .. (lv == "tops" and "tops level" or "bottoms level") end
+    return np, hd, { { o = best.o, nb = FN.placedShape(best.o), kind = "match", label = how } }
 end
 FN.matchSnap = matchSnap
 
@@ -1491,7 +1531,7 @@ local function snapTurned(pos, base, scale, allow, baseTilt)
             S.snapLock = (g and g[1] and g[1].o) and g[1].o.id or nil
             return p, h, g, baseTilt
         end
-        if not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(p), "warn") end
+        if FN.problem then FN.problem("snapping", p) elseif not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(p), "warn") end
         return pos, base, nil, baseTilt
     end
     local ok, p, h, g, tl = pcall(alignSnap, pos, base, scale, allow, baseTilt)
@@ -1499,13 +1539,13 @@ local function snapTurned(pos, base, scale, allow, baseTilt)
         S.snapLock = (g and g[1] and g[1].o) and g[1].o.id or nil
         return p, h, g, tl
     end
-    if not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(p), "warn") end
+    if FN.problem then FN.problem("snapping", p) elseif not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(p), "warn") end
     return pos, base, nil, baseTilt
 end
 function FN.turnTo(hd)
     local ok, h, g = pcall(turnSnap, hd)
     if ok then return h, g end
-    if not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(h), "warn") end
+    if FN.problem then FN.problem("snapping", h) elseif not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(h), "warn") end
     return hd, nil
 end
 

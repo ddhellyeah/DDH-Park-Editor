@@ -499,21 +499,6 @@ function FN.copyAimed(o)
     end
     S.copyQ = { item = o.item, pos = o.position, heading = o.heading or 0, scale = o.scale or 1, tilt = S.tilt[o.id], until_ = S.clock + 3000, grab = true }
 end
--- D-pad left / right while holding: a copy stays here and the held one (with its group) steps one width along
-function FN.rowStep(sign)
-    if not (S.sel and S.target) then return end
-    local list = FN.heldList()
-    local h = S.target.heading
-    local dir = V(math.cos(h), 0, -math.sin(h)) * sign
-    local step = extentAlong(list, dir) + (S.tools and S.tools.gap or 0)
-    queueCopies(list, "Row")
-    S.target.pos += dir * step
-    S.padRaw = nil
-    S.dirty = true
-    S.cam.goal = (S.cam.goal or S.cam.target) + dir * step
-    S.cam.target += dir * step
-    say(string.format("Copy left behind; moved %.2f m %s.", step, sign > 0 and "right" or "left"))
-end
 function FN.copyTick()
     local q = S.copyQ
     if not q then return end

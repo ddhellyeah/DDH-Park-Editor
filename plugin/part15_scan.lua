@@ -65,12 +65,6 @@ local function skey(item)
     local okg, gen = pcall(reskate.storage.get, "scanGen")
     return SKEY .. tostring((okg and tonumber(gen)) or 0) .. ":" .. item
 end
-function FN.forgetScans()
-    local okg, gen = pcall(reskate.storage.get, "scanGen")
-    pcall(reskate.storage.set, "scanGen", ((okg and tonumber(gen)) or 0) + 1)
-    FN.scans, FN.scanLoaded, S.scanJob = {}, {}, nil
-    say("Scans forgotten: objects are scanned again when you aim at them.")
-end
 
 function FN.scanOf(item)
     local s = FN.scans[item]
@@ -1140,12 +1134,6 @@ local function runJob(job)
     return finish(job)
 end
 
--- what is being scanned now, and how far along (0 to 1); nil when nothing is
-function FN.scanStatus()
-    local job = S.scanJob
-    if not job then return nil, 0 end
-    return job.item, math.min(0.99, job.prog or 0)
-end
 
 function FN.scanTick()
     if not S.open then return end

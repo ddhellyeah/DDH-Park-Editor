@@ -11,6 +11,7 @@ local cross = PE.cross
 local dot = PE.dot
 local norm = PE.norm
 local say = PE.say
+local titleOf = PE.titleOf
 local select = PE.select
 local wrap = PE.wrap
 
@@ -80,6 +81,8 @@ local function poseEntry(id)
     return u
 end
 local function pushUndo(u, keepRedo)
+    u.at = u.at or S.clock
+    S.undoLeft = 0
     table.insert(S.undo, u)
     if #S.undo > 100 then table.remove(S.undo, 1) end
     if not keepRedo then S.redo = {} end
@@ -204,11 +207,44 @@ local function step(from, to, word)
             say("That object is gone: nothing to " .. word .. ".")
         end
     end
+    if to[#to] and not to[#to].at then to[#to].at = S.clock end
     if #to > 100 then table.remove(to, 1) end
 end
 local function undo() step(S.undo, S.redo, "undo") end
 local function redo() step(S.redo, S.undo, "redo") end
 S.redoFn = redo
+-- an undo step in words (for the history list)
+function FN.undoName(u)
+    local function n(k, one, many) return string.format("%d %s", k, k == 1 and one or many) end
+    local function count(list) return #(list or {}) end
+    if u.kind == "placed" then
+        local r = u.rec or {}
+        local k = math.max(#(r.ids or {}), r.total or 0)
+        return (r.label and r.label ~= "" and r.label or "Made") .. ": " .. n(k, "object", "objects")
+    elseif u.kind == "removed" then return "Removed " .. n(count(u.items), "object", "objects")
+    elseif u.kind == "unplaced" then return "Taken away: " .. n(count(u.items), "object", "objects")
+    elseif u.kind == "unremoved" then return "Put back: " .. n(#((u.rec or {}).ids or {}), "object", "objects")
+    elseif u.kind == "swap" then return "Replaced " .. n(count(u.items), "object", "objects")
+    end
+    local o = S.known and S.known[u.id]
+    local what = o and titleOf(o.item) or "an object"
+    local k = 0
+    for _ in pairs(u.group or {}) do k += 1 end
+    if k > 0 then return string.format("Moved %s + %d", what, k) end
+    return "Changed " .. what
+end
+-- undo several steps, back to before the n-th newest: one step a tick, each once the game has the last one
+S.undoLeft = 0
+function FN.undoSteps(n)
+    S.undoLeft = math.min(n, #S.undo)
+    if S.undoLeft > 0 then say(string.format("Undoing %d step%s...", S.undoLeft, S.undoLeft == 1 and "" or "s")) end
+end
+function FN.undoStepTick()
+    if (S.undoLeft or 0) <= 0 then return end
+    if S.dirty or #S.q > 0 or S.drag or S.grab then return end
+    S.undoLeft -= 1
+    undo()
+end
 
 -- ---------------------------------------------------------------- the view
 local function camGlide(sec)

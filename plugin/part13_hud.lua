@@ -13,6 +13,8 @@ local YELLOW = PE.YELLOW
 local clamp = PE.clamp
 local dot = PE.dot
 local groupCount = PE.groupCount
+local len = PE.len
+local say = PE.say
 local norm = PE.norm
 local placedSolid = PE.placedSolid
 local titleOf = PE.titleOf
@@ -112,6 +114,112 @@ function FN.polyGap(A, B)
         end
     end
     return best
+end
+-- the nearest points of two outlines seen from above, and how far apart they are (0 and their middles when they
+-- overlap)
+function FN.gapPoints(A, B)
+    local function near(q, a, b)
+        local ab = V(b.x - a.x, 0, b.z - a.z)
+        local l2 = ab.x * ab.x + ab.z * ab.z
+        local k = l2 > 1e-12 and clamp(((q.x - a.x) * ab.x + (q.z - a.z) * ab.z) / l2, 0, 1) or 0
+        return V(a.x + ab.x * k, q.y, a.z + ab.z * k)
+    end
+    local best, pa, pb = math.huge, nil, nil
+    for pass = 1, 2 do
+        local X, Y = pass == 1 and A or B, pass == 1 and B or A
+        for _, q in ipairs(X) do
+            for i = 1, #Y do
+                local c = near(q, Y[i], Y[i % #Y + 1])
+                local dx, dz = q.x - c.x, q.z - c.z
+                local dd = math.sqrt(dx * dx + dz * dz)
+                if dd < best then
+                    best = dd
+                    if pass == 1 then pa, pb = q, c else pa, pb = c, q end
+                end
+            end
+        end
+    end
+    if FN.polyGap(A, B) == 0 then best = 0 end
+    return best, pa, pb
+end
+-- Measuring (M, or Measure in the Edit tab): from the picked object to the others selected with it (up to 6), or to
+-- the nearest object when none are: how far apart they are, how much higher or lower the other one's top is, and
+-- the distance between their middles. Worked out 5 times a second.
+S.measureOn = false
+function FN.toggleMeasure()
+    S.measureOn = not S.measureOn
+    S.msr = nil
+    say(S.measureOn and "Measuring: to the objects selected with it, else the nearest.  M: off" or "Measuring off")
+end
+function FN.measureData()
+    local t, sel = S.target, S.sel
+    if not (S.measureOn and t and sel and S.itemBox[sel.item]) then return nil end
+    local c = S.msr
+    if c and c.id == sel.id and S.clock - c.at < 200 then return c end
+    c = { id = sel.id, at = S.clock, list = {} }
+    S.msr = c
+    local me = worldShape(sel.item, t.pos, t.heading, t.scale)
+    if not (me.pts and #me.pts >= 3) then return c end
+    local ids = {}
+    for id in pairs(S.group) do if id ~= sel.id then ids[#ids + 1] = id end end
+    table.sort(ids, function(a, b) return tostring(a) < tostring(b) end)
+    if #ids == 0 then
+        local skip = { [sel.id] = true }
+        ids = FN.nearestTo(t.pos, 1, skip)
+    end
+    for i, id in ipairs(ids) do
+        if i > 6 then break end
+        local o = S.known and S.known[id]
+        local ps = PE.poseOf and PE.poseOf(id)
+        if o and ps and S.itemBox[o.item] then
+            local sh = worldShape(o.item, ps.pos, ps.heading, ps.scale)
+            if sh.pts and #sh.pts >= 3 then
+                local gap, pa, pb = FN.gapPoints(me.pts, sh.pts)
+                local y = math.max(me.ylo, sh.ylo) + 0.05
+                c.list[#c.list + 1] = { o = o, gap = gap, pa = pa and V(pa.x, y, pa.z), pb = pb and V(pb.x, y, pb.z),
+                    dTop = sh.yhi - me.yhi, mid = len(ps.pos - t.pos), myTop = me.yhi, theirTop = sh.yhi, ma = t.pos, mb = ps.pos }
+            end
+        end
+    end
+    return c
+end
+function FN.drawMeasure(d)
+    local okM, c = pcall(FN.measureData)
+    if not (okM and c) then return end
+    local col = "#c49bff"
+    for _, e in ipairs(c.list) do
+        local pa, pb = e.pa, e.pb
+        if pa and pb then
+            if e.gap > 0.005 then d:world_line(pa, pb, { colour = col, thickness = 3 }) end
+            -- the two tops: a short mark at each, joined when they differ
+            local ta, tb = V(pa.x, e.myTop, pa.z), V(pb.x, e.theirTop, pb.z)
+            d:world_line(pa, ta, { colour = col .. "80", thickness = 2 })
+            d:world_line(pb, tb, { colour = col .. "80", thickness = 2 })
+            local mid = d:world_to_screen((pa + pb) * 0.5)
+            if mid then
+                local l1 = e.gap > 0.005 and string.format("%.2f m apart", e.gap) or "touching"
+                local l2
+                if math.abs(e.dTop) < 0.005 then l2 = "tops level"
+                else l2 = string.format("its top %.2f m %s", math.abs(e.dTop), e.dTop > 0 and "higher" or "lower") end
+                local l3 = string.format("middles %.2f m", e.mid)
+                local lines = { l1, l2, l3 }
+                local wmax, lh = 0, 18
+                for _, l in ipairs(lines) do
+                    local okW, m = pcall(function() return d:measure(l, { size = 14, font = "bold" }) end)
+                    local mw = (okW and m and m.x) or #l * 8
+                    if okW and m and m.y then lh = m.y end
+                    wmax = math.max(wmax, mw)
+                end
+                local a = mid + V(12, -8, 0)
+                local b = a + V(wmax + 22, #lines * (lh + 3) + 9, 0)
+                d:rect(a, b, { colour = "#0d1117d8", fill = true, rounding = 8 })
+                d:rect(V(a.x, a.y + 5, 0), V(a.x + 3, b.y - 5, 0), { colour = col, fill = true, rounding = 2 })
+                for i, l in ipairs(lines) do
+                    d:text(V(a.x + 11, a.y + 5 + (i - 1) * (lh + 3), 0), l, { size = 14, font = i == 1 and "bold" or "body", colour = i == 1 and col or "#ffffff" })
+                end
+            end
+        end
+    end
 end
 S.readoutOn = true
 -- what the held object is over (its height above it) and the nearest object beside it (the gap): looked at 10 times a second

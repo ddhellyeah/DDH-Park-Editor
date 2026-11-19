@@ -136,6 +136,8 @@ local function tickBody(dt)
     if press("T") then S.osnap = not S.osnap; say(S.osnap and "Snap to objects on" or "Snap to objects off") end
     if press("Tab") and S.sel then FN.cycleSnap() end
     if press("F") and S.target then S.cam.goal = S.target.pos end
+    if press("M") then FN.toggleMeasure() end
+    if FN.undoStepTick then FN.undoStepTick() end
     if press("Z") and ctrl then if reskate.input.key("Shift") then redo() else undo() end end
     if press("Y") and ctrl then redo() end
     do -- the view: arrows and PageUp / PageDown slide it
@@ -387,17 +389,47 @@ local function tickBody(dt)
     send()
 end
 
+-- Problems, said in the game as well as in the log: a fault (each kind written to the log once, with how often it
+-- came again; a notice on screen at most every 20 s), and running close to ReSkate's time limit (a notice at most
+-- once a minute), so it is seen before ReSkate stops the plugin.
+S.problems = {}
+function FN.problem(where, err)
+    local key = where .. ": " .. tostring(err)
+    local p = S.problems[key]
+    if p then p.n += 1; return end
+    S.problems[key] = { n = 1 }
+    reskate.log("Quick Drop helper: " .. key, "warn")
+    local now = S.clock or 0
+    if now - (S.problemSaidAt or -1e9) > 20000 then
+        S.problemSaidAt = now
+        pcall(reskate.ui.toast, "DDH Park Editor: a problem in " .. where .. ". It keeps running; details are in ReSkate.log.", "warn")
+    end
+end
+local BUSY_MS = 4.8          -- of the 6 ms a tick ReSkate allows on average
 -- the tick, timed: how long the editor's own work takes (the tick less the scanning), so scanning can use what
 -- is left of ReSkate's 6 ms a tick (see part15_scan)
 local okClock = pcall(function() return os.clock() end)
 reskate.on("tick", function(dt)
-    if not okClock then return tickBody(dt) end
+    if not okClock then
+        local ok, err = pcall(tickBody, dt)
+        if not ok then FN.problem("the tick", err) end
+        return
+    end
     local t0 = os.clock()
     S.scanMsTick = 0
-    tickBody(dt)
-    local other = (os.clock() - t0) * 1000 - (S.scanMsTick or 0)
+    local ok, err = pcall(tickBody, dt)
+    if not ok then FN.problem("the tick", err) end
+    local all = (os.clock() - t0) * 1000
+    local other = all - (S.scanMsTick or 0)
     -- (an average over a few ticks, and a spike counted at once)
     S.otherMs = math.max(other, (S.otherMs or other) * 0.9 + other * 0.1)
+    -- the whole tick over about 3 s, scanning and all: close to the limit, said once a minute
+    S.avgMs = (S.avgMs or all) * 0.98 + all * 0.02
+    if S.avgMs > BUSY_MS and (S.clock or 0) - (S.busySaidAt or -1e9) > 60000 then
+        S.busySaidAt = S.clock or 0
+        reskate.log(string.format("Quick Drop helper: busy: %.1f ms a tick on average (ReSkate stops a plugin past 6)", S.avgMs), "warn")
+        pcall(reskate.ui.toast, string.format("DDH Park Editor is busy: %.1f ms a tick of the 6 allowed. Fewer objects in view or in the group helps.", S.avgMs), "warn")
+    end
 end)
 
 end
