@@ -1048,6 +1048,15 @@ end
 
 -- snapping must never get in the way of moving: on a fault the place is left as it was (said once in the log)
 local function snapTo(pos, heading, scale, allow)
+    if S.snapStyle == "match" and FN.matchSnap then
+        -- (here it can't turn: only sides that already face each other)
+        local ok, p, _, g = pcall(FN.matchSnap, pos, heading, scale, true)
+        if ok then
+            S.snapLock = (g and g[1] and g[1].o) and g[1].o.id or nil
+            return p, g
+        end
+        return pos, nil
+    end
     local ok, p, g = pcall(objSnap, pos, heading, scale, allow)
     if ok then
         S.snapLock = (g and g[1] and g[1].o) and g[1].o.id or nil
@@ -1145,7 +1154,102 @@ local function alignSnap(pos, base, scale, allow, baseTilt)
     end
     return p1, base, g1, bt
 end
+-- ---- snapping by matching sides (the default): a side of the held object that is like a side of an object
+-- near it (about the same width and height) and faces it, within reach, is put flat against it: turned so the
+-- two sides face each other, and slid so they meet, middle to middle (so sides of the same width line up edge to
+-- edge). Its height is left as it is (it sits on what is under it). The Snap tab's slider sets the reach.
+S.snapStyle = "match"
+do
+    local ok, v = pcall(reskate.storage.get, "snapStyle")
+    if ok and (v == "match" or v == "classic") then S.snapStyle = v end
+end
+function FN.setSnapStyle(v)
+    S.snapStyle = v
+    S.matchLock = nil
+    pcall(reskate.storage.set, "snapStyle", v)
+end
+local MATCH_FACING = math.cos(math.rad(40))   -- sides turned at most this much from facing each other
+local MATCH_SIMILAR = 0.45                    -- how unlike two sides may be (0 = the same size)
+local function sideFaces(so, max)
+    local out = {}
+    for _, F in ipairs(so.faces or {}) do
+        if F.side and F.ulen >= 0.12 and F.vlen >= 0.03 then
+            F.c = F.o + F.u * (F.ulen * 0.5) + F.v * (F.vlen * 0.5)
+            out[#out + 1] = F
+            if #out >= max then break end
+        end
+    end
+    return out
+end
+local function angOf(v) return math.atan2(v.x, v.z) end
+local function matchSnap(pos, base, scale, noTurn)
+    if not (S.osnap and S.sel and S.known and S.itemBox[S.sel.item]) then return pos, base, nil end
+    if S.snapPick == "off" then return pos, base, nil end
+    local me = worldSolid(S.sel.item, pos, base, scale, nil)
+    if not me.sized then return pos, base, nil end
+    local mine = sideFaces(me, 16)
+    if #mine == 0 then return pos, base, nil end
+    local reach = 0.6 * SNAP_K                  -- how far apart the two sides may be
+    local size = len(me.hi - me.lo)
+    local lock = S.matchLock
+    local best, bs = nil, math.huge
+    for id, o in pairs(S.known) do
+        if id ~= S.sel.id and FN.snapAllowed(id) and S.itemBox[o.item] and not tiltOf(id) then
+            local b = S.itemBox[o.item]
+            local their = len((b[2] - b[1]) * (o.scale or 1))
+            if len(o.position - pos) <= (size + their) * 0.6 + reach + 0.5 then
+                local nb = placedSolid(o)
+                for _, E in ipairs(sideFaces(nb, 16)) do
+                    for _, F in ipairs(mine) do
+                        local facing = -dot(F.n, E.n)
+                        if facing >= (noTurn and 0.996 or MATCH_FACING) then
+                            local dc = F.c - E.c
+                            local gap = dot(dc, E.n)
+                            if gap > -reach and gap < reach then
+                                local lat = dc - E.n * gap
+                                local latLen = math.sqrt(lat.x * lat.x + lat.z * lat.z)
+                                local wMax, hMax = math.max(F.ulen, E.ulen), math.max(F.vlen, E.vlen)
+                                if latLen <= wMax * 0.5 + reach * 0.5 then
+                                    local unlike = math.abs(F.ulen - E.ulen) / wMax + 0.5 * math.abs(F.vlen - E.vlen) / hMax
+                                    if unlike <= MATCH_SIMILAR then
+                                        local score = unlike * 2 + math.abs(gap) / reach + latLen / wMax + (1 - facing) * 3
+                                        -- keep to the side it is on (no flicking between two that are nearly as good)
+                                        if lock and lock.id == id then score -= 0.4 end
+                                        if score < bs then bs, best = score, { o = o, E = E, F = F } end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if not best then S.matchLock = nil return pos, base, nil end
+    local E, F = best.E, best.F
+    -- turn it so its side faces the other side (about up only), then slide it so the two sides meet
+    local d = noTurn and 0 or wrap(angOf(E.n * -1) - angOf(F.n))
+    local hd = wrap(base + d)
+    local cd, sd = math.cos(d), math.sin(d)
+    local v = F.c - pos
+    local fc = pos + V(v.x * cd + v.z * sd, v.y, -v.x * sd + v.z * cd)
+    local m = E.c - fc
+    local np = pos + V(m.x, 0, m.z)
+    S.matchLock = { id = best.o.id }
+    return np, hd, { { o = best.o, nb = FN.placedShape(best.o), kind = "match" } }
+end
+FN.matchSnap = matchSnap
+
 local function snapTurned(pos, base, scale, allow, baseTilt)
+    if S.snapStyle == "match" then
+        local ok, p, h, g = pcall(matchSnap, pos, base, scale)
+        if ok then
+            S.snapLock = (g and g[1] and g[1].o) and g[1].o.id or nil
+            return p, h, g, baseTilt
+        end
+        if not S.snapWarned then S.snapWarned = true; reskate.log("Quick Drop helper: snap: " .. tostring(p), "warn") end
+        return pos, base, nil, baseTilt
+    end
     local ok, p, h, g, tl = pcall(alignSnap, pos, base, scale, allow, baseTilt)
     if ok then
         S.snapLock = (g and g[1] and g[1].o) and g[1].o.id or nil
