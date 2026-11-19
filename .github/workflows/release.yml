@@ -1,0 +1,51 @@
+# Makes a GitHub release with the mod's zip whenever a new version is pushed: when the version number
+# in manifest.json has no release (tag) yet, it zips the mod into a "DDH Park Editor" folder and publishes
+# it as the latest release. Pushes that don't change the version do nothing.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read the version
+        id: v
+        run: |
+          VERSION=$(python3 -c "import json; print(json.load(open('manifest.json'))['version_number'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
+            echo "Version $VERSION already has a release: nothing to do."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the zip
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          mkdir build
+          git archive --format=tar --prefix="DDH Park Editor/" HEAD -- . ':!.github' | tar -x -C build
+          cd build
+          zip -qr "DDH Park Editor ${{ steps.v.outputs.version }}.zip" "DDH Park Editor"
+
+      - name: Make the release
+        if: steps.v.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.v.outputs.version }}" "build/DDH Park Editor ${{ steps.v.outputs.version }}.zip" \
+            --title "DDH Park Editor ${{ steps.v.outputs.version }}" \
+            --notes $'Unzip into ReSkate\'s Mods folder.\nPress F6 in game, or LB + D-pad right on a controller, to open it.' \
+            --target "$GITHUB_SHA" \
+            --latest
