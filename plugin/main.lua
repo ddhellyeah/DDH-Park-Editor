@@ -507,6 +507,7 @@ local PARTS = {
     "part12_tick",
     "part13_hud",
     "part14_panel_draw",
+    "part15_scan",
 }
 for _, name in ipairs(PARTS) do
     local ok, part = pcall(function() return require(name) end)

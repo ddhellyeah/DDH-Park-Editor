@@ -442,6 +442,8 @@ end
 local function worldShape(item, pos, heading, scale)
     local bx = worldBox(item, pos, heading, scale)
     bx.ylo, bx.yhi = pos.y + bx.lo.y, pos.y + bx.hi.y
+    -- (which object, so its outline can be drawn from its model's real edges)
+    bx.item, bx.scale = item, scale
     bx.pts, bx.edges = {}, {}
     local lp = bx.sized and localOutline(item) or nil
     if not lp then return bx end

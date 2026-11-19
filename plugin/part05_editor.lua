@@ -28,19 +28,7 @@ function FN.clickPick(px, toGroup)
     local o, d = rayAt(px)
     local hit = reskate.world.pick(o, o + d * 300)
     if not hit then return end
-    local at = (hit.object and hit.object.position) or hit.position
-    local best, bd = nil, hit.object and 1.5 or 0
-    for _, ob in ipairs(FN.objectsNow()) do
-        local dd = len(ob.position - at)
-        if dd < bd then best, bd = ob, dd end
-    end
-    if not best and hit.object then
-        bd = 6
-        for _, ob in ipairs(FN.objectsNow()) do
-            local dd = len(ob.position - hit.position)
-            if dd < bd then best, bd = ob, dd end
-        end
-    end
+    local best = FN.objectAtHit(hit, FN.objectsNow())
     if best then
         send()
         select(best, hit.object and hit.object.blueprint)

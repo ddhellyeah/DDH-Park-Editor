@@ -36,7 +36,7 @@ local snapTurned = PE.snapTurned
 local undo = PE.undo
 local wrap = PE.wrap
 
-reskate.on("tick", function(dt)
+local function tickBody(dt)
     S.clock += dt
     local sec = dt / 1000
     if S.clock - S.lastScan > 500 then
@@ -80,6 +80,10 @@ reskate.on("tick", function(dt)
     do
         local ok, err = pcall(FN.tiltTick)
         if not ok and not S.tiltWarned then S.tiltWarned = true; reskate.log("Quick Drop helper: tilt: " .. tostring(err), "warn") end
+    end
+    if FN.scanTick then
+        local ok, err = pcall(FN.scanTick)
+        if not ok then S.scanJob = nil; if not S.scanWarned then S.scanWarned = true; reskate.log("Quick Drop helper: scan: " .. tostring(err), "warn") end end
     end
 
     if not S.open then
@@ -160,6 +164,15 @@ reskate.on("tick", function(dt)
 
     -- the mouse
     local c = reskate.input.cursor()
+    -- (over the picked object's numbers under the controller's prompts: they take the mouse, and it stays the
+    -- controller's view)
+    if c and UI.padRowsMouse and not S.drag then
+        local okr, usedR = pcall(UI.padRowsMouse, c)
+        if okr and usedR then
+            S.mouse = { pos = c.position, left = c.left }
+            c = nil
+        end
+    end
     if c and ((S.mouse.pos and d2(c.position, S.mouse.pos) > 3) or c.left or c.right or (c.wheel and c.wheel ~= 0)) then S.mouseUsedAt = S.clock end
     if c and S.controlsOpen then
         pcall(UI.controlsMouse, c)
@@ -372,6 +385,19 @@ reskate.on("tick", function(dt)
     local pos, f, _, u = camBasis()
     reskate.camera.set(pos, f, u, S.cam.fov)
     send()
+end
+
+-- the tick, timed: how long the editor's own work takes (the tick less the scanning), so scanning can use what
+-- is left of ReSkate's 6 ms a tick (see part15_scan)
+local okClock = pcall(function() return os.clock() end)
+reskate.on("tick", function(dt)
+    if not okClock then return tickBody(dt) end
+    local t0 = os.clock()
+    S.scanMsTick = 0
+    tickBody(dt)
+    local other = (os.clock() - t0) * 1000 - (S.scanMsTick or 0)
+    -- (an average over a few ticks, and a spike counted at once)
+    S.otherMs = math.max(other, (S.otherMs or other) * 0.9 + other * 0.1)
 end)
 
 end

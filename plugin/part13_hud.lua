@@ -23,6 +23,8 @@ local function colourOf(base, hot) return hot and YELLOW or base end
 
 function UI.drawPadHud(d)
     local W, H = S.size.x, S.size.y
+    -- (the picked object's numbers go along the bottom, under the prompts: those move up to make room)
+    local rowsH = UI.padRowsSpace and UI.padRowsSpace() or 0
     local c = V(W / 2, H / 2, 0)
     local ng = groupCount()
     local selecting = S.aHold and S.aHold.sweep
@@ -59,8 +61,8 @@ function UI.drawPadHud(d)
         local msg = S.msg
         if #msg > 90 then msg = string.sub(msg, 1, 88) .. "…" end
         local w = UI.textW(d, msg, 15) + 28
-        d:rect(V(W / 2 - w / 2, H - 112, 0), V(W / 2 + w / 2, H - 84, 0), { colour = "#0d1117b0", fill = true, rounding = 14 })
-        d:text(V(W / 2, H - 107, 0), msg, { size = 15, colour = UI.dim, align = "centre" })
+        d:rect(V(W / 2 - w / 2, H - 112 - rowsH, 0), V(W / 2 + w / 2, H - 84 - rowsH, 0), { colour = "#0d1117b0", fill = true, rounding = 14 })
+        d:text(V(W / 2, H - 107 - rowsH, 0), msg, { size = 15, colour = UI.dim, align = "centre" })
     end
     -- the buttons for what can be done now
     local items
@@ -77,7 +79,8 @@ function UI.drawPadHud(d)
     else
         items = { { "a", "Add object" }, { "Hold A", "Select" }, { "Menu", "Steps" }, { "b", "Close" } }
     end
-    if items then UI.promptRow(d, W / 2, H - 48, items) end
+    if items then UI.promptRow(d, W / 2, H - 48 - rowsH, items) end
+    if rowsH > 0 then UI.padRows(d) else S.padRowsAt = nil end
 end
 
 -- ---------------------------------------------------------------- height and gap while holding
@@ -193,7 +196,10 @@ function FN.drawGhost(d, c, sh, p, center, moving, xf)
     local holdingIt = S.grab or (S.drag and S.drag.moved)
     -- a see-through copy where it is going (while the game is still catching up). Drawn from the same outline as
     -- the yellow lines, so the two always match; only an object with no outline uses its box.
-    if moving and holdingIt then
+    -- (an object drawn from its model's edges needs none: its yellow lines already show it exactly)
+    local exact = nil
+    if sh then if FN.outlineOf then exact = FN.outlineOf(sh.item) else exact = FN.wireOf(sh.item) end end
+    if moving and holdingIt and not exact then
         local FILL = { colour = "#ffe0662a", fill = true }
         local pts = sh and sh.pts
         if pts and #pts >= 3 then
@@ -264,7 +270,51 @@ end
 
 -- an outline as it stands: round its base, round its top, and up its corners
 FN.COS25 = math.cos(math.rad(25))
+-- The real edges of the Object Maker's objects (wires.lua beside this file, made from their models): their outlines
+-- are drawn from these, so they show the object as it is (a rail's tube and legs, a ramp's curve), not a box.
+-- Each object's list (x1, y1, z1, x2, y2, z2, ... in metres, from the middle of its base, unturned) is read the
+-- first time it is drawn. The game's own objects have none and keep their box.
+S.wireCache = {}
+function FN.wireOf(item)
+    if not item then return nil end
+    local c = S.wireCache[item]
+    if c ~= nil then return c or nil end
+    if S.wires == nil then
+        local ok, t = pcall(function() return require("wires") end)
+        S.wires = (ok and type(t) == "table") and t or false
+        if not S.wires then reskate.log("Quick Drop helper: no wires.lua: outlines are boxes", "warn") end
+    end
+    local str = S.wires and S.wires[item]
+    if type(str) ~= "string" or str == "" then S.wireCache[item] = false return nil end
+    local a = {}
+    for num in string.gmatch(str, "-?%d+") do a[#a + 1] = tonumber(num) * 0.01 end
+    if #a < 6 then S.wireCache[item] = false return nil end
+    S.wireCache[item] = a
+    return a
+end
+-- lines drawn from models in one frame at most (past it, the rest get their boxes: a big group stays quick)
+local WIRE_BUDGET = 2500
+local function drawWire(d, sh, col, th, xf)
+    local w
+    if FN.outlineOf then w = FN.outlineOf(sh.item) else w = FN.wireOf(sh.item) end
+    if not (w and sh.p and sh.ax and sh.az) then return false end
+    local n = #w // 6
+    if S.wireAt ~= S.clock then S.wireAt, S.wireUsed = S.clock, 0 end
+    if S.wireUsed + n > WIRE_BUDGET then return false end
+    S.wireUsed += n
+    local sc = sh.scale or 1
+    local p, X, Y, Z = sh.p, sh.ax * sc, UP * sc, sh.az * sc
+    local style = { colour = col, thickness = n > 80 and math.min(th, 2) or th }
+    for i = 1, #w - 5, 6 do
+        local a = p + X * w[i] + Y * w[i + 1] + Z * w[i + 2]
+        local b = p + X * w[i + 3] + Y * w[i + 4] + Z * w[i + 5]
+        if xf then a, b = xf(a), xf(b) end
+        d:world_line(a, b, style)
+    end
+    return true
+end
 PE.drawShape = function(d, sh, col, th, xf)
+    if sh.item and drawWire(d, sh, col, th, xf) then return true end
     local pts = sh.pts
     local n = #pts
     if n < 3 then return false end

@@ -181,26 +181,41 @@ PE.padCaptureOn = function() FN.padCapture(true) end
 PE.padCaptureOff = function() FN.padCapture(false) end
 
 -- the open editor with a controller
+-- the placed object a ray hit is really on: where it hit is on (or within a hand's width of) its box. The one
+-- the ray says it hit comes first; else the one whose box is nearest the hit (objects standing in each other).
+-- A hit on the ground or the map's own pieces next to an object is not that object.
+function FN.objectAtHit(hit, list)
+    if not (type(hit) == "table" and hit.position) then return nil end
+    local hp = hit.position
+    local op = hit.object and hit.object.position
+    local best, bs = nil, math.huge
+    for _, ob in pairs(list or S.known or {}) do
+        local dd
+        if S.itemBox[ob.item] then
+            local so = placedSolid(ob)
+            if so.x0 and so.x0 < math.huge then
+                local dx = math.max(so.x0 - hp.x, 0, hp.x - so.x1)
+                local dy = math.max(so.y0 - hp.y, 0, hp.y - so.y1)
+                local dz = math.max(so.z0 - hp.z, 0, hp.z - so.z1)
+                dd = math.sqrt(dx * dx + dy * dy + dz * dz)
+            end
+        end
+        -- (size unknown: its middle near the hit)
+        if not dd then dd = math.max(0, len(ob.position - hp) - 0.75) end
+        if dd <= 0.15 then
+            local score = dd
+            if op and len(ob.position - op) < 0.05 then score -= 1 end
+            if score < bs then best, bs = ob, score end
+        end
+    end
+    return best
+end
 -- the object under the cross in the middle of the view (aiming with the controller)
 function FN.aimedObject()
     local cpos, f = camBasis()
     local ok, hit = pcall(reskate.world.pick, cpos, cpos + f * 300)
-    if not (ok and type(hit) == "table") then return nil end
-    local at = (hit.object and hit.object.position) or hit.position
-    if not at then return nil end
-    local best, bd = nil, hit.object and 1.5 or 0
-    for _, ob in pairs(S.known or {}) do
-        local dd = len(ob.position - at)
-        if dd < bd then best, bd = ob, dd end
-    end
-    if not best and hit.object and hit.position then
-        bd = 6
-        for _, ob in pairs(S.known or {}) do
-            local dd = len(ob.position - hit.position)
-            if dd < bd then best, bd = ob, dd end
-        end
-    end
-    return best
+    if not ok then return nil end
+    return FN.objectAtHit(hit)
 end
 
 -- holding an object with the controller (like Quick Drop): A picks it up, A puts it down, B puts it back
@@ -557,6 +572,12 @@ function FN.deletePress(o)
             S.aim = nil
             S.lastScan = -1e9
             say("Removed " .. name .. ".  (View: undo)")
+        elseif BUSY[why] then
+            -- the game is busy with an edit: removed as soon as it is free
+            if #keep > 0 then S.pushUndo({ kind = "removed", items = keep }) end
+            table.insert(S.q, { op = "remove", id = id, rec = { done = 0, failed = 0, total = 1, label = "Remove", quiet = true } })
+            S.aim = nil
+            say("Removing " .. name .. "...  (View: undo)")
         else
             say("Not removed: " .. tostring(why), true)
         end
