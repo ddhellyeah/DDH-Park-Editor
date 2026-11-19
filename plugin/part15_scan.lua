@@ -116,8 +116,9 @@ local function hitKind(job, hit)
     if not okp then op = nil end
     if op and len(op - job.pos) <= 0.05 then return "own" end
     if op then
-        for id, o in pairs(S.known or {}) do
-            if id ~= job.id and len(o.position - op) < len(job.pos - op) - 0.01 then return nil end
+        local dj = len(job.pos - op) - 0.01
+        for _, o in ipairs(FN.nearObjects and FN.nearObjects(op, dj) or {}) do
+            if o.id ~= job.id and len(o.position - op) < dj then return nil end
         end
     end
     -- (once per scan, what the game says about such a hit, to learn what it is)

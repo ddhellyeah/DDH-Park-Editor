@@ -75,6 +75,28 @@ local wrap = PE.wrap
         return str, size, m
     end
     -- text at x, y (its top), at most maxW wide
+    -- text over several lines: split at spaces so each line measures within maxW (a word too long by itself is
+    -- fitted on its own line); returns the lines, the widest line's width and the line height
+    local function wrapLines(d, str, size, font, maxW)
+        local lines, cur = {}, nil
+        for word in string.gmatch(tostring(str), "%S+") do
+            local try = cur and (cur .. " " .. word) or word
+            if cur and measure(d, try, size, font)[1] > maxW then
+                lines[#lines + 1] = cur
+                cur = word
+            else
+                cur = try
+            end
+        end
+        if cur then lines[#lines + 1] = cur end
+        local wmax, lh = 0, measure(d, "Ag", size, font)[2]
+        for i, l in ipairs(lines) do
+            local s2, _, m = fitted(d, l, size, font, maxW)
+            lines[i] = s2
+            wmax = math.max(wmax, m[1])
+        end
+        return lines, wmax, lh
+    end
     local function fitText(d, x, y, str, maxW, st)
         local s2, size = fitted(d, str, st.size or 18, st.font, maxW)
         d:text(V(x, y, 0), s2, { size = size, colour = st.colour, font = st.font, align = st.align, shadow = st.shadow })
@@ -209,6 +231,71 @@ local wrap = PE.wrap
         tw.apply(v)
     end)
 
+    -- ---- the park's list in groups: DDH's objects by Quick Drop's families (groups.lua), the others by their
+    -- category in the catalog; groups in the families' order, then the categories A to Z. Each group: a heading
+    -- ({ head, n, open }), then its objects ({ o, indent }) unless folded (S.listFold, by name). Not grouped:
+    -- the objects as they are.
+    local famOf = nil
+    local famOrder = {}
+    local categoryOf
+    local groupsMade = nil
+    function UI.listGroups(objs, grouped)
+        -- (made again only when the list or a fold changes, not every frame)
+        local gm = groupsMade
+        if gm and gm.objs == objs and gm.grouped == grouped and gm.foldV == S.listFoldV then return gm.out end
+        local out = UI.makeListGroups(objs, grouped)
+        groupsMade = { objs = objs, grouped = grouped, foldV = S.listFoldV, out = out }
+        return out
+    end
+    function UI.makeListGroups(objs, grouped)
+        if not grouped then
+            local out = {}
+            for i, o in ipairs(objs) do out[i] = { o = o } end
+            return out
+        end
+        if not famOf then
+            famOf = {}
+            local okG, g = pcall(function() return require("groups") end)
+            if okG and type(g) == "table" and type(g.families) == "table" then
+                for i, f in ipairs(g.families) do
+                    famOrder[f.title] = i
+                    for _, k in ipairs(f.keys) do famOf[k] = f.title end
+                end
+            end
+        end
+        local by, names = {}, {}
+        for _, o in ipairs(objs) do
+            local nm = famOf[o.item] or categoryOf(o.item) or "Other"
+            if not by[nm] then by[nm] = {}; names[#names + 1] = nm end
+            table.insert(by[nm], o)
+        end
+        table.sort(names, function(a, b2)
+            local fa, fb = famOrder[a], famOrder[b2]
+            if fa and fb then return fa < fb elseif fa then return true elseif fb then return false end
+            if a == "Other" then return false elseif b2 == "Other" then return true end
+            return a < b2
+        end)
+        local out = {}
+        S.listFold = S.listFold or {}
+        for _, nm in ipairs(names) do
+            local open = not S.listFold[nm]
+            out[#out + 1] = { head = nm, n = #by[nm], open = open }
+            if open then for _, o in ipairs(by[nm]) do out[#out + 1] = { o = o, indent = true } end end
+        end
+        return out
+    end
+    -- an item's category in the catalog (kept once read)
+    local catOf = nil
+    function categoryOf(item)
+        if not catOf then
+            local l = FN.catalog and FN.catalog() or {}
+            if #l == 0 then return nil end
+            catOf = {}
+            for _, it in ipairs(l) do catOf[it.key] = it.category and tostring(it.category) or nil end
+        end
+        return catOf[item]
+    end
+
     -- ---------------------------------------------------------------- the park, in a panel on the left: the group,
     -- arranging it, the park's objects (search, pick, delete) and saving it as a park mod
     local function parkPanel(d)
@@ -280,25 +367,40 @@ local wrap = PE.wrap
             end)
             y += 40
             y = seg(d, x, y, w, { "All", "Near", "DDH" }, S.listFilter, function(i) S.listFilter = i; S.listKey = nil; S.listTop = 0 end) + 8
-            -- the list: as many rows as fit, the wheel scrolls it
+            -- the list, in groups (DDH's objects by Quick Drop's families, the rest by category; Near: by distance,
+            -- not grouped): a group's heading folds it; as many rows as fit, the wheel scrolls it
+            local disp = UI.listGroups(S.listObjs or {}, S.listFilter ~= 2)
             local rowH = 30
             local bottom = b.y - 112
             local rows = math.max(3, math.floor((bottom - y) / rowH))
-            local n = #(S.listObjs or {})
+            local n = #disp
             S.listTop = clamp(S.listTop or 0, 0, math.max(0, n - rows))
             S.screen.listBox = { a = V(x, y, 0), b = V(x + w, y + rows * rowH, 0), rows = rows, n = n }
             for r = 1, rows do
                 local i = S.listTop + r
-                local o = S.listObjs and S.listObjs[i]
-                if not o then break end
+                local row = disp[i]
+                if not row then break end
                 local ra, rb = V(x, y + (r - 1) * rowH, 0), V(x + w, y + r * rowH - 2, 0)
+                if row.head then
+                    -- a group's heading: its name and how many, a triangle (down: open, right: folded)
+                    if hot(ra, rb) then d:rect(ra, rb, { colour = UI.tile, fill = true, rounding = 7 }) end
+                    local cx, cy = x + 9, ra.y + 14
+                    if row.open then d:poly({ V(cx - 5, cy - 3, 0), V(cx + 5, cy - 3, 0), V(cx, cy + 3, 0) }, { colour = "#f0f3f6a0", fill = true })
+                    else d:poly({ V(cx - 3, cy - 5, 0), V(cx + 3, cy, 0), V(cx - 3, cy + 5, 0) }, { colour = "#f0f3f6a0", fill = true }) end
+                    fitText(d, x + 22, ra.y + 7, string.upper(row.head), w - 80, { size = 12, colour = "#f0f3f6b0", font = "bold" })
+                    d:text(V(rb.x - 8, ra.y + 7, 0), tostring(row.n), { size = 12, colour = UI.dim, align = "right" })
+                    local hname = row.head
+                    tileAdd(ra, rb, function() S.listFold = S.listFold or {}; S.listFold[hname] = row.open; S.listFoldV = (S.listFoldV or 0) + 1 end)
+                else
+                local o = row.o
+                local ind = row.indent and 12 or 0
                 local on = S.sel and S.sel.id == o.id
                 if on then d:rect(ra, rb, { colour = UI.accentDim, fill = true, rounding = 7 })
                 elseif S.group[o.id] then d:rect(ra, rb, { colour = "#c49bff2a", fill = true, rounding = 7 })
                 elseif hot(ra, rb) then d:rect(ra, rb, { colour = UI.tile, fill = true, rounding = 7 }) end
                 local name = titleOf(o.item)
-                if S.group[o.id] then d:circle(V(x + 10, ra.y + 14, 0), 4, { colour = UI.purple, fill = true }) end
-                fitText(d, x + 20, ra.y + 6, name, w - 80, { size = 14, colour = on and UI.accent or UI.text })
+                if S.group[o.id] then d:circle(V(x + 10 + ind, ra.y + 14, 0), 4, { colour = UI.purple, fill = true }) end
+                fitText(d, x + 20 + ind, ra.y + 6, name, w - 80 - ind, { size = 14, colour = on and UI.accent or UI.text })
                 d:text(V(rb.x - 8, ra.y + 6, 0), string.format("%.0f m", len(o.position - (S.cam.target or o.position))), { size = 13, colour = UI.dim, align = "right" })
                 tileAdd(ra, rb, function()
                     if reskate.input.key("Ctrl") then
@@ -312,6 +414,7 @@ local wrap = PE.wrap
                     end
                     send(); select(o); S.cam.goal = o.position; S.listKey = nil; say("Picked " .. titleOf(o.item))
                 end)
+                end
             end
             if n > rows then
                 local la, lb2 = S.screen.listBox.a, S.screen.listBox.b
@@ -356,8 +459,9 @@ local wrap = PE.wrap
         tileAdd(a, b, fn)
     end
     -- a choice row with a small caption before it
+    local function capW(d, cap) return measure(d, cap, 12, nil)[1] + 10 end
     local function capSeg(d, x, y, w, cap, labels, cur, fn)
-        local cw = math.min(44, w * 0.22)
+        local cw = capW(d, cap)
         textIn(d, V(x, y, 0), V(x + cw, y + 34, 0), cap, { size = 12, colour = "#f0f3f680" }, 2)
         seg(d, x + cw, y, w - cw, labels, cur, fn)
     end
@@ -384,13 +488,16 @@ local wrap = PE.wrap
         end
         local k = S.snapStrength or 1
         local parts = {
-            { 100, function(x, y, w) pill(d, V(x, y, 0), V(x + w, y + 34, 0), "Snap  (T)", S.osnap, function() S.osnap = not S.osnap end) end },
-            { 175, function(x, y, w) capSeg(d, x, y, w, "By", { "Sides", "Classic" }, S.snapStyle == "classic" and 2 or 1, function(i) FN.setSnapStyle(i == 2 and "classic" or "match") end) end },
+            { 100, function(x, y, w) pill(d, V(x, y, 0), V(x + w, y + 34, 0), "Snap  (T)", S.osnap, function() S.osnap = not S.osnap end) end,
+                "Snap to objects: its sides go flat against other objects' sides when brought near.  T" },
+            { 175, function(x, y, w) capSeg(d, x, y, w, "By", { "Sides", "Classic" }, S.snapStyle == "classic" and 2 or 1, function(i) FN.setSnapStyle(i == 2 and "classic" or "match") end) end,
+                "Sides: a side snaps flat to a side of about the same size, lined up at its ends or middle. Classic: sides meet and line up with anything near." },
             { 205, function(x, y, w) capSeg(d, x, y, w, "To", { "Auto", nextName, "Off" }, cur, function(i)
                 if i == 1 then S.snapPick = nil; S.snapLock = nil
                 elseif i == 2 and S.nextSnap then S.nextSnap()
                 elseif i == 3 then S.snapPick = "off"; S.guides = nil end
-            end) end },
+            end) end,
+                "What it snaps to: the nearest object, one object you choose (Next picks the next one near), or nothing.  Tab, or tap L3 while holding" },
             { 190, function(x, y, w)
                 -- how strongly: - / +, and the bar (click or drag on it), its % on it
                 btn(d, V(x, y + 4, 0), V(x + 24, y + 30, 0), "-", function() FN.setSnapStrength(k - 0.1, true) end)
@@ -408,21 +515,61 @@ local wrap = PE.wrap
                 end
                 tileAdd(V(ba.x, ba.y - 4, 0), V(bb.x, bb.y + 4, 0), function() setFromMouse(); S.snapSliderDrag = setFromMouse end)
                 if S.snapSliderDrag and S.mouse and S.mouse.left then S.snapSliderDrag() else S.snapSliderDrag = nil end
-            end },
-            { 260, function(x, y, w) capSeg(d, x, y, w, "Grid m", { "Off", "0.25", "0.5", "1", "2" }, S.gridI or 1, function(i) S.gridI = i end) end },
-            { 100, function(x, y, w) pill(d, V(x, y, 0), V(x + w, y + 34, 0), "Steps  (G)", S.snap, function() S.snap = not S.snap end) end },
-            { 80, function(x, y, w) pill(d, V(x, y, 0), V(x + w, y + 34, 0), "Land", S.landOn, function() S.landOn = not S.landOn end) end },
-            { 115, function(x, y, w) pill(d, V(x, y, 0), V(x + w, y + 34, 0), "Height / gap", S.readoutOn, function() S.readoutOn = not S.readoutOn end) end },
+            end,
+                "How far it reaches to snap. Lower: only snaps right up against things. Higher: from further away. The mark is 100%." },
+            { 260, function(x, y, w) capSeg(d, x, y, w, "Grid m", { "Off", "0.25", "0.5", "1", "2" }, S.gridI or 1, function(i) S.gridI = i end) end,
+                "The grid's step in metres: moving across the ground, with the mouse or the controller, lands on it when not snapped to an object. Off: free." },
+            { 100, function(x, y, w) pill(d, V(x, y, 0), V(x + w, y + 34, 0), "Steps  (G)", S.snap, function() S.snap = not S.snap end) end,
+                "Drag in steps with the mouse: moving by 0.25 m (1 m with Shift), turning by 15 degrees (45 with Shift).  G" },
+            { 80, function(x, y, w) pill(d, V(x, y, 0), V(x + w, y + 34, 0), "Land", S.landOn, function() S.landOn = not S.landOn end) end,
+                "Land on what is under it: dragged along, it sits on the ground or whatever is below it." },
+            { 115, function(x, y, w) pill(d, V(x, y, 0), V(x + w, y + 34, 0), "Height / gap", S.readoutOn, function() S.readoutOn = not S.readoutOn end) end,
+                "While moving: its height above what is under it, and the gap to the nearest object, next to it." },
         }
-        local gap, total = 8, 0
-        for _, pt in ipairs(parts) do total += pt[1] end
+        -- the width each piece needs for its text (measured, bold: a chosen one is drawn bold), and the room left
+        -- over shared out by the pieces' weights; when even that is too wide, each gets its share of what there is
+        local function pillNeed(l) return measure(d, l, 14, "bold")[1] + 28 end
+        local function segNeed(cap, labels)
+            local m = 0
+            for _, l in ipairs(labels) do m = math.max(m, measure(d, l, 14, "bold")[1]) end
+            return capW(d, cap) + #labels * (m + 16) + 4
+        end
+        local needs = {
+            pillNeed("Snap  (T)"),
+            segNeed("By", { "Sides", "Classic" }),
+            segNeed("To", { "Auto", nextName, "Off" }),
+            measure(d, "Strength 100%", 13, nil)[1] + 80,
+            segNeed("Grid m", { "Off", "0.25", "0.5", "1", "2" }),
+            pillNeed("Steps  (G)"),
+            pillNeed("Land"),
+            pillNeed("Height / gap"),
+        }
+        local gap, total, needAll = 8, 0, 0
+        for i, pt in ipairs(parts) do total += pt[1]; needAll += needs[i] end
         local room = (b.x - a.x) - 16 - gap * (#parts - 1)
-        local f = room / total
+        local spare = room - needAll
         local x = a.x + 8
-        for _, pt in ipairs(parts) do
-            local w = pt[1] * f
+        local hint, hx = nil, 0
+        for i, pt in ipairs(parts) do
+            local w = spare >= 0 and (needs[i] + spare * pt[1] / total) or (needs[i] * room / needAll)
             pt[2](x, a.y + 6, w)
+            if pt[3] and hot(V(x, a.y, 0), V(x + w, b.y, 0)) then hint, hx = pt[3], x + w / 2 end
             x += w + gap
+        end
+        -- what the control under the mouse does: a box under the bar, by it
+        if hint then
+            -- (wrapped here, line by line, each measured: the box is as wide as its widest line, so all of it fits)
+            local lines, tw, lh = wrapLines(d, hint, 14, "body", 360)
+            local lgap = math.ceil(lh * 0.25)
+            local hw = math.ceil(tw) + 30
+            local hh = #lines * lh + (#lines - 1) * lgap + 18
+            local hx0 = math.max(a.x, math.min(b.x - hw, hx - hw / 2))
+            local ha, hb = V(hx0, b.y + 30, 0), V(hx0 + hw, b.y + 30 + hh, 0)
+            d:rect(ha, hb, { colour = "#1f2630", fill = true, rounding = 9 })
+            d:rect(V(ha.x, ha.y + 6, 0), V(ha.x + 3, hb.y - 6, 0), { colour = UI.accent, fill = true, rounding = 2 })
+            for i, l in ipairs(lines) do
+                d:text(V(ha.x + 16, ha.y + 9 + (i - 1) * (lh + lgap), 0), l, { size = 14, colour = UI.text, font = "body" })
+            end
         end
     end
 

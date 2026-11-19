@@ -353,7 +353,7 @@ local function learnNear()
     S.learnAt = S.clock
     local moving = (S.drag and S.drag.moved) or S.padMoving or S.dirty
     local best, bd = nil, 30
-    for _, o in pairs(S.known) do
+    for _, o in ipairs(FN.nearObjects(S.target.pos, 30)) do
         local tl = S.tilt[o.id]
         if S.itemBox[o.item] == nil and S.clock >= (S.boxNext[o.item] or 0) and not (tl and (math.abs(tl.x) > 1e-4 or math.abs(tl.z) > 1e-4)) then
             local d = len(o.position - S.target.pos)
@@ -555,6 +555,49 @@ local function placedSolid(o)
     return so
 end
 
+-- Big parks: the objects by where they are, in a grid of 4 m squares (each object in every square its box, and
+-- a little more, reaches), so snapping looks only at the objects near it, not the whole park each tick. Built again
+-- whenever the list of objects is (twice a second).
+local CELL = 4
+local grid = { known = false }
+local function buildGrid()
+    local cells = {}
+    grid = { known = S.known, cells = cells, stamp = 0, seen = {} }
+    for id, o in pairs(S.known or {}) do
+        local b = S.itemBox[o.item]
+        local r = (b and len((b[2] - b[1]) * (o.scale or 1)) or 1) + 0.5
+        local p = o.position
+        for i = math.floor((p.x - r) / CELL), math.floor((p.x + r) / CELL) do
+            for k = math.floor((p.z - r) / CELL), math.floor((p.z + r) / CELL) do
+                local key = i * 1000003 + k
+                local c = cells[key]
+                if not c then c = {}; cells[key] = c end
+                c[#c + 1] = o
+            end
+        end
+    end
+end
+-- the objects that may be within r metres of pos (their boxes; some further off too: the caller still checks)
+function FN.nearObjects(pos, r)
+    if grid.known ~= S.known then buildGrid() end
+    local out = {}
+    if not S.known then return out end
+    grid.stamp += 1
+    local st, seen, cells = grid.stamp, grid.seen, grid.cells
+    for i = math.floor((pos.x - r) / CELL), math.floor((pos.x + r) / CELL) do
+        for k = math.floor((pos.z - r) / CELL), math.floor((pos.z + r) / CELL) do
+            local c = cells[i * 1000003 + k]
+            if c then
+                for _, o in ipairs(c) do
+                    if seen[o.id] ~= st then seen[o.id] = st; out[#out + 1] = o end
+                end
+            end
+        end
+    end
+    return out
+end
+local nearObjects = FN.nearObjects
+
 -- Objects the picked one stands inside of are never snapped to, until it has been moved clear of them: a copy just
 -- made of it (which the game puts there a moment later, where it was), or the one it was copied from, or a stack
 -- of the same object. Otherwise it snaps back onto itself.
@@ -587,7 +630,9 @@ end
 function FN.ignoreOverlapping()
     if not (S.sel and S.known) then return end
     for id, o in pairs(S.known) do
-        if id ~= S.sel.id and FN.overlapsHeld(o) then S.snapIgnore[id] = true end
+        -- (only the same kind of object: a copy, the one it was copied from, a stack of it. Anything else it
+        -- pokes into, like a ledge set into a platform, is still snapped to)
+        if id ~= S.sel.id and o.item == S.sel.item and FN.overlapsHeld(o) then S.snapIgnore[id] = true end
     end
 end
 
@@ -617,7 +662,8 @@ local function objSnap(pos, heading, scale, allow, tl)
     local mc = cornersOf(me)
     local reach = SNAP_REACH + len(me.hi - me.lo)
     local near = {}
-    for id, o in pairs(S.known) do
+    for _, o in ipairs(nearObjects(pos, reach)) do
+        local id = o.id
         if id ~= S.sel.id and FN.snapAllowed(id) then
             local d = len(o.position - pos)
             local b = S.itemBox[o.item]
@@ -1074,7 +1120,8 @@ end
 local function turnSnap(hd)
     if not (S.osnap and S.sel and S.known and S.target) then return hd, nil end
     local best, bd = nil, SNAP_REACH + 4
-    for id, o in pairs(S.known) do
+    for _, o in ipairs(nearObjects(S.target.pos, SNAP_REACH + 4)) do
+        local id = o.id
         if id ~= S.sel.id and FN.snapAllowed(id) then
             local d = len(o.position - S.target.pos)
             if d < bd then best, bd = o, d end
@@ -1150,7 +1197,8 @@ local function alignSnap(pos, base, scale, allow, baseTilt)
         if q.kind == "touch" and not q.corner and q.rank == 0 then return p1, base, g1, bt end
     end
     local near = {}
-    for id, o in pairs(S.known) do
+    for _, o in ipairs(nearObjects(pos, SNAP_REACH + 2)) do
+        local id = o.id
         if id ~= S.sel.id and FN.snapAllowed(id) and S.itemBox[o.item] then
             local b = S.itemBox[o.item]
             local d = len(o.position - pos) - len((b[2] - b[1]) * (o.scale or 1)) / 2
@@ -1232,6 +1280,99 @@ local function sideFaces(so, max)
     return out
 end
 local function angOf(v) return math.atan2(v.x, v.z) end
+local sideTop
+-- how high a side's top is, where that side is: the highest point of the object's real outline (its model's
+-- edges, or its scan) on that side; without an outline, its box's top
+sideTop = function(F, so, item, scale)
+    local top0 = F.o.y + F.vlen
+    local w = FN.outlineOf and FN.outlineOf(item)
+    local sh = so and so.shape
+    if not (w and sh and sh.p and sh.ax) then return top0 end
+    local p, X, Y, Z = sh.p, sh.ax * scale, UP * scale, sh.az * scale
+    local best = -math.huge
+    for i = 1, #w - 2, 3 do
+        local q = p + X * w[i] + Y * w[i + 1] + Z * w[i + 2]
+        local r = q - F.o
+        local dn = dot(r, F.n)
+        if dn > -0.08 and dn < 0.08 then
+            local du = dot(r, F.u)
+            if du > -0.03 and du < F.ulen + 0.03 and q.y > best then best = q.y end
+        end
+    end
+    return best > -math.huge and best or top0
+end
+-- Stacking: the held object sitting on (or just above) another one's top is lined up with it: turned the same way
+-- (or a quarter turn from it), and along each of that object's two ways across, centred on it or flush with
+-- either edge of it, whichever is nearest. Its height is that object's top.
+local stackSnap
+local STACK_ABOVE = 0.06   -- how far above a top it may be (or a little into it) to count as sitting on it
+stackSnap = function(me, pos, base, scale, noTurn, reach)
+    local mb = me.shape and me.shape.ylo
+    if not mb then return nil end
+    local best, bs = nil, math.huge
+    for _, o in ipairs(nearObjects(pos, reach + 1)) do
+        local id = o.id
+        if id ~= S.sel.id and FN.snapAllowed(id) and S.itemBox[o.item] and not tiltOf(id) then
+            local b = S.itemBox[o.item]
+            local their = len((b[2] - b[1]) * (o.scale or 1))
+            local dxz = math.sqrt((o.position.x - pos.x) ^ 2 + (o.position.z - pos.z) ^ 2)
+            if dxz <= their * 0.6 + reach then
+                local nb = placedSolid(o)
+                local T
+                for _, f in ipairs(nb.faces) do if not f.side and f.n.y > 0.99 then T = f break end end
+                if T then
+                    local above = mb - T.o.y
+                    if above > -STACK_ABOVE and above < STACK_ABOVE then
+                        -- my middle over its top (its two ways across)
+                        local du, dv = dot(pos - T.o, T.u), dot(pos - T.o, T.v)
+                        local m = reach * 0.5
+                        if du > -m and du < T.ulen + m and dv > -m and dv < T.vlen + m then
+                            local ou = math.max(0, -du, du - T.ulen) + math.max(0, -dv, dv - T.vlen)
+                            local score = ou + math.abs(above)
+                            if S.matchLock and S.matchLock.id == id and S.matchLock.stack then score -= 0.2 end
+                            if score < bs then bs, best = score, { o = o, T = T } end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if not best then return nil end
+    local o, T = best.o, best.T
+    -- turned like it (or a quarter turn from it), when it nearly is
+    local hd = base
+    local rel = wrap(base - (o.heading or 0))
+    local q = round(rel, math.pi / 2)
+    if math.abs(rel - q) <= (noTurn and math.rad(5) or math.rad(40)) then hd = wrap((o.heading or 0) + q) end
+    local me2 = (hd == base) and me or worldSolid(S.sel.item, pos, hd, scale, nil)
+    -- along each way across its top: centred, or flush with either edge, whichever is nearest
+    local mv = V(0, 0, 0)
+    local stops = {}
+    for k, dir in ipairs({ T.u, T.v }) do
+        local tl = k == 1 and T.ulen or T.vlen
+        local a0, a1 = math.huge, -math.huge
+        for _, c in ipairs(me2.corners) do
+            local a = dot(c - T.o, dir)
+            a0 = math.min(a0, a); a1 = math.max(a1, a)
+        end
+        local mid = (a0 + a1) * 0.5
+        local cands = { tl * 0.5 - mid, 0 - a0, tl - a1 }
+        local bi, bd = 1, math.huge
+        for i, c in ipairs(cands) do
+            local dd = math.abs(c)
+            local lk = S.matchLock
+            if lk and lk.id == o.id and lk.stack and lk.stack[k] == i then dd -= 0.1 end
+            if dd < bd then bi, bd = i, dd end
+        end
+        -- only when close (else it is left where it is that way)
+        if math.abs(cands[bi]) <= math.max(0.15, reach * 0.5) then
+            mv += dir * cands[bi]; stops[k] = bi
+        end
+    end
+    local np = V(pos.x + mv.x, T.o.y + (pos.y - me.shape.ylo), pos.z + mv.z)
+    S.stackLock = { id = o.id, stack = stops }
+    return np, hd, { { o = o, nb = FN.placedShape(o), kind = "stack" } }
+end
 local function matchSnap(pos, base, scale, noTurn)
     if not (S.osnap and S.sel and S.known and S.itemBox[S.sel.item]) then return pos, base, nil end
     if S.snapPick == "off" then return pos, base, nil end
@@ -1242,9 +1383,17 @@ local function matchSnap(pos, base, scale, noTurn)
     local reach = 0.6 * SNAP_K                  -- how far apart the two sides may be
     local size = len(me.hi - me.lo)
     local lock = S.matchLock
+    -- sitting on top of another object: lined up with it (see stackSnap)
+    -- (side to side wins when there is a side to meet: then not with the one under it, and only sides at about
+    -- the same height, so it is not pulled off what it sits on)
+    local lock0 = S.matchLock
+    local sp, sh, sg = stackSnap(me, pos, base, scale, noTurn, reach)
+    local under = sg and sg[1].o.id
+    S.matchLock = lock0
     local best, bs = nil, math.huge
-    for id, o in pairs(S.known) do
-        if id ~= S.sel.id and FN.snapAllowed(id) and S.itemBox[o.item] and not tiltOf(id) then
+    for _, o in ipairs(nearObjects(pos, size * 0.6 + reach + 0.5)) do
+        local id = o.id
+        if id ~= S.sel.id and id ~= under and FN.snapAllowed(id) and S.itemBox[o.item] and not tiltOf(id) then
             local b = S.itemBox[o.item]
             local their = len((b[2] - b[1]) * (o.scale or 1))
             if len(o.position - pos) <= (size + their) * 0.6 + reach + 0.5 then
@@ -1255,17 +1404,22 @@ local function matchSnap(pos, base, scale, noTurn)
                         if facing >= (noTurn and 0.996 or MATCH_FACING) then
                             local dc = F.c - E.c
                             local gap = dot(dc, E.n)
-                            if gap > -reach and gap < reach then
+                            if gap > -reach and gap < reach and not (under and math.abs(E.o.y - F.o.y) > 0.3) then
                                 local lat = dc - E.n * gap
                                 local latLen = math.sqrt(lat.x * lat.x + lat.z * lat.z)
                                 local wMax, hMax = math.max(F.ulen, E.ulen), math.max(F.vlen, E.vlen)
-                                if latLen <= wMax * 0.5 + reach * 0.5 then
+                                -- (sides that overlap along their length, or nearly: corner to corner counts too)
+                                if latLen <= (F.ulen + E.ulen) * 0.5 + reach * 0.5 then
                                     local unlike = math.abs(F.ulen - E.ulen) / wMax + 0.5 * math.abs(F.vlen - E.vlen) / hMax
-                                    if unlike <= MATCH_SIMILAR then
-                                        local score = unlike * 2 + math.abs(gap) / reach + latLen / wMax + (1 - facing) * 3
+                                    -- sides not alike (a short end against a long side) still meet, at a corner,
+                                    -- but alike sides come first
+                                    local alike = unlike <= MATCH_SIMILAR
+                                    if alike or latLen <= (F.ulen + E.ulen) * 0.5 + reach * 0.5 then
+                                        local score = math.min(unlike, 1) * 2 + math.abs(gap) / reach + latLen / wMax + (1 - facing) * 3
+                                        if not alike then score += 1.5 end
                                         -- keep to the side it is on (no flicking between two that are nearly as good)
                                         if lock and lock.id == id then score -= 0.4 end
-                                        if score < bs then bs, best = score, { o = o, E = E, F = F } end
+                                        if score < bs then bs, best = score, { o = o, E = E, F = F, alike = alike, nb = nb } end
                                     end
                                 end
                             end
@@ -1275,7 +1429,14 @@ local function matchSnap(pos, base, scale, noTurn)
             end
         end
     end
-    if not best then S.matchLock = nil return pos, base, nil end
+    if not best then
+        if sp then
+            S.matchLock = S.stackLock
+            return sp, sh, sg
+        end
+        S.matchLock = nil
+        return pos, base, nil
+    end
     local E, F = best.E, best.F
     -- turn it so its side faces the other side (about up only), then slide it so the two sides meet
     local d = noTurn and 0 or wrap(angOf(E.n * -1) - angOf(F.n))
@@ -1294,7 +1455,9 @@ local function matchSnap(pos, base, scale, noTurn)
         u = u * (1 / ul)
         local at = dot(fc - E.o, u)
         local hw = F.ulen * 0.5
-        local stops = { E.ulen * 0.5, hw, E.ulen - hw }
+        -- the stops: middle to middle, flush with either end (an inside corner), or just past
+        -- either end, corner to corner (an outside corner)
+        local stops = { E.ulen * 0.5, hw, E.ulen - hw, -hw, E.ulen + hw }
         local k, kd = 1, math.huge
         for i, c in ipairs(stops) do
             local dd = math.abs(c - at)
@@ -1304,9 +1467,17 @@ local function matchSnap(pos, base, scale, noTurn)
         stop = k
         m += u * (stops[k] - at)
     end
-    -- and level with it: bottoms at the same height (so copings meet without a step), when they are close already
+    -- and level with it: bottoms at the same height (so copings meet without a step), when they are close already.
+    -- Lifted by hand (or not landing): tops level too, whichever is nearer, each side's top where that side is
+    -- (a sloped ledge's low end against a platform's side: its top goes on from the platform's top, to skate up it)
     local dy = E.o.y - F.o.y
-    if math.abs(dy) > 0.3 then dy = 0 end
+    local lifted = (S.sel and S.lifted[S.sel.id]) or not S.landOn
+    local tops = false
+    if lifted then
+        local dt = sideTop(E, best.nb, best.o.item, best.o.scale or 1) - sideTop(F, me, S.sel.item, scale)
+        if math.abs(dt) < math.abs(dy) then dy, tops = dt, true end
+        if math.abs(dy) > math.max(0.3, 0.6 * SNAP_K) then dy, tops = 0, false end
+    elseif math.abs(dy) > 0.3 then dy = 0 end
     local np = pos + V(m.x, dy, m.z)
     S.matchLock = { id = best.o.id, stop = stop }
     return np, hd, { { o = best.o, nb = FN.placedShape(best.o), kind = "match" } }

@@ -97,7 +97,14 @@ function FN.rebuildList()
     local q = string.lower(S.search or "")
     local from = S.cam.target or V(0, 0, 0)
     local rows = {}
-    local all = FN.objectsNow()
+    -- (the objects as last read from the game, twice a second: not asked for again here)
+    local all
+    if S.known then
+        all = {}
+        for _, o in pairs(S.known) do all[#all + 1] = o end
+    else
+        all = FN.objectsNow()
+    end
     S.listTotal = #all
     for _, o in ipairs(all) do
         local title = titleOf(o.item)
@@ -120,9 +127,12 @@ function FN.rebuildList()
         end)
     end
     S.listObjs, S.listItems, S.listMatched = {}, {}, #rows
+    -- (every match goes in the list, so its groups are whole; the game's own list shows the first 200)
+    for i, r in ipairs(rows) do
+        S.listObjs[i] = r.o
+    end
     for i, r in ipairs(rows) do
         if i > 200 then break end
-        S.listObjs[i] = r.o
         local label = string.format("%s%s  |  %.0f m", r.title, r.missing and " (missing)" or "", r.dist)
         if #label > 80 then label = string.sub(label, 1, 77) .. "..." end
         S.listItems[i] = label
@@ -223,7 +233,7 @@ function FN.newPanel(ui)
         else
             local cur = 0
             if S.sel then
-                for i, o in ipairs(S.listObjs) do if o.id == S.sel.id then cur = i break end end
+                for i, o in ipairs(S.listObjs) do if i > #S.listItems then break end if o.id == S.sel.id then cur = i break end end
             end
             local c = ui:list("objlist", "", S.listItems, cur, 8)
             if type(c) == "number" and c > 0 and c ~= cur and S.listObjs[c] then
