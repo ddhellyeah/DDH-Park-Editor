@@ -298,12 +298,13 @@ local function scan()
 end
 
 local BUSY = { ["the last edit is still being applied"] = true, ["more than 4 edits in a second"] = true }
--- the game is busy with an edit (it says so in a few ways): try again in the next free slot
-local function isBusy(why)
-    if BUSY[why] then return true end
+-- the game is busy with an edit (it says so in a few ways): try again in the next free slot. BUSY[why] knows
+-- them all, here and in the other parts (group moves, copies, removals)
+setmetatable(BUSY, { __index = function(_, why)
     local w = string.lower(tostring(why))
     return string.find(w, "wait for the current edit", 1, true) ~= nil or string.find(w, "unacknowledged", 1, true) ~= nil
-end
+end })
+local function isBusy(why) return BUSY[why] == true end
 local function sameAsSent(t)
     local l = S.lastSent
     return l and l.id == S.sel.id and len(l.pos - t.pos) < 1e-4 and math.abs(wrap(l.heading - t.heading)) < 1e-5

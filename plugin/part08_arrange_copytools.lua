@@ -91,9 +91,12 @@ function FN.gridSnap(p, guides)
 end
 
 -- ---------------------------------------------------------------- copy tools: a row, a circle or a grid of copies
-S.tools = { kind = 1, count = 5, count2 = 3, dir = 1, gap = 0, radius = 5, face = 1 }
+S.tools = { kind = 1, count = 5, count2 = 3, dir = 1, gdir = 1, gap = 0, radius = 5, face = 1 }
 FN.KINDS = { "Row", "Circle", "Grid" }
-FN.DIRS = { "Sideways", "Forward", "Up" }
+-- which way a row grows from the held one (every way: right / left along its side, forward / back, up / down)
+FN.DIRS = { "Right", "Left", "Forward", "Back", "Up", "Down" }
+-- which way a grid grows: towards one of the four corners round the held one
+FN.GDIRS = { "Right and forward", "Left and forward", "Right and back", "Left and back" }
 FN.FACES = { "To the middle", "Same way" }
 local function cyc(v, n, d) return (v - 1 + d) % n + 1 end
 function FN.planCopies()
@@ -115,17 +118,18 @@ function FN.planCopies()
         end
     end
     if T.kind == 1 then
-        local dir = ({ X, Z, UP })[T.dir]
+        local dir = ({ X, X * -1, Z, Z * -1, UP, UP * -1 })[T.dir] or X
         local step = extentAlong(list, dir) + T.gap
         for i = 1, T.count - 1 do add(dir * (step * i), 0) end
     elseif T.kind == 2 then
         local c = L.pos - Z * T.radius
         for i = 1, T.count - 1 do add(V(0, 0, 0), i * 2 * math.pi / T.count, c, T.face == 2) end
     else
+        local gx, gz = ({ 1, -1, 1, -1 })[T.gdir] or 1, ({ 1, 1, -1, -1 })[T.gdir] or 1
         local sx, sz = extentAlong(list, X) + T.gap, extentAlong(list, Z) + T.gap
         for i = 0, T.count - 1 do
             for j = 0, T.count2 - 1 do
-                if i > 0 or j > 0 then add(X * (sx * i) + Z * (sz * j), 0) end
+                if i > 0 or j > 0 then add(X * (sx * i * gx) + Z * (sz * j * gz), 0) end
             end
         end
     end
@@ -138,13 +142,14 @@ function FN.toolsRows()
     rows[#rows + 1] = { "Make", FN.KINDS[T.kind], function(d) T.kind = cyc(T.kind, 3, d) end }
     rows[#rows + 1] = { T.kind == 3 and "Across" or "How many", tostring(T.count), function(d) T.count = clamp(T.count + d, 2, 50) end }
     if T.kind == 1 then
-        rows[#rows + 1] = { "Which way", FN.DIRS[T.dir], function(d) T.dir = cyc(T.dir, 3, d) end }
+        rows[#rows + 1] = { "Which way", FN.DIRS[T.dir] or FN.DIRS[1], function(d) T.dir = cyc(T.dir, #FN.DIRS, d) end }
         rows[#rows + 1] = { "Gap", string.format("%.2f m", T.gap), function(d) T.gap = clamp(round(T.gap + d * st.m, 0.01), -10, 50) end }
     elseif T.kind == 2 then
         rows[#rows + 1] = { "Size (radius)", string.format("%.2f m", T.radius), function(d) T.radius = clamp(round(T.radius + d * st.m * 5, 0.01), 0.25, 200) end }
         rows[#rows + 1] = { "Facing", FN.FACES[T.face], function(d) T.face = cyc(T.face, 2, d) end }
     else
         rows[#rows + 1] = { "Deep", tostring(T.count2), function(d) T.count2 = clamp(T.count2 + d, 1, 20) end }
+        rows[#rows + 1] = { "Which way", FN.GDIRS[T.gdir] or FN.GDIRS[1], function(d) T.gdir = cyc(T.gdir, #FN.GDIRS, d) end }
         rows[#rows + 1] = { "Gap", string.format("%.2f m", T.gap), function(d) T.gap = clamp(round(T.gap + d * st.m, 0.01), -10, 50) end }
     end
     rows[#rows + 1] = { "Grid snap", FN.GRID_NAMES[S.gridI], function(d) S.gridI = cyc(S.gridI, #FN.GRIDS, d) end }
