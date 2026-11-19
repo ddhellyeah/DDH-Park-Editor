@@ -106,8 +106,8 @@ reskate.on("tick", function(dt)
             local st = fine and 0.01 or 0.1
             if press("[") then ch(function() local s = math.rad(fine and 1 or 15); t.heading = wrap(round(t.heading + s, s)) end) end
             if press("]") then ch(function() local s = math.rad(fine and 1 or 15); t.heading = wrap(round(t.heading - s, s)) end) end
-            if press("PageUp") then ch(function() t.pos += V(0, fine and 0.01 or 0.05, 0); FN.markLifted() end) end
-            if press("PageDown") then ch(function() t.pos -= V(0, fine and 0.01 or 0.05, 0); FN.markLifted() end) end
+            if press("PageUp") then ch(function() t.pos = V(t.pos.x, FN.heightStep(t.pos.y, t.pos.y + (fine and 0.01 or 0.05)), t.pos.z) end) end
+            if press("PageDown") then ch(function() t.pos = V(t.pos.x, FN.heightStep(t.pos.y, t.pos.y - (fine and 0.01 or 0.05)), t.pos.z) end) end
             if press("X") then ch(function() t.scale = clamp(t.scale + (fine and 0.01 or 0.1), 0.1, 10) end) end
             if press("Z") then ch(function() t.scale = clamp(t.scale - (fine and 0.01 or 0.1), 0.1, 10) end) end
             if press("Up") then ch(function() t.pos += f * st end) end
@@ -258,7 +258,8 @@ reskate.on("tick", function(dt)
                     t.pos = g.start.pos + way * along
                     if math.abs(way.y) > 0.9 then
                         -- the up arrow: lifted by hand, it stays at that height
-                        if math.abs(along) > 0.005 then FN.markLifted() end
+                        -- (it catches on the ground when brought near it)
+                        if math.abs(along) > 0.005 then t.pos = V(t.pos.x, FN.heightNear(t.pos.y), t.pos.z) end
                     elseif S.landOn and FN.mayLand(S.sel.id) and toObjects then
                         -- a level arrow: it sits on what is under it, like dragging it over the ground
                         if g.landTrust == nil then g.landTrust = FN.landTrust(S.sel.item, g.start.pos, g.start.heading, t.scale, S.sel.id) end
@@ -285,7 +286,7 @@ reskate.on("tick", function(dt)
                             off = o2
                         end
                         t.pos = g.start.pos + off
-                        if math.abs(g.n.y) <= 0.9 and math.abs(off.y) > 0.005 then FN.markLifted() end
+                        if math.abs(g.n.y) <= 0.9 and math.abs(off.y) > 0.005 then t.pos = V(t.pos.x, FN.heightNear(t.pos.y), t.pos.z) end
                         if S.landOn and math.abs(g.n.y) > 0.9 and FN.mayLand(S.sel.id) and toObjects then
                             if g.landTrust == nil then g.landTrust = FN.landTrust(S.sel.item, g.start.pos, g.start.heading, t.scale, S.sel.id) end
                             local okL, y, sl = pcall(FN.supportY, S.sel.item, t.pos, g.start.heading, t.scale, S.sel.id, true)

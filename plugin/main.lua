@@ -298,6 +298,12 @@ local function scan()
 end
 
 local BUSY = { ["the last edit is still being applied"] = true, ["more than 4 edits in a second"] = true }
+-- the game is busy with an edit (it says so in a few ways): try again in the next free slot
+local function isBusy(why)
+    if BUSY[why] then return true end
+    local w = string.lower(tostring(why))
+    return string.find(w, "wait for the current edit", 1, true) ~= nil or string.find(w, "unacknowledged", 1, true) ~= nil
+end
 local function sameAsSent(t)
     local l = S.lastSent
     return l and l.id == S.sel.id and len(l.pos - t.pos) < 1e-4 and math.abs(wrap(l.heading - t.heading)) < 1e-5
@@ -339,7 +345,7 @@ local function send()
     local ok, why = reskate.objects.move(S.sel.id, t.pos, hd, t.scale)
     if S.dragStats then
         local st = S.dragStats
-        if ok then st.sent += 1 elseif BUSY[why] then st[why] = (st[why] or 0) + 1 else st.other = (st.other or 0) + 1 end
+        if ok then st.sent += 1 elseif isBusy(why) then st[why] = (st[why] or 0) + 1 else st.other = (st.other or 0) + 1 end
     end
     if ok then S.sel.h0 = t.heading end
     S.lastSend = S.clock
@@ -354,8 +360,15 @@ local function send()
         while #hist > 16 or (hist[1] and S.clock - hist[1].at > 4000) do table.remove(hist, 1) end
         -- still dragging: keep going with the next place
         S.dirty = false
-    elseif BUSY[why] then
-        -- the game is still busy: wait for the next free slot (every try counts toward its 4 a second)
+        S.busySince, S.busyLogged = nil, nil
+    elseif isBusy(why) then
+        -- the game is still busy: wait for the next free slot (every try counts toward its 4 a second); said
+        -- once in the log when it stays busy a long while
+        S.busySince = S.busySince or S.clock
+        if S.clock - S.busySince > 3000 and not S.busyLogged then
+            S.busyLogged = true
+            reskate.log("Quick Drop helper: the game has been busy with an edit for a while: " .. tostring(why), "warn")
+        end
     else
         reskate.log("Quick Drop helper: the game refused the change: " .. tostring(why), "warn")
         if string.find(tostring(why), "not installed", 1, true) then

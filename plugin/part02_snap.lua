@@ -896,6 +896,8 @@ function FN.supportYNow(item, pos, heading, scale, selfId, wantSlope)
         end
         return false
     end
+    -- (not lifted by hand: it stands on something, so where it meets that is not a hit on itself)
+    local grounded = not (selfId and S.lifted and S.lifted[selfId])
     -- the first thing (not mine) straight down from a point
     local function pickDown(from, to)
         for _ = 1, 3 do
@@ -904,6 +906,11 @@ function FN.supportYNow(item, pos, heading, scale, selfId, wantSlope)
             if hit.position.y <= to.y + 1e-3 then return nil end   -- (the end of the ray: nothing there)
             local own = hit.object and hit.object.position and isOwn(hit.object.position)
             if not own then return hit.position.y end
+            -- its own bottom where it stands: the ground is right there, and stepping on past it would go through
+            -- the ground as well (down to whatever is under the map), so that is what it stands on
+            -- (the level it stands at, not where the ray met it: its collision may sit a little above its bottom,
+            -- and taking that would lift it a little more each time)
+            if grounded and math.abs(hit.position.y - (hit.object.position.y + lo.y)) < 0.06 then return hit.object.position.y + lo.y end
             from = hit.position - V(0, 0.02, 0)
         end
         return nil
@@ -923,7 +930,12 @@ function FN.supportYNow(item, pos, heading, scale, selfId, wantSlope)
                 -- has it): ask the other ray what stands right there, and leave it out if that's the held one
                 local okc, c = pcall(reskate.world.pick, V(wpt.x, hp.y + 0.05, wpt.z), V(wpt.x, hp.y - 0.05, wpt.z))
                 local mineThere = okc and type(c) == "table" and c.object and c.object.position and isOwn(c.object.position)
-                if not mineThere then y = hp.y end
+                -- (but at its own bottom, where it stands, the ray met the ground under it)
+                local atBottom = mineThere and grounded and math.abs(hp.y - (c.object.position.y + lo.y)) < 0.06
+                if atBottom then
+                    local yb = c.object.position.y + lo.y
+                    if not y or yb > y + 0.02 then y = yb end
+                elseif not mineThere then y = hp.y end
             end
         end
         return y
@@ -974,6 +986,42 @@ function FN.landTo(trusted, cur, y)
     if trusted then return y, true end
     if y >= cur - 0.01 then return y, y > cur + 0.01 end
     return cur, false
+end
+-- Raising and lowering: it catches on the ground under it when it comes near (how near: the snap strength).
+-- Back on the ground it counts as resting again (it lands on what is under it as it is moved on).
+local function groundCatch() return S.osnap and S.landOn and not S.noSnap and not reskate.input.key("Ctrl") end
+function FN.groundReach() return math.max(0.04, 0.09 * SNAP_K) end
+local function groundUnder(y)
+    local sel, t = S.sel, S.target
+    local ok, g = pcall(FN.supportY, sel.item, V(t.pos.x, y, t.pos.z), t.heading, t.scale, sel.id)
+    return ok and g or nil
+end
+-- a height the hand has taken it to, dragging or with the stick (rawY): the ground's height while near it,
+-- so pulling a little further frees it again
+function FN.heightNear(rawY)
+    local sel, t = S.sel, S.target
+    if not (sel and t) then return rawY, false end
+    if groundCatch() then
+        local g = groundUnder(rawY)
+        if g and math.abs(rawY - g) <= FN.groundReach() then S.lifted[sel.id] = nil return g, true end
+    end
+    FN.markLifted()
+    return rawY, false
+end
+-- a height stepped to (a key, a button, a panel step): caught on the ground when it steps onto it or past it
+function FN.heightStep(oldY, newY)
+    local sel, t = S.sel, S.target
+    if not (sel and t) then return newY end
+    if groundCatch() then
+        local g = groundUnder(oldY)
+        local r = FN.groundReach()
+        if g and ((oldY > g + 0.005 and newY <= g + r) or (oldY < g - 0.005 and newY >= g - r) or math.abs(newY - g) <= 0.005) then
+            S.lifted[sel.id] = nil
+            return g
+        end
+    end
+    FN.markLifted()
+    return newY
 end
 -- the slope found while moving: tilt the held object to it (or level again when it was tilted by a slope)
 function FN.takeSlope(id, sl, setTl)

@@ -203,7 +203,7 @@ local wrap = PE.wrap
                 local function setP(px, py, pz) markUndo(); t.pos = V(px, py, pz); S.dirty = true end
                 y = stepRow(d, x, y, w, "X", string.format("%.3f", t.pos.x), function() setP(t.pos.x - st.m, t.pos.y, t.pos.z) end, function() setP(t.pos.x + st.m, t.pos.y, t.pos.z) end,
                     function() typeOne("X", t.pos.x, "%.3f", function(v) setP(v, t.pos.y, t.pos.z) end) end) + 4
-                y = stepRow(d, x, y, w, "Height", string.format("%.3f", t.pos.y), function() FN.markLifted(); setP(t.pos.x, t.pos.y - st.m, t.pos.z) end, function() FN.markLifted(); setP(t.pos.x, t.pos.y + st.m, t.pos.z) end,
+                y = stepRow(d, x, y, w, "Height", string.format("%.3f", t.pos.y), function() setP(t.pos.x, FN.heightStep(t.pos.y, t.pos.y - st.m), t.pos.z) end, function() setP(t.pos.x, FN.heightStep(t.pos.y, t.pos.y + st.m), t.pos.z) end,
                     function() typeOne("Height", t.pos.y, "%.3f", function(v) FN.markLifted(); setP(t.pos.x, v, t.pos.z) end) end) + 4
                 y = stepRow(d, x, y, w, "Z", string.format("%.3f", t.pos.z), function() setP(t.pos.x, t.pos.y, t.pos.z - st.m) end, function() setP(t.pos.x, t.pos.y, t.pos.z + st.m) end,
                     function() typeOne("Z", t.pos.z, "%.3f", function(v) setP(t.pos.x, t.pos.y, v) end) end) + 12

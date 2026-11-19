@@ -335,7 +335,8 @@ function FN.padEditor(sec)
         end
         nudge("fwd", p.ly > 0.5, ff); nudge("back_", p.ly < -0.5, ff * -1)
         nudge("rgt", p.lx > 0.5, rr); nudge("lft", p.lx < -0.5, rr * -1)
-        nudge("rise", up > 0.5, V(0, 1, 0)); nudge("fall", up < -0.5, V(0, -1, 0))
+        if padStep("rise", up > 0.5) then begin(); t.pos = V(t.pos.x, FN.heightStep(t.pos.y, t.pos.y + step), t.pos.z) end
+        if padStep("fall", up < -0.5) then begin(); t.pos = V(t.pos.x, FN.heightStep(t.pos.y, t.pos.y - step), t.pos.z) end
         if p.ly > 0.5 or p.ly < -0.5 or p.lx > 0.5 or p.lx < -0.5 or math.abs(up) > 0.5 then active = true end
     elseif lx ~= 0 or ly ~= 0 or up ~= 0 then
         begin()
@@ -373,6 +374,8 @@ function FN.padEditor(sec)
         else
             t.pos, t.heading, S.guides, ntl = snapTurned(S.padRaw, S.padHd0 or t.heading, t.scale, allowFree(lx ~= 0 or ly ~= 0, up ~= 0), S.padTilt0)
             t.pos = FN.gridSnap(t.pos, S.guides)
+            -- raised or lowered: it catches on the ground near it (the stick can pull it free again)
+            if up ~= 0 then t.pos = V(t.pos.x, FN.heightNear(t.pos.y), t.pos.z) end
         end
         S.tilt[S.sel.id] = ntl
         S.cam.goal = (S.cam.goal or S.cam.target) + mv
