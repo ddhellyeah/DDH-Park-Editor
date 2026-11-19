@@ -203,8 +203,8 @@ local wrap = PE.wrap
                 local function setP(px, py, pz) markUndo(); t.pos = V(px, py, pz); S.dirty = true end
                 y = stepRow(d, x, y, w, "X", string.format("%.3f", t.pos.x), function() setP(t.pos.x - st.m, t.pos.y, t.pos.z) end, function() setP(t.pos.x + st.m, t.pos.y, t.pos.z) end,
                     function() typeOne("X", t.pos.x, "%.3f", function(v) setP(v, t.pos.y, t.pos.z) end) end) + 4
-                y = stepRow(d, x, y, w, "Height", string.format("%.3f", t.pos.y), function() setP(t.pos.x, t.pos.y - st.m, t.pos.z) end, function() setP(t.pos.x, t.pos.y + st.m, t.pos.z) end,
-                    function() typeOne("Height", t.pos.y, "%.3f", function(v) setP(t.pos.x, v, t.pos.z) end) end) + 4
+                y = stepRow(d, x, y, w, "Height", string.format("%.3f", t.pos.y), function() FN.markLifted(); setP(t.pos.x, t.pos.y - st.m, t.pos.z) end, function() FN.markLifted(); setP(t.pos.x, t.pos.y + st.m, t.pos.z) end,
+                    function() typeOne("Height", t.pos.y, "%.3f", function(v) FN.markLifted(); setP(t.pos.x, v, t.pos.z) end) end) + 4
                 y = stepRow(d, x, y, w, "Z", string.format("%.3f", t.pos.z), function() setP(t.pos.x, t.pos.y, t.pos.z - st.m) end, function() setP(t.pos.x, t.pos.y, t.pos.z + st.m) end,
                     function() typeOne("Z", t.pos.z, "%.3f", function(v) setP(t.pos.x, t.pos.y, v) end) end) + 12
                 y = label(d, x, y, "Turn, size, tilt")
@@ -247,6 +247,29 @@ local wrap = PE.wrap
                     elseif i == 3 then S.snapPick = "off"; S.guides = nil end
                 end) + 6
                 d:text(V(x + 4, y, 0), "Tab, or tap L3 while holding, switches it.", { size = 13, colour = UI.dim })
+                y += 30
+                -- how strongly it snaps: click anywhere on the bar (or hold and drag), or use - / +
+                local k = S.snapStrength or 1
+                y = label(d, x, y, string.format("Snap strength:  %d%%", math.floor(k * 100 + 0.5)))
+                local ba, bb = V(x + 40, y + 6, 0), V(x + w - 40, y + 26, 0)
+                local f = (k - 0.2) / 1.8
+                d:rect(ba, bb, { colour = "#00000040", fill = true, rounding = 10 })
+                d:rect(ba, V(ba.x + (bb.x - ba.x) * f, bb.y, 0), { colour = UI.accent, fill = true, rounding = 10 })
+                local mark = ba.x + (bb.x - ba.x) * (0.8 / 1.8)
+                d:rect(V(mark - 1, ba.y - 3, 0), V(mark + 1, bb.y + 3, 0), { colour = "#ffffff55", fill = true })
+                d:circle(V(ba.x + (bb.x - ba.x) * f, (ba.y + bb.y) / 2, 0), 11, { colour = "#e6e9ef", fill = true })
+                local function setFromMouse()
+                    local m = S.mouse and S.mouse.pos
+                    if m then FN.setSnapStrength(0.2 + 1.8 * clamp((m.x - ba.x) / (bb.x - ba.x), 0, 1), true) end
+                end
+                tileAdd(V(ba.x - 12, ba.y - 8, 0), V(bb.x + 12, bb.y + 8, 0), function() setFromMouse(); S.snapSliderDrag = setFromMouse end)
+                if S.snapSliderDrag and S.mouse and S.mouse.left then S.snapSliderDrag() else S.snapSliderDrag = nil end
+                local ma, mb = V(x, y + 2, 0), V(x + 30, y + 30, 0)
+                local pa, pb = V(x + w - 30, y + 2, 0), V(x + w, y + 30, 0)
+                btn(d, ma, mb, "-", function() FN.setSnapStrength(k - 0.1, true) end)
+                btn(d, pa, pb, "+", function() FN.setSnapStrength(k + 0.1, true) end)
+                y += 36
+                d:text(V(x + 4, y, 0), "Lower: only snaps right up against things. Higher: from further away.", { size = 13, colour = UI.dim })
                 y += 30
             end
             y = label(d, x, y, "Grid")

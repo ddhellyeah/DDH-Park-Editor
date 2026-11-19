@@ -202,8 +202,13 @@ function FN.pickerPlace(asReplace)
         S.carrySet(it.set, at, wrap(S.cam.yaw + math.pi))
         return
     end
-    -- facing the view, as Quick Drop does
-    S.copyQ = { item = it.key, pos = at, heading = wrap(S.cam.yaw + math.pi), scale = 1, until_ = S.clock + 3000, grab = true }
+    -- facing the view, as Quick Drop does, its bottom on what is under the cross (not its middle point)
+    local hd = wrap(S.cam.yaw + math.pi)
+    if S.landOn and FN.supportY then
+        local okL, y = pcall(FN.supportY, it.key, at, hd, 1, nil)
+        if okL and y and math.abs(y - at.y) < 3 then at = V(at.x, y, at.z) end
+    end
+    S.copyQ = { item = it.key, pos = at, heading = hd, scale = 1, until_ = S.clock + 3000, grab = true }
     closePicker()
     say("Adding " .. tostring(it.title or it.key) .. "...")
 end
