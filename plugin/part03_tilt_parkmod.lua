@@ -516,7 +516,8 @@ function FN.netTick()
         FN.applyRemote()
     end
 end
-pcall(reskate.on, "message", function(from, message) pcall(FN.netReceive, from, message) end)
+-- (messages from other players only for the online tilted copies, which are switched off: no need to listen)
+if FN.ONLINE_COPIES then pcall(reskate.on, "message", function(from, message) pcall(FN.netReceive, from, message) end) end
 pcall(reskate.on, "player_joined", function(p) S.netDue = true end)
 pcall(reskate.on, "player_left", function(p)
     local who = type(p) == "table" and tostring(p.id or p.name or "?") or tostring(p)

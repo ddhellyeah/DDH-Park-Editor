@@ -1,8 +1,8 @@
 {
     "name": "DDH Park Editor",
     "author": "DDH",
-    "version_number": "3.3.0",
+    "version_number": "3.3.1",
     "website_url": "",
-    "description": "Works with Skate's Quick Drop: after you drop an object, press F6 (or LB+RB on a controller) to move, turn and size it with handles like the Object Maker's 3D maker.",
+    "description": "In-game park editor for Quick Drop: press F6 (or LB + D-pad right on a controller) to move, turn and size placed objects, snap them together, copy, group and save sets.",
     "dependencies": []
 }

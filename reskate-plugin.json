@@ -14,7 +14,6 @@
         "storage",
         "objects.physics",
         "files",
-        "net.session",
         "session.read"
     ]
 }
