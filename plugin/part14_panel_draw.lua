@@ -113,7 +113,7 @@ local wrap = PE.wrap
     -- mouse unless noBox
     local function arrowTab(d, a, b, dir, fn, noBox)
         local h = hot(a, b)
-        d:rect(a, b, { colour = h and "#2a313bf8" or UI.bg2, fill = true, rounding = 8 })
+        d:rect(a, b, { colour = h and "#2a313b" or "#161b22", fill = true, rounding = 8 })
         local cx, cy, r = (a.x + b.x) / 2, (a.y + b.y) / 2, 6
         local pts
         if dir == "left" then pts = { V(cx + r * 0.6, cy - r, 0), V(cx + r * 0.6, cy + r, 0), V(cx - r * 0.7, cy, 0) }
@@ -224,7 +224,7 @@ local wrap = PE.wrap
         S.screen.leftBox = { a = a, b = b }
         S.screen.leftEdge = b.x + 30
         d:rect(a + V(0, 4, 0), b + V(0, 4, 0), { colour = "#00000055", fill = true, rounding = 16 })
-        d:rect(a, b, { colour = UI.bg2, fill = true, rounding = 16 })
+        d:rect(a, b, { colour = "#161b22", fill = true, rounding = 16 })
         arrowTab(d, V(b.x + 4, H / 2 - 40, 0), V(b.x + 28, H / 2 + 40, 0), "left", function() toggleHide("left") end)
         local x, w = a.x + 16, PW - 32
         local y = a.y + 16
@@ -346,8 +346,89 @@ local wrap = PE.wrap
             end
     end
 
-    -- (the tabs, and the number each stands for in S.ptab: the park has its own panel on the left)
-    local TABS, TAB_IDS = { "Edit", "Snap", "Sets" }, { 1, 2, 4 }
+    -- ---------------------------------------------------------------- snapping, in a thin bar along the top between the
+    -- panels: snap on or off, by matching sides or classic, to what, how strongly, the grid, and three switches
+    -- a small switch shown as a pill: lit when on
+    local function pill(d, a, b, labelS, on, fn)
+        local h = hot(a, b)
+        d:rect(a, b, { colour = on and (h and "#ffe27a" or UI.accent) or (h and UI.tileHot or UI.tile), fill = true, rounding = 10 })
+        textIn(d, a, b, labelS, { size = 14, colour = on and "#0d1117" or UI.dim, font = on and "bold" or nil, align = "centre" }, 6)
+        tileAdd(a, b, fn)
+    end
+    -- a choice row with a small caption before it
+    local function capSeg(d, x, y, w, cap, labels, cur, fn)
+        local cw = math.min(44, w * 0.22)
+        textIn(d, V(x, y, 0), V(x + cw, y + 34, 0), cap, { size = 12, colour = "#f0f3f680" }, 2)
+        seg(d, x + cw, y, w - cw, labels, cur, fn)
+    end
+    local function snapBar(d)
+        local W = S.size.x
+        local left, right = S.screen.leftEdge or 14, S.screen.rightEdge or (W - 14)
+        local cx = (left + right) / 2
+        if S.hide.snap then
+            S.screen.snapBox = nil
+            arrowTab(d, V(cx - 40, 14, 0), V(cx + 40, 40, 0), "down", function() toggleHide("snap") end)
+            return
+        end
+        local a, b = V(left, 14, 0), V(right, 60, 0)
+        S.screen.snapBox = { a = a, b = b }
+        d:rect(a + V(0, 3, 0), b + V(0, 3, 0), { colour = "#00000055", fill = true, rounding = 14 })
+        d:rect(a, b, { colour = "#161b22", fill = true, rounding = 14 })
+        arrowTab(d, V(cx - 36, b.y + 4, 0), V(cx + 36, b.y + 24, 0), "up", function() toggleHide("snap") end)
+        -- the pieces and their share of the width
+        local cur = S.snapPick == nil and 1 or (S.snapPick == "off" and 3 or 2)
+        local nextName = "Next"
+        if cur == 2 then
+            local o = S.known and S.known[S.snapPick]
+            if o then nextName = FN.shortTitle(titleOf(o.item), 14) end
+        end
+        local k = S.snapStrength or 1
+        local parts = {
+            { 100, function(x, y, w) pill(d, V(x, y, 0), V(x + w, y + 34, 0), "Snap  (T)", S.osnap, function() S.osnap = not S.osnap end) end },
+            { 175, function(x, y, w) capSeg(d, x, y, w, "By", { "Sides", "Classic" }, S.snapStyle == "classic" and 2 or 1, function(i) FN.setSnapStyle(i == 2 and "classic" or "match") end) end },
+            { 205, function(x, y, w) capSeg(d, x, y, w, "To", { "Auto", nextName, "Off" }, cur, function(i)
+                if i == 1 then S.snapPick = nil; S.snapLock = nil
+                elseif i == 2 and S.nextSnap then S.nextSnap()
+                elseif i == 3 then S.snapPick = "off"; S.guides = nil end
+            end) end },
+            { 190, function(x, y, w)
+                -- how strongly: - / +, and the bar (click or drag on it), its % on it
+                btn(d, V(x, y + 4, 0), V(x + 24, y + 30, 0), "-", function() FN.setSnapStrength(k - 0.1, true) end)
+                btn(d, V(x + w - 24, y + 4, 0), V(x + w, y + 30, 0), "+", function() FN.setSnapStrength(k + 0.1, true) end)
+                local ba, bb = V(x + 30, y + 6, 0), V(x + w - 30, y + 28, 0)
+                local f = (k - 0.2) / 1.8
+                d:rect(ba, bb, { colour = "#00000040", fill = true, rounding = 10 })
+                d:rect(ba, V(ba.x + (bb.x - ba.x) * f, bb.y, 0), { colour = UI.accentDim, fill = true, rounding = 10 })
+                local mark = ba.x + (bb.x - ba.x) * (0.8 / 1.8)
+                d:rect(V(mark - 1, ba.y - 2, 0), V(mark + 1, bb.y + 2, 0), { colour = "#ffffff55", fill = true })
+                textIn(d, ba, bb, string.format("Strength %d%%", math.floor(k * 100 + 0.5)), { size = 13, colour = UI.text, align = "centre" }, 4)
+                local function setFromMouse()
+                    local m = S.mouse and S.mouse.pos
+                    if m then FN.setSnapStrength(0.2 + 1.8 * clamp((m.x - ba.x) / (bb.x - ba.x), 0, 1), true) end
+                end
+                tileAdd(V(ba.x, ba.y - 4, 0), V(bb.x, bb.y + 4, 0), function() setFromMouse(); S.snapSliderDrag = setFromMouse end)
+                if S.snapSliderDrag and S.mouse and S.mouse.left then S.snapSliderDrag() else S.snapSliderDrag = nil end
+            end },
+            { 260, function(x, y, w) capSeg(d, x, y, w, "Grid m", { "Off", "0.25", "0.5", "1", "2" }, S.gridI or 1, function(i) S.gridI = i end) end },
+            { 100, function(x, y, w) pill(d, V(x, y, 0), V(x + w, y + 34, 0), "Steps  (G)", S.snap, function() S.snap = not S.snap end) end },
+            { 80, function(x, y, w) pill(d, V(x, y, 0), V(x + w, y + 34, 0), "Land", S.landOn, function() S.landOn = not S.landOn end) end },
+            { 115, function(x, y, w) pill(d, V(x, y, 0), V(x + w, y + 34, 0), "Height / gap", S.readoutOn, function() S.readoutOn = not S.readoutOn end) end },
+        }
+        local gap, total = 8, 0
+        for _, pt in ipairs(parts) do total += pt[1] end
+        local room = (b.x - a.x) - 16 - gap * (#parts - 1)
+        local f = room / total
+        local x = a.x + 8
+        for _, pt in ipairs(parts) do
+            local w = pt[1] * f
+            pt[2](x, a.y + 6, w)
+            x += w + gap
+        end
+    end
+
+    -- (the tabs, and the number each stands for in S.ptab: the park has its own panel on the left, snapping a bar
+    -- along the top)
+    local TABS, TAB_IDS = { "Edit", "Sets" }, { 1, 4 }
     function UI.sidePanel(d)
         tiles = {}
         S.screen.tabs = {}
@@ -358,6 +439,7 @@ local wrap = PE.wrap
             S.screen.panelBox, S.screen.rightEdge = nil, ta.x
             arrowTab(d, ta, tb, "left", function() toggleHide("right") end)
             parkPanel(d)
+            snapBar(d)
             return
         end
         local a = V(W - PW - 14, 14, 0)
@@ -365,7 +447,7 @@ local wrap = PE.wrap
         S.screen.panelBox = { a = a, b = b }
         S.screen.rightEdge = a.x - 30
         d:rect(a + V(0, 4, 0), b + V(0, 4, 0), { colour = "#00000055", fill = true, rounding = 16 })
-        d:rect(a, b, { colour = UI.bg2, fill = true, rounding = 16 })
+        d:rect(a, b, { colour = "#161b22", fill = true, rounding = 16 })
         arrowTab(d, V(a.x - 28, H / 2 - 40, 0), V(a.x - 4, H / 2 + 40, 0), "right", function() toggleHide("right") end)
         local x, w = a.x + 16, PW - 32
         local y = a.y + 16
@@ -407,7 +489,7 @@ local wrap = PE.wrap
         y += 48
         -- tabs
         S.ptab = S.ptab or 1
-        if S.ptab ~= 1 and S.ptab ~= 2 and S.ptab ~= 4 then S.ptab = 1 end
+        if S.ptab ~= 1 and S.ptab ~= 4 then S.ptab = 1 end
         local tw = w / #TABS
         for i, n in ipairs(TABS) do
             local ta, tb = V(x + (i - 1) * tw, y, 0), V(x + i * tw, y + 34, 0)
@@ -441,53 +523,6 @@ local wrap = PE.wrap
             y = label(d, x, y, "Step size")
             y = seg(d, x, y, w, { "Fine", "Normal", "Big" }, S.stepSize, function(i) S.stepSize = i end) + 6
             fitText(d, x + 4, y, string.format("%s m  ·  %s  ·  size %s", string.format("%.2f", st.m), string.format(st.df, st.deg), string.format("%.2f", st.size)), w - 8, { size = 13, colour = UI.dim })
-        elseif S.ptab == 2 then
-            y = switch(d, x, y, w, "Snap to objects   (T)", S.osnap, function() S.osnap = not S.osnap end) + 10
-            if S.osnap then
-                y = label(d, x, y, "Snap by")
-                y = seg(d, x, y, w, { "Matching sides", "Classic" }, S.snapStyle == "classic" and 2 or 1, function(i) FN.setSnapStyle(i == 2 and "classic" or "match") end) + 4
-                fitText(d, x + 4, y, S.snapStyle == "classic" and "Sides meet and line up with anything near." or "A side snaps flat to a side of about the same size.", w - 8, { size = 13, colour = UI.dim })
-                y += 26
-                y = label(d, x, y, "Snapping to:  " .. FN.snapLabelP())
-                local cur = S.snapPick == nil and 1 or (S.snapPick == "off" and 3 or 2)
-                y = seg(d, x, y, w, { "Auto", "Next object", "Off" }, cur, function(i)
-                    if i == 1 then S.snapPick = nil; S.snapLock = nil
-                    elseif i == 2 and S.nextSnap then S.nextSnap()
-                    elseif i == 3 then S.snapPick = "off"; S.guides = nil end
-                end) + 6
-                fitText(d, x + 4, y, "Tab, or tap L3 while holding, switches it.", w - 8, { size = 13, colour = UI.dim })
-                y += 30
-                -- how strongly it snaps: click anywhere on the bar (or hold and drag), or use - / +
-                local k = S.snapStrength or 1
-                y = label(d, x, y, string.format("Snap strength:  %d%%", math.floor(k * 100 + 0.5)))
-                local ba, bb = V(x + 40, y + 6, 0), V(x + w - 40, y + 26, 0)
-                local f = (k - 0.2) / 1.8
-                d:rect(ba, bb, { colour = "#00000040", fill = true, rounding = 10 })
-                d:rect(ba, V(ba.x + (bb.x - ba.x) * f, bb.y, 0), { colour = UI.accent, fill = true, rounding = 10 })
-                local mark = ba.x + (bb.x - ba.x) * (0.8 / 1.8)
-                d:rect(V(mark - 1, ba.y - 3, 0), V(mark + 1, bb.y + 3, 0), { colour = "#ffffff55", fill = true })
-                d:circle(V(ba.x + (bb.x - ba.x) * f, (ba.y + bb.y) / 2, 0), 11, { colour = "#e6e9ef", fill = true })
-                local function setFromMouse()
-                    local m = S.mouse and S.mouse.pos
-                    if m then FN.setSnapStrength(0.2 + 1.8 * clamp((m.x - ba.x) / (bb.x - ba.x), 0, 1), true) end
-                end
-                tileAdd(V(ba.x - 12, ba.y - 8, 0), V(bb.x + 12, bb.y + 8, 0), function() setFromMouse(); S.snapSliderDrag = setFromMouse end)
-                if S.snapSliderDrag and S.mouse and S.mouse.left then S.snapSliderDrag() else S.snapSliderDrag = nil end
-                local ma, mb = V(x, y + 2, 0), V(x + 30, y + 30, 0)
-                local pa, pb = V(x + w - 30, y + 2, 0), V(x + w, y + 30, 0)
-                btn(d, ma, mb, "-", function() FN.setSnapStrength(k - 0.1, true) end)
-                btn(d, pa, pb, "+", function() FN.setSnapStrength(k + 0.1, true) end)
-                y += 36
-                fitText(d, x + 4, y, "Lower: only snaps right up against things. Higher: from further away.", w - 8, { size = 13, colour = UI.dim })
-                y += 30
-            end
-            y = label(d, x, y, "Grid")
-            y = seg(d, x, y, w, FN.GRID_NAMES_P, S.gridI or 1, function(i) S.gridI = i end) + 14
-            y = switch(d, x, y, w, "Drag in steps   (G)", S.snap, function() S.snap = not S.snap end) + 8
-            y = switch(d, x, y, w, "Land on what is under it", S.landOn, function() S.landOn = not S.landOn end) + 8
-            y = switch(d, x, y, w, "Show height and gap", S.readoutOn, function() S.readoutOn = not S.readoutOn end) + 6
-            fitText(d, x + 4, y, "Hold R3 (or Ctrl) to move without snapping.", w - 8, { size = 13, colour = UI.dim })
-            y += 26
         elseif S.ptab == 4 then
             -- ---------------------------------------------------------------- sets
             local nm = #(S.setMembers and S.setMembers() or {})
@@ -559,6 +594,7 @@ local wrap = PE.wrap
             fitText(d, x + 4, b.y - 30, msg, w - 8, { size = 13, colour = UI.dim })
         end
         parkPanel(d)
+        snapBar(d)
     end
     reskate.on("throwdown_ui", function(e)
         if e.action ~= "dialog" or e.args[1] ~= "ddh_setrename" then return end
@@ -622,7 +658,7 @@ local wrap = PE.wrap
         local a = V(math.floor(cx - tw / 2), H - 14 - UI.PAD_ROWS_H, 0)
         local b = V(a.x + tw, H - 14, 0)
         S.screen.padRows = { a = V(a.x, a.y - 24, 0), b = b }
-        d:rect(a, b, { colour = UI.bg, fill = true, rounding = 16 })
+        d:rect(a, b, { colour = "#0d1117", fill = true, rounding = 16 })
         arrowTab(d, V(cx - 40, a.y - 24, 0), V(cx + 40, a.y - 2, 0), "down", function() toggleHide("rows") end, true)
         local st = STEPS[S.stepSize] or STEPS[2]
         -- position
@@ -682,7 +718,7 @@ local wrap = PE.wrap
         local onLeft = inside(S.screen and S.screen.leftBox)
         local onTab = false
         for _, tb in ipairs(S.screen and S.screen.tabs or {}) do if inside(tb) then onTab = true end end
-        if not (onLeft or onTab or inside(S.screen and S.screen.panelBox)) then return false end
+        if not (onLeft or onTab or inside(S.screen and S.screen.panelBox) or inside(S.screen and S.screen.snapBox)) then return false end
         if c.wheel and c.wheel ~= 0 then
             local lb = S.screen.listBox
             if lb and onLeft then S.listTop = clamp((S.listTop or 0) - c.wheel * 3, 0, math.max(0, lb.n - lb.rows)) end
