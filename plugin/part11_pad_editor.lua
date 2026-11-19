@@ -339,6 +339,7 @@ function FN.padEditor(sec)
         if p.ly > 0.5 or p.ly < -0.5 or p.lx > 0.5 or p.lx < -0.5 or math.abs(up) > 0.5 then active = true end
     elseif lx ~= 0 or ly ~= 0 or up ~= 0 then
         begin()
+        if up ~= 0 then FN.markLifted() end
         local sp = st.speed * sec
         local mv = (ff * ly + rr * lx) * sp + V(0, up * st.speed * 0.6 * sec, 0)
         -- where the stick has taken it, and from that where it snaps to: the stick can always pull it free again

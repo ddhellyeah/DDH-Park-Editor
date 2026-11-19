@@ -25,6 +25,28 @@ local SNAP_MAX = 12      -- nearest objects looked at
 local SNAP_TURN = math.rad(5)
 local LEVEL_NEAR = 1.0   -- metres apart at most for lining up with any but the nearest object
 local HEIGHT_FIT = 1.0   -- metres up or down at most that an object goes to take the height of one it meets
+-- How strongly it snaps (the Snap tab's slider): 0.2 = only right up against things, 2 = from twice as far.
+-- The distances above are for 1; the slider scales them (and the "close enough" distance on screen).
+local SNAP_BASE = { reach = SNAP_REACH, touch = SNAP_TOUCH, turn = SNAP_TURN, near = LEVEL_NEAR }
+local SNAP_K = 1
+function FN.setSnapStrength(k, save)
+    k = math.max(0.2, math.min(2, tonumber(k) or 1))
+    SNAP_K = k
+    SNAP_REACH, SNAP_TOUCH, SNAP_TURN, LEVEL_NEAR = SNAP_BASE.reach * k, SNAP_BASE.touch * k, SNAP_BASE.turn * k, SNAP_BASE.near * k
+    S.snapStrength = k
+    if save then pcall(reskate.storage.set, "snapStrength", k) end
+end
+do
+    local ok, v = pcall(reskate.storage.get, "snapStrength")
+    FN.setSnapStrength(ok and tonumber(v) or 1)
+end
+-- objects the player lifted on purpose (raised or lowered by hand): they are left at that height; every other
+-- object sits on what is under it when it is moved
+S.lifted = S.lifted or {}
+function FN.markLifted(id)
+    id = id or (S.sel and S.sel.id)
+    if id then S.lifted[id] = true end
+end
 
 local function boxLog(text)
     if S.boxLogged < 40 then S.boxLogged += 1; reskate.log("Quick Drop helper: snap: " .. text) end
@@ -588,7 +610,7 @@ end
 local function objSnap(pos, heading, scale, allow, tl)
     if not (S.osnap and S.sel and S.known) then return pos, nil end
     if S.snapPick == "off" then return pos, nil end
-    local thr = clamp(S.cam.dist * 0.03, 0.12, 0.5)
+    local thr = clamp(S.cam.dist * 0.03, 0.12, 0.5) * SNAP_K
     local me = worldSolid(S.sel.item, pos, heading, scale, tl)
     local mc = cornersOf(me)
     local reach = SNAP_REACH + len(me.hi - me.lo)
@@ -749,9 +771,12 @@ local function objSnap(pos, heading, scale, allow, tl)
     -- meeting something side to side: it takes that object's height too (bottoms level, or tops level when that
     -- is less of a move), whichever handle moves it, so the two fit together
     local first = cands[1]
-    if first and first.kind == "touch" and first.fit and not first.corner then
+    -- (only bottoms level now: tops level made a shorter object float or sink next to a taller one. And when
+    -- it sits on what is under it, that decides its height, not the object beside it)
+    local grounded = S.landOn and S.sel and not S.lifted[S.sel.id]
+    if first and first.kind == "touch" and first.fit and not first.corner and not grounded then
         local f = first.fit
-        local m = math.abs(f.bottom) <= math.abs(f.top) and f.bottom or f.top
+        local m = f.bottom
         if math.abs(m) > 1e-4 and math.abs(m) <= HEIGHT_FIT then
             local c = { mv = f.v * m, dir = f.v, cost = math.abs(m), rank = 1, o = first.o, nb = first.nb, kind = "level", near = first.near }
             picked[1] = c
@@ -940,6 +965,8 @@ S.slopeOn = false
 -- (parts of a street) the rays pass through the ground, and it would drop far under it. Not trusted, it may
 -- still climb onto things (and is trusted from there on), but never goes down.
 function FN.landTrust(item, pos, heading, scale, id)
+    -- not lifted by hand: it goes down onto what is under it too (else an object left floating stays floating)
+    if S.landOn and id and not S.lifted[id] then return true end
     local ok, y = pcall(FN.supportY, item, pos, heading, scale, id)
     return ok and y ~= nil and math.abs(y - pos.y) < 0.05
 end
@@ -1073,7 +1100,7 @@ local function alignSnap(pos, base, scale, allow, baseTilt)
     end
     table.sort(near, function(a, b) return a.d < b.d end)
     local tries, tried = 0, {}
-    local thr = clamp(S.cam.dist * 0.03, 0.12, 0.5)
+    local thr = clamp(S.cam.dist * 0.03, 0.12, 0.5) * SNAP_K
     local function try(n, hd, tl)
         local p2, g2 = objSnap(pos, hd, scale, allow, tl)
         for _, q in ipairs(g2 or {}) do

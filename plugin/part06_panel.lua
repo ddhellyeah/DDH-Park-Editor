@@ -167,7 +167,7 @@ function FN.newPanel(ui)
             if m and m ~= S.mode then S.mode = m end
             ui:heading("Position")
             numBox(ui, "px", "X", t.pos.x, "%.3f", function(v) markUndo(); t.pos = V(v, t.pos.y, t.pos.z); S.dirty = true end)
-            numBox(ui, "py", "Y (height)", t.pos.y, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, v, t.pos.z); S.dirty = true end)
+            numBox(ui, "py", "Y (height)", t.pos.y, "%.3f", function(v) markUndo(); FN.markLifted(); t.pos = V(t.pos.x, v, t.pos.z); S.dirty = true end)
             numBox(ui, "pz", "Z", t.pos.z, "%.3f", function(v) markUndo(); t.pos = V(t.pos.x, t.pos.y, v); S.dirty = true end)
             ui:heading("Turn and size")
             numBox(ui, "ry", "Turn °", math.deg(t.heading), "%.1f", function(v) markUndo(); t.heading = wrap(math.rad(v)); S.dirty = true end)
