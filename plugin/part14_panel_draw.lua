@@ -429,6 +429,12 @@ local wrap = PE.wrap
     -- (the tabs, and the number each stands for in S.ptab: the park has its own panel on the left, snapping a bar
     -- along the top)
     local TABS, TAB_IDS = { "Edit", "Sets" }, { 1, 4 }
+    -- the plugin's version, from its manifest (read once)
+    local version = nil
+    do
+        local okV, m = pcall(function() return reskate.package.read_json("manifest.json") end)
+        if okV and type(m) == "table" and m.version_number then version = tostring(m.version_number) end
+    end
     function UI.sidePanel(d)
         tiles = {}
         S.screen.tabs = {}
@@ -453,7 +459,7 @@ local wrap = PE.wrap
         local y = a.y + 16
         -- title and Done
         d:text(V(x, y, 0), "DDH Park Editor", { size = 22, colour = UI.text, font = "heading" })
-        d:text(V(x, y + 27, 0), "Quick Drop+", { size = 13, colour = UI.dim })
+        d:text(V(x, y + 27, 0), version and ("Quick Drop+   ·   v" .. version) or "Quick Drop+", { size = 13, colour = UI.dim })
         btn(d, V(b.x - 16 - 86, y + 2, 0), V(b.x - 16, y + 34, 0), "Done", function() closeEditor() end)
         y += 54
         -- what is picked
@@ -1081,8 +1087,9 @@ function FN.drawMain(d)
         end
         d:text(center + V(14, 8, 0), "snap: " .. FN.snapLabel(), { size = 16, colour = "#ffa640", shadow = true })
     end
-    -- what it is snapped to: that object's box (or its point), and how
+    -- what it is snapped to: that object's box (or its point), and how; and the sides that meet lit up
     if S.guides then
+        pcall(FN.drawMeeting, d, p, t)
         local WORDS = { touch = "touching", level = "lined up", turn = "same turn", match = S.snapStyle == "classic" and "same size" or "sides match" }
         local seen = {}
         for _, gd in ipairs(S.guides) do
@@ -1118,6 +1125,63 @@ function FN.drawMain(d)
         if not (sh and PE.drawShape(d, sh, col, 2, xf)) then
             for _, e in ipairs(BOX_EDGES) do
                 d:world_line(c[e[1]], c[e[2]], { colour = col, thickness = 2 })
+            end
+        end
+    end
+end
+
+-- The sides that meet while holding: where a side of the held object lies against a side of what it snapped to
+-- (the two facing each other, at most 3 cm apart, overlapping along their length), that stretch is lit on both,
+-- from the higher of the two bottoms to the lower of the two tops. Set on top of it (or it on top): where their
+-- outlines overlap seen from above, lit at that height.
+local MEET = "#7dffb0"
+local function dot3(a, b) return a.x * b.x + a.y * b.y + a.z * b.z end
+function FN.drawMeeting(d, p, t)
+    if not (S.sel and S.itemBox[S.sel.item]) or tilted(S.sel.id) then return end
+    local me = worldShape(S.sel.item, p, t.heading, t.scale)
+    if not (me.edges and #me.edges > 0) then return end
+    local done = {}
+    for _, gd in ipairs(S.guides or {}) do
+        local nb = gd.nb
+        if nb and nb.edges and gd.o and not done[gd.o.id] and not tilted(gd.o.id) then
+            done[gd.o.id] = true
+            local ylo, yhi = math.max(me.ylo, nb.ylo), math.min(me.yhi, nb.yhi)
+            -- side by side
+            if yhi - ylo > 0.02 then
+                for _, e1 in ipairs(me.edges) do
+                    for _, e2 in ipairs(nb.edges) do
+                        if dot3(e1.n, e2.n) < -0.995 and math.abs(dot3(e2.a - e1.a, e1.n)) < 0.03 then
+                            local t0, t1 = dot3(e2.a - e1.a, e1.e), dot3(e2.b - e1.a, e1.e)
+                            if t0 > t1 then t0, t1 = t1, t0 end
+                            local u0, u1 = math.max(0, t0), math.min(e1.len, t1)
+                            if u1 - u0 > 0.03 then
+                                local a0, a1 = e1.a + e1.e * u0, e1.a + e1.e * u1
+                                local c1, c2 = V(a0.x, ylo, a0.z), V(a1.x, ylo, a1.z)
+                                local c3, c4 = V(a1.x, yhi, a1.z), V(a0.x, yhi, a0.z)
+                                local s1, s2, s3, s4 = d:world_to_screen(c1), d:world_to_screen(c2), d:world_to_screen(c3), d:world_to_screen(c4)
+                                if s1 and s2 and s3 and s4 then d:poly({ s1, s2, s3, s4 }, { colour = "#7dffb040", fill = true }) end
+                                d:world_line(c1, c2, { colour = MEET, thickness = 4 })
+                                d:world_line(c4, c3, { colour = MEET, thickness = 4 })
+                                d:world_line(c1, c4, { colour = MEET, thickness = 3 })
+                                d:world_line(c2, c3, { colour = MEET, thickness = 3 })
+                            end
+                        end
+                    end
+                end
+            end
+            -- one on top of the other: the held one's outline where it rests (or where the other rests on it)
+            local onTop = math.abs(me.ylo - nb.yhi) < 0.03
+            local under = math.abs(me.yhi - nb.ylo) < 0.03
+            if (onTop or under) and me.pts and #me.pts >= 3 and nb.pts and #nb.pts >= 3 then
+                local yy = onTop and me.ylo or me.yhi
+                -- (the overlap seen from above, roughly: the held one's corners inside the other's box, else the
+                -- other's corners inside its box: the smaller one's outline)
+                local small = (me.x1 - me.x0) * (me.z1 - me.z0) <= (nb.x1 - nb.x0) * (nb.z1 - nb.z0) and me or nb
+                local n = #small.pts
+                for i = 1, n do
+                    local a, b = small.pts[i], small.pts[i % n + 1]
+                    d:world_line(V(a.x, yy, a.z), V(b.x, yy, b.z), { colour = MEET, thickness = 4 })
+                end
             end
         end
     end

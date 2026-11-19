@@ -79,6 +79,8 @@ local function closeEditor()
     S.controlsOpen = false
     if S.grab then S.grab = nil end
     S.closedAt = S.clock
+    -- (the Add window open: closed the usual way, so where it was is kept)
+    if S.picker and FN.closePicker then pcall(FN.closePicker) end
     S.picker = nil
     S.toolsWin = nil
     if not S.open then return end

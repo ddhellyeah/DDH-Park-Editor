@@ -52,6 +52,45 @@ function UI.thumbOf(key)
     return string.format("plugin/thumbs/sheet%02d.png", th[1]), th[2] / 4, th[3] / 4, 0.25
 end
 local PICK_COLS, PICK_ROWS = 6, 3
+-- Quick Drop's groups ("families") for DDH's objects (groups.lua, made from the Park Creator mod's list): the DDH
+-- tab shows a tile a family, as the game's Object Browser does, and a family's tile opens to its variants
+local FAMILIES = {}
+do
+    local ok, g = pcall(function() return require("groups") end)
+    if ok and type(g) == "table" and type(g.families) == "table" then FAMILIES = g.families end
+end
+-- the tab's tiles: a family of more than one object as one tile (it.fam: its name, it.items: its objects, in
+-- Quick Drop's order), a family of one as that object; objects in no family after them
+local function familyTiles(items)
+    if #FAMILIES == 0 then return nil end
+    local byKey = {}
+    for _, it in ipairs(items) do byKey[it.key] = it end
+    local tiles, used = {}, {}
+    for _, f in ipairs(FAMILIES) do
+        local its = {}
+        for _, k in ipairs(f.keys) do
+            local it = byKey[k]
+            if it and not used[k] then used[k] = true; its[#its + 1] = it end
+        end
+        if #its == 1 then tiles[#tiles + 1] = its[1]
+        elseif #its > 1 then tiles[#tiles + 1] = { fam = f.title, title = f.title, key = its[1].key, items = its } end
+    end
+    for _, it in ipairs(items) do if not used[it.key] then tiles[#tiles + 1] = it end end
+    return tiles
+end
+-- the tiles shown: the tab's, or the open family's variants
+local function shown(pk)
+    local tab = pk.tabs[pk.tab]
+    if tab.families then
+        if pk.family then
+            for _, t in ipairs(tab.families) do if t.fam == pk.family then return t.items end end
+            pk.family = nil
+        end
+        return tab.families
+    end
+    return tab.items
+end
+FN.pickerShown = shown
 function FN.pickerTabs()
     local cat = FN.catalog()
     local tabs, byName = {}, {}
@@ -76,6 +115,7 @@ function FN.pickerTabs()
     for _, t in ipairs(tabs) do
         table.sort(t.items, function(a, b) return tostring(a.title or a.key) < tostring(b.title or b.key) end)
     end
+    if tabs[1] and tabs[1] == mine then mine.families = familyTiles(mine.items) end
     return tabs
 end
 function FN.openPicker()
@@ -97,9 +137,45 @@ function FN.openPicker()
     end
     if #tabs == 0 then say("The game lists no objects to add.", true) return end
     S.picker = { tabs = tabs, tab = 1, sel = 1, top = 0 }
+    -- (back where it was left: the same tab and group by name, the same object chosen and scrolled to)
+    local last = S.pickerLast
+    if not last then
+        local okL, l = pcall(reskate.storage.get, "pickerLast")
+        if okL and type(l) == "table" then last = l end
+    end
+    if last then
+        local pk = S.picker
+        for ti, t in ipairs(tabs) do
+            if t.name == last.tab then
+                pk.tab = ti
+                if last.family and t.families then
+                    for _, ft in ipairs(t.families) do if ft.fam == last.family then pk.family = last.family end end
+                end
+                break
+            end
+        end
+        local n = #shown(pk)
+        if n > 0 then
+            pk.sel = math.max(1, math.min(n, tonumber(last.sel) or 1))
+            local rows = math.ceil(n / PICK_COLS)
+            pk.top = math.max(0, math.min(tonumber(last.top) or 0, rows - PICK_ROWS))
+            local row = math.floor((pk.sel - 1) / PICK_COLS)
+            if row < pk.top or row >= pk.top + PICK_ROWS then pk.top = math.max(0, row - PICK_ROWS + 1) end
+        end
+    end
     S.padWait = true
 end
-local function closePicker() S.picker = nil; S.padWait = true end
+-- closing it: where it was is kept, to open there again (this game and the next)
+local function closePicker()
+    local pk = S.picker
+    if pk and pk.tabs[pk.tab] then
+        local t = pk.tabs[pk.tab]
+        S.pickerLast = { tab = t.name, family = pk.family, sel = pk.sel, top = pk.top }
+        pcall(reskate.storage.set, "pickerLast", S.pickerLast)
+    end
+    S.picker = nil; S.padWait = true
+end
+FN.closePicker = closePicker
 S.openPicker = FN.openPicker
 -- where the cross is: the ground (or anything) it points at, else in front of the view
 function FN.crossPoint()
@@ -187,9 +263,14 @@ end
 S.openReplace = FN.openReplace
 function FN.pickerPlace(asReplace)
     local pk = S.picker
-    local tab = pk and pk.tabs[pk.tab]
-    local it = tab and tab.items[pk.sel]
+    local it = pk and shown(pk)[pk.sel]
     if not it then return end
+    -- (a family's tile: open to its variants)
+    if it.fam then
+        pk.familyFrom = pk.sel
+        pk.family, pk.sel, pk.top = it.fam, 1, 0
+        return
+    end
     if (asReplace or pk.replace) and it.set then say("A set can't replace an object: choose an object.", true) return end
     if (asReplace or pk.replace) and not it.set then
         closePicker()
@@ -214,7 +295,7 @@ function FN.pickerPlace(asReplace)
 end
 local function pickerMove(dc, dr)
     local pk = S.picker
-    local n = #pk.tabs[pk.tab].items
+    local n = #shown(pk)
     if n == 0 then return end
     local i = pk.sel - 1 + dc + dr * PICK_COLS
     i = clamp(i, 0, n - 1)
@@ -226,11 +307,23 @@ end
 function FN.pickerTab(d)
     local pk = S.picker
     pk.tab = (pk.tab - 1 + d) % #pk.tabs + 1
+    pk.sel, pk.top, pk.family = 1, 0, nil
+end
+-- out of an open family, back to the tab's tiles (on the family's own tile)
+function FN.pickerBack()
+    local pk = S.picker
+    if not (pk and pk.family) then return false end
+    local name = pk.family
+    pk.family = nil
     pk.sel, pk.top = 1, 0
+    for i, t in ipairs(shown(pk)) do if t.fam == name then pk.sel = i end end
+    local row = math.floor((pk.sel - 1) / PICK_COLS)
+    if row >= PICK_ROWS then pk.top = row - PICK_ROWS + 1 end
+    return true
 end
 -- the controller in the window
 function FN.pickerPad(p)
-    if padPress("b", p.b) then closePicker() return end
+    if padPress("b", p.b) then if not FN.pickerBack() then closePicker() end return end
     if padPress("a", p.a) then FN.pickerPlace() return end
     if padPress("y", p.y) then
         if #FN.replaceTargets() > 0 then FN.pickerPlace(true) else say("Select objects first (hold A over them), then Y here replaces them.", true) end
@@ -249,7 +342,7 @@ function FN.pickerMouse(c)
     local pk = S.picker
     local px = c.position
     if c.wheel and c.wheel ~= 0 then
-        local n = #pk.tabs[pk.tab].items
+        local n = #shown(pk)
         local rows = math.ceil(n / PICK_COLS)
         pk.top = clamp(pk.top - c.wheel, 0, math.max(0, rows - PICK_ROWS))
     end
@@ -258,9 +351,12 @@ function FN.pickerMouse(c)
         if px.x >= t.a.x and px.x <= t.b.x and px.y >= t.a.y and px.y <= t.b.y then hov = t end
     end
     pk.hover = hov and hov.i or nil
+    pk.hoverBack = hov and hov.back or nil
     if c.left and not S.mouse.left then
         if hov then
-            if hov.tab then FN.pickerTab(hov.tab - pk.tab) else pk.sel = hov.i; FN.pickerPlace() end
+            if hov.tab then FN.pickerTab(hov.tab - pk.tab)
+            elseif hov.back then FN.pickerBack()
+            else pk.sel = hov.i; FN.pickerPlace() end
         else
             local box = S.screen and S.screen.pickBox
             if box and not (px.x >= box.a.x and px.x <= box.b.x and px.y >= box.a.y and px.y <= box.b.y) then closePicker() end
@@ -290,7 +386,9 @@ function FN.drawPicker(d)
     local W, H = S.size.x, S.size.y
     local tile, gap = 148, 16
     local pw = PICK_COLS * tile + (PICK_COLS - 1) * gap + 48
-    local ph = 52 + 58 + PICK_ROWS * (tile + 34) + 60
+    local tabNow = pk.tabs[pk.tab]
+    local gRow = pk.family and 40 or 0
+    local ph = 52 + 58 + gRow + PICK_ROWS * (tile + 34) + 60
     local a = V(math.floor((W - pw) / 2), math.floor((H - ph) / 2), 0)
     local b = a + V(pw, ph, 0)
     S.screen.pickBox = { a = a, b = b }
@@ -298,7 +396,7 @@ function FN.drawPicker(d)
     d:rect(V(0, 0, 0), V(W, H, 0), { colour = "#00000066", fill = true })
     local nRep = #FN.replaceTargets()
     UI.panelBox(d, a, b, pk.replace and string.format("Replace %d with…", nRep) or "Add object")
-    local items = pk.tabs[pk.tab].items
+    local items = shown(pk)
     local rows = math.ceil(#items / PICK_COLS)
     d:text(V(b.x - 20, a.y + 17, 0), string.format("%d objects", #items), { size = 15, colour = UI.dim, align = "right" })
     -- the categories: pills, the chosen one in the accent colour
@@ -314,8 +412,16 @@ function FN.drawPicker(d)
         table.insert(S.screen.pickTiles, { a = ta, b = tb, tab = i })
         x = x + w + 8
     end
+    -- an open family: its name, and a way back
+    if pk.family then
+        local ba, bb = V(a.x + 20, a.y + 104, 0), V(a.x + 110, a.y + 130, 0)
+        d:rect(ba, bb, { colour = pk.hoverBack and UI.tileHot or UI.tile, fill = true, rounding = 13 })
+        d:text(V((ba.x + bb.x) / 2, ba.y + 5, 0), "‹  Back", { size = 14, colour = UI.text, align = "centre" })
+        table.insert(S.screen.pickTiles, { a = ba, b = bb, back = true })
+        d:text(V(bb.x + 14, ba.y + 2, 0), string.upper(pk.family) .. " VARIANTS", { size = 17, colour = UI.text, font = "heading" })
+    end
     -- the pictures
-    local top = a.y + 52 + 58
+    local top = a.y + 52 + 58 + gRow
     for r = 0, PICK_ROWS - 1 do
         for cI = 0, PICK_COLS - 1 do
             local i = (pk.top + r) * PICK_COLS + cI + 1
@@ -337,6 +443,14 @@ function FN.drawPicker(d)
                     local ini = string.upper(string.sub(name, 1, 1)) .. (string.match(name, "%s(%w)") or "")
                     d:text(V((ta.x + tb.x) / 2, ta.y + tile / 2 - 22, 0), ini, { size = 40, colour = "#ffffff40", font = "title", align = "centre" })
                 end
+                if it.fam then
+                    -- (a family: the stacked squares mark, as in Quick Drop, and how many it holds)
+                    local mx, my = ta.x + 10, tb.y - 26
+                    d:rect(V(mx + 5, my, 0), V(mx + 19, my + 14, 0), { colour = "#ffffffc0", thickness = 2, rounding = 2 })
+                    d:rect(V(mx, my + 5, 0), V(mx + 14, my + 19, 0), { colour = "#161b22", fill = true, rounding = 2 })
+                    d:rect(V(mx, my + 5, 0), V(mx + 14, my + 19, 0), { colour = "#ffffffc0", thickness = 2, rounding = 2 })
+                    d:text(V(tb.x - 10, tb.y - 26, 0), tostring(#it.items), { size = 14, colour = UI.text, align = "right" })
+                end
                 if selected then d:rect(ta, tb, { colour = UI.accent, rounding = 10, thickness = 3 }) end
                 d:text(V((ta.x + tb.x) / 2, tb.y + 7, 0), FN.shortTitle(it.title or it.key, 19), { size = 14, colour = selected and UI.accent or UI.dim, align = "centre" })
                 table.insert(S.screen.pickTiles, { a = ta, b = tb, i = i })
@@ -356,7 +470,10 @@ function FN.drawPicker(d)
     elseif nRep > 0 then
         UI.footer(d, a, b, { { "a", "Add" }, { "y", string.format("Replace %d", nRep) }, { "b", "Close" }, { "LB RB", "Category" }, { "D-pad", "Choose" } })
     else
-        UI.footer(d, a, b, { { "a", "Add" }, { "b", "Close" }, { "LB RB", "Category" }, { "D-pad", "Choose" } })
+        local f = { { "a", "Add" }, { "b", "Close" }, { "LB RB", "Category" } }
+        if pk.family then f[2] = { "b", "Back" } end
+        f[#f + 1] = { "D-pad", "Choose" }
+        UI.footer(d, a, b, f)
     end
 end
 
