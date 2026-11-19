@@ -239,6 +239,10 @@ local wrap = PE.wrap
         elseif S.ptab == 2 then
             y = switch(d, x, y, w, "Snap to objects   (T)", S.osnap, function() S.osnap = not S.osnap end) + 10
             if S.osnap then
+                y = label(d, x, y, "Snap by")
+                y = seg(d, x, y, w, { "Matching sides", "Classic" }, S.snapStyle == "classic" and 2 or 1, function(i) FN.setSnapStyle(i == 2 and "classic" or "match") end) + 4
+                d:text(V(x + 4, y, 0), S.snapStyle == "classic" and "Sides meet and line up with anything near." or "A side snaps flat to a side of about the same size.", { size = 13, colour = UI.dim })
+                y += 26
                 y = label(d, x, y, "Snapping to:  " .. FN.snapLabelP())
                 local cur = S.snapPick == nil and 1 or (S.snapPick == "off" and 3 or 2)
                 y = seg(d, x, y, w, { "Auto", "Next object", "Off" }, cur, function(i)
@@ -858,7 +862,7 @@ function FN.drawMain(d)
     end
     -- what it is snapped to: that object's box (or its point), and how
     if S.guides then
-        local WORDS = { touch = "touching", level = "lined up", turn = "same turn", match = "same size" }
+        local WORDS = { touch = "touching", level = "lined up", turn = "same turn", match = S.snapStyle == "classic" and "same size" or "sides match" }
         local seen = {}
         for _, gd in ipairs(S.guides) do
             local id = gd.o.id
