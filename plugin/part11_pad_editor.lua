@@ -350,6 +350,7 @@ function FN.padEditor(sec)
             S.padTilt0 = tl0 and { x = tl0.x, z = tl0.z } or nil
             S.landTrust = FN.landTrust(S.sel.item, t.pos, t.heading, t.scale, S.sel.id)
         end
+        local was = t.pos
         S.padRaw = (S.padRaw or t.pos) + mv
         if S.landOn and up == 0 and (lx ~= 0 or ly ~= 0) and FN.mayLand(S.sel.id) and not S.noSnap then
             if S.clock - (S.landAt or -1e9) > 70 then
@@ -378,8 +379,10 @@ function FN.padEditor(sec)
             if up ~= 0 then t.pos = V(t.pos.x, FN.heightNear(t.pos.y), t.pos.z) end
         end
         S.tilt[S.sel.id] = ntl
-        S.cam.goal = (S.cam.goal or S.cam.target) + mv
-        S.cam.target += mv
+        -- the view goes with the object where it really went (snapped, landed, on the grid), not where the stick
+        -- alone would have taken it, and settles on it again: so it never drifts off to one side
+        S.cam.target += t.pos - was
+        S.cam.goal = t.pos
     else
         if S.padRaw then armTighten(S.guides); S.guides = nil; S.snapLock = nil end
         S.padRaw = nil

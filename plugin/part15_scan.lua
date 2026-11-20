@@ -35,10 +35,13 @@ local CLIFF = 0.3           -- a height jump between neighbouring rays bigger th
 -- time: scanning takes at most SCAN_MS of a tick, checked before every ray (a ray costs about 1 ms in a big
 -- map, and ReSkate stops the plugin past 6 ms a tick on average over 5 s), and goes on the next tick. Without a clock, by count: RAYS_A_TICK rays, and the
 -- lines worked out in steps of PACE_STEPS.
-local SCAN_MS = 3
+local SCAN_MS = 2
 -- (when the tick is timed (part12): what the editor's own work leaves of TICK_MS, between SCAN_MS_MIN and _MAX;
 -- ReSkate stops a plugin past 6 ms a tick on average)
-local TICK_MS, SCAN_MS_MIN, SCAN_MS_MAX = 5, 1.5, 4.5
+-- (each ms here comes out of the game's frame too: kept to 3 ms at most, and while something is being moved, a
+-- small slice only, so moving stays smooth)
+local TICK_MS, SCAN_MS_MIN, SCAN_MS_MAX = 4, 1, 3
+local SCAN_MS_MOVING = 0.6
 local scanMs = SCAN_MS
 local PACE_STEPS = 400
 local nowMs = nil
@@ -1145,6 +1148,7 @@ function FN.scanTick()
     end
     tickStart = nowMs and nowMs() or 0
     scanMs = S.otherMs and math.max(SCAN_MS_MIN, math.min(SCAN_MS_MAX, TICK_MS - S.otherMs)) or SCAN_MS
+    if S.drag or S.grab or S.padMoving or S.dirty or S.carry then scanMs = math.min(scanMs, SCAN_MS_MOVING) end
     job.ticks += 1
     job.tickRays = 0
     -- moved, removed or picked up while its rays are cast: start over later

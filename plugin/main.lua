@@ -338,7 +338,9 @@ local function send()
     while tries[1] and S.clock - tries[1] > 1050 do table.remove(tries, 1) end
     if #tries >= 4 then return end
     if not lastApplied() then return end
-    local gap = ((S.drag and S.drag.moved) or S.padMoving) and 150 or 250
+    -- (while moving, evenly spaced at the fastest steady pace the game allows: 4 in 1.05 s. Faster, it went in
+    -- bursts of 4 and then stood still until a second had passed, which felt like lag)
+    local gap = ((S.drag and S.drag.moved) or S.padMoving) and 265 or 250
     if S.clock - S.lastSend < gap then return end
     table.insert(tries, S.clock)
     local hd = nil

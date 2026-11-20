@@ -993,11 +993,24 @@ function FN.supportYNow(item, pos, heading, scale, selfId, wantSlope)
     local best = down(mx, mz)
     -- but it only steps down once it is off what it stands on: while a corner (a little in) still rests on it,
     -- it stays up there (else a box on top of another drops off as soon as its middle passes the edge)
+    -- (asked with the game's fast ray only, from just above its bottom: is something right at its bottom under that
+    -- corner. The slow one, which can tell what it met, cost up to 5 rays a corner: a hitch while moving)
     local stays = false
     if best and best < bottom - 0.03 then
+        local function atBottom(x, z)
+            if not reskate.world.raycast then
+                local y = down(x, z)
+                return y and math.abs(y - bottom) <= 0.03
+            end
+            local wpt = pos + ax * x + az * z
+            local a, z2 = V(wpt.x, bottom + 0.05, wpt.z), V(wpt.x, bottom - 0.1, wpt.z)
+            local ok, h = pcall(reskate.world.raycast, a, z2)
+            local hp = ok and h or nil
+            if type(hp) == "table" and hp.position then hp = hp.position end
+            return hp and hp.y and hp.y <= a.y + 1e-3 and hp.y > z2.y + 1e-3 and math.abs(hp.y - bottom) <= 0.03
+        end
         for _, c in ipairs({ { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } }) do
-            local y = down(mx + wx * c[1], mz + wz * c[2])
-            if y and math.abs(y - bottom) <= 0.03 then best = bottom; stays = true; break end
+            if atBottom(mx + wx * c[1], mz + wz * c[2]) then best = bottom; stays = true; break end
         end
     end
     if not best then return nil end
