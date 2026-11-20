@@ -209,10 +209,10 @@ function FN.drawTools(d)
     for i, c in ipairs(plan) do
         if i > MAX_COPIES then break end
         if S.itemBox[c.item] then
-            PE.drawShape(d, worldShape(c.item, c.pos, c.heading, c.scale), UI.green, 2)
+            PE.drawShape(d, worldShape(c.item, c.pos, c.heading, c.scale), UI.oCopy, 2)
         else
-            d:world_line(c.pos - V(0.4, 0, 0), c.pos + V(0.4, 0, 0), { colour = UI.green, thickness = 2 })
-            d:world_line(c.pos - V(0, 0, 0.4), c.pos + V(0, 0, 0.4), { colour = UI.green, thickness = 2 })
+            d:world_line(c.pos - V(0.4, 0, 0), c.pos + V(0.4, 0, 0), { colour = UI.oCopy, thickness = 2 })
+            d:world_line(c.pos - V(0, 0, 0.4), c.pos + V(0, 0, 0.4), { colour = UI.oCopy, thickness = 2 })
         end
     end
     local rows = FN.toolsRows()
@@ -233,7 +233,7 @@ function FN.drawTools(d)
         if r[1] == "make" then
             d:rect(ra, rb, { colour = selected and UI.accent or UI.tileHot, fill = true, rounding = 10 })
             local n = math.min(#plan, MAX_COPIES)
-            d:text(V((ra.x + rb.x) / 2, ra.y + 9, 0), string.format("Make %d cop%s", n, n == 1 and "y" or "ies"), { size = 17, colour = selected and "#0d1117" or UI.text, font = "bold", align = "centre" })
+            d:text(V((ra.x + rb.x) / 2, ra.y + 9, 0), string.format("Make %d cop%s", n, n == 1 and "y" or "ies"), { size = 17, colour = selected and UI.onAccent or UI.text, font = "bold", align = "centre" })
             table.insert(S.screen.toolsTiles, { a = ra, b = rb, make = true })
         else
             d:rect(ra, rb, { colour = selected and UI.accentDim or UI.tile, fill = true, rounding = 10 })
@@ -263,13 +263,13 @@ function FN.drawGroup(d)
             if g and S.itemBox[o.item] then
                 local tl = tilted(id) and S.tilt[id] or nil
                 local xf = tl and function(v) return tiltPoint(g.pos, g.heading, tl, v) end or nil
-                PE.drawShape(d, worldShape(o.item, g.pos, g.heading, g.scale), "#c49bff", 3, xf)
+                PE.drawShape(d, worldShape(o.item, g.pos, g.heading, g.scale), UI.oGroup, 3, xf)
             else
                 local so = placedSolid(o)
-                if not PE.drawShape(d, so.shape or so, "#c49bff", 3, so.xf) then
+                if not PE.drawShape(d, so.shape or so, UI.oGroup, 3, so.xf) then
                     local q = o.position
-                    d:world_line(q - V(0.4, 0, 0), q + V(0.4, 0, 0), { colour = "#c49bff", thickness = 3 })
-                    d:world_line(q - V(0, 0, 0.4), q + V(0, 0, 0.4), { colour = "#c49bff", thickness = 3 })
+                    d:world_line(q - V(0.4, 0, 0), q + V(0.4, 0, 0), { colour = UI.oGroup, thickness = 3 })
+                    d:world_line(q - V(0, 0, 0.4), q + V(0, 0, 0.4), { colour = UI.oGroup, thickness = 3 })
                 end
             end
         end
@@ -283,8 +283,8 @@ function FN.drawGrid(d)
     local cx, cz = round(p.x, g), round(p.z, g)
     local n = 6
     for i = -n, n do
-        d:world_line(V(cx + i * g, p.y, cz - n * g), V(cx + i * g, p.y, cz + n * g), { colour = "#ffffff30", thickness = 1 })
-        d:world_line(V(cx - n * g, p.y, cz + i * g), V(cx + n * g, p.y, cz + i * g), { colour = "#ffffff30", thickness = 1 })
+        d:world_line(V(cx + i * g, p.y, cz - n * g), V(cx + i * g, p.y, cz + n * g), { colour = string.sub(UI.oGrid, 1, 7) .. "30", thickness = 1 })
+        d:world_line(V(cx - n * g, p.y, cz + i * g), V(cx + n * g, p.y, cz + i * g), { colour = string.sub(UI.oGrid, 1, 7) .. "30", thickness = 1 })
     end
 end
 

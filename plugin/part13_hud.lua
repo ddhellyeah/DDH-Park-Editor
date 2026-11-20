@@ -32,15 +32,17 @@ function UI.drawPadHud(d)
     local selecting = S.aHold and S.aHold.sweep
     -- the cross
     if not S.grab then
-        local col = selecting and UI.purple or (S.aim and UI.accent or "#ffffffd0")
+        local col = selecting and UI.oGroup or (S.aim and UI.oAim or "#ffffffd0")
         d:circle(c, 3, { colour = col, fill = true })
         d:circle(c, 13, { colour = col, thickness = 2 })
         if S.aim then
             local so = placedSolid(S.aim)
-            PE.drawShape(d, so.shape or so, S.group[S.aim.id] and UI.purple or "#ffffff", 3, so.xf)
+            pcall(PE.drawShape, d, so.shape or so, UI.oHalo, 6, so.xf)
+            PE.drawShape(d, so.shape or so, S.group[S.aim.id] and UI.oGroup or UI.oAim, 3, so.xf)
             local name = titleOf(S.aim.item)
             local w = UI.textW(d, name, 15) + 22
-            d:rect(V(c.x - w / 2, c.y + 24, 0), V(c.x + w / 2, c.y + 50, 0), { colour = UI.bg, fill = true, rounding = 13 })
+            d:rect(V(c.x - w / 2, c.y + 24, 0), V(c.x + w / 2, c.y + 50, 0), { colour = UI.panel, fill = true, rounding = 6 })
+            d:rect(V(c.x - w / 2, c.y + 24, 0), V(c.x + w / 2, c.y + 50, 0), { colour = UI.border, rounding = 6, thickness = 1 })
             d:text(V(c.x, c.y + 28, 0), name, { size = 15, colour = UI.text, align = "centre" })
         end
     end
@@ -51,20 +53,27 @@ function UI.drawPadHud(d)
     chips[#chips + 1] = { "Steps  " .. (STEPS[S.stepSize] or STEPS[2]).name, UI.accent }
     if S.grab then
         if S.noSnap then chips[#chips + 1] = { "Snap  off (R3 held)", UI.orange }
-        else chips[#chips + 1] = { "Snap  " .. FN.snapLabel(), S.snapPick and UI.orange or "#35e0ff" } end
+        else chips[#chips + 1] = { "Snap  " .. FN.snapLabel(), S.snapPick and UI.oPick or UI.oSnap } end
     end
     if FN.gridSize() > 0 then chips[#chips + 1] = { "Grid  " .. FN.GRID_NAMES[S.gridI], UI.green } end
     local tot = 0
     for _, ch in ipairs(chips) do tot += UI.chipW(d, ch[1]) + 8 end
     local x = W / 2 - (tot - 8) / 2
-    for _, ch in ipairs(chips) do x += UI.chip(d, x, 24, ch[1], ch[2]) + 8 end
+    -- (under the snap bar, when it shows)
+    local sb = S.screen and S.screen.snapBox
+    local cy = (S.ownPanel and sb) and (sb.b.y + 34) or 24
+    for _, ch in ipairs(chips) do x += UI.chip(d, x, cy, ch[1], ch[2]) + 8 end
     -- the last message, above the prompts
     if S.msg ~= "" and S.clock < S.msgUntil then
         local msg = S.msg
         if #msg > 90 then msg = string.sub(msg, 1, 88) .. "…" end
-        local w = UI.textW(d, msg, 15) + 28
-        d:rect(V(W / 2 - w / 2, H - 112 - rowsH, 0), V(W / 2 + w / 2, H - 84 - rowsH, 0), { colour = "#0d1117b0", fill = true, rounding = 14 })
-        d:text(V(W / 2, H - 107 - rowsH, 0), msg, { size = 15, colour = UI.dim, align = "centre" })
+        local w = UI.textW(d, msg, 14) + 28
+        local my = H - UI.PROMPT_H - rowsH - 8 - 30
+        if rowsH > 0 and not S.hide.rows then my -= 24 end
+        local ma, mb = V(W / 2 - w / 2, my, 0), V(W / 2 + w / 2, my + 30, 0)
+        d:rect(ma, mb, { colour = UI.panel, fill = true, rounding = 6 })
+        d:rect(ma, mb, { colour = UI.border, rounding = 6, thickness = 1 })
+        d:text(V(W / 2, my + 7, 0), msg, { size = 14, colour = UI.text, align = "centre" })
     end
     -- the buttons for what can be done now
     local items
@@ -81,7 +90,7 @@ function UI.drawPadHud(d)
     else
         items = { { "a", "Add object" }, { "Hold A", "Select" }, { "Menu", "Steps" }, { "b", "Close" } }
     end
-    if items then UI.promptRow(d, W / 2, H - 48 - rowsH, items) end
+    if items then UI.promptRow(d, W / 2, H - UI.PROMPT_H / 2, items) end
     if rowsH > 0 then UI.padRows(d) else S.padRowsAt = nil end
 end
 
@@ -186,7 +195,7 @@ end
 function FN.drawMeasure(d)
     local okM, c = pcall(FN.measureData)
     if not (okM and c) then return end
-    local col = "#c49bff"
+    local col = string.sub(UI.oMeasure, 1, 7)
     for _, e in ipairs(c.list) do
         local pa, pb = e.pa, e.pb
         if pa and pb then
@@ -212,10 +221,11 @@ function FN.drawMeasure(d)
                 end
                 local a = mid + V(12, -8, 0)
                 local b = a + V(wmax + 22, #lines * (lh + 3) + 9, 0)
-                d:rect(a, b, { colour = "#0d1117d8", fill = true, rounding = 8 })
+                d:rect(a, b, { colour = UI.panel, fill = true, rounding = 6 })
+                d:rect(a, b, { colour = UI.border, rounding = 6, thickness = 1 })
                 d:rect(V(a.x, a.y + 5, 0), V(a.x + 3, b.y - 5, 0), { colour = col, fill = true, rounding = 2 })
                 for i, l in ipairs(lines) do
-                    d:text(V(a.x + 11, a.y + 5 + (i - 1) * (lh + 3), 0), l, { size = 14, font = i == 1 and "bold" or "body", colour = i == 1 and col or "#ffffff" })
+                    d:text(V(a.x + 11, a.y + 5 + (i - 1) * (lh + 3), 0), l, { size = 14, font = i == 1 and "bold" or "body", colour = i == 1 and col or UI.text })
                 end
             end
         end

@@ -408,7 +408,7 @@ function FN.drawPicker(d)
         local ta, tb = V(x, a.y + 66, 0), V(x + w, a.y + 96, 0)
         local on = i == pk.tab
         d:rect(ta, tb, { colour = on and UI.accent or UI.tile, fill = true, rounding = 15 })
-        d:text(ta + V(13, 6, 0), label, { size = 15, colour = on and "#0d1117" or UI.text, font = on and "bold" or nil })
+        d:text(ta + V(13, 6, 0), label, { size = 15, colour = on and UI.onAccent or UI.text, font = on and "bold" or nil })
         table.insert(S.screen.pickTiles, { a = ta, b = tb, tab = i })
         x = x + w + 8
     end
@@ -447,7 +447,7 @@ function FN.drawPicker(d)
                     -- (a family: the stacked squares mark, as in Quick Drop, and how many it holds)
                     local mx, my = ta.x + 10, tb.y - 26
                     d:rect(V(mx + 5, my, 0), V(mx + 19, my + 14, 0), { colour = "#ffffffc0", thickness = 2, rounding = 2 })
-                    d:rect(V(mx, my + 5, 0), V(mx + 14, my + 19, 0), { colour = "#161b22", fill = true, rounding = 2 })
+                    d:rect(V(mx, my + 5, 0), V(mx + 14, my + 19, 0), { colour = UI.panel, fill = true, rounding = 2 })
                     d:rect(V(mx, my + 5, 0), V(mx + 14, my + 19, 0), { colour = "#ffffffc0", thickness = 2, rounding = 2 })
                     d:text(V(tb.x - 10, tb.y - 26, 0), tostring(#it.items), { size = 14, colour = UI.text, align = "right" })
                 end

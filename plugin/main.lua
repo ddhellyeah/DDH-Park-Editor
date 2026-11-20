@@ -391,8 +391,103 @@ end
 
 -- PE.drawShape: shared with the other parts, (further on, with the drawing)
 -- the look of what is drawn over the view
-local UI = { bg = "#0d1117e0", bg2 = "#161b22f2", tile = "#ffffff12", tileHot = "#ffffff26", line = "#ffffff22",
-    text = "#f0f3f6", dim = "#f0f3f699", accent = "#ffd34d", accentDim = "#ffd34d33", purple = "#c49bff", orange = "#ffa640", green = "#7dffb0" }
+local UI = { purple = "#c49bff", orange = "#ffa640", green = "#7dffb0" }
+-- ---------------------------------------------------------------- the look: four colours the player can choose
+-- (the colours window, part16): panels, fields (buttons, boxes), borders and the accent. Everything else is worked
+-- out from them, so text always reads: light or dark text for the panels, black or white on the accent, and the dim
+-- text and hover shades in between. Kept between games.
+do
+    local function rgb(h)
+        h = tostring(h or ""):gsub("#", "")
+        if #h < 6 then return 0, 0, 0 end
+        return tonumber(h:sub(1, 2), 16) or 0, tonumber(h:sub(3, 4), 16) or 0, tonumber(h:sub(5, 6), 16) or 0
+    end
+    local function hex(r, g, b)
+        local function c(v) return math.max(0, math.min(255, math.floor(v + 0.5))) end
+        return string.format("#%02x%02x%02x", c(r), c(g), c(b))
+    end
+    local function lum(h)
+        local r, g, b = rgb(h)
+        local function f(v) v = v / 255; return v <= 0.03928 and v / 12.92 or ((v + 0.055) / 1.055) ^ 2.4 end
+        return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+    end
+    local function contrast(a, b)
+        local la, lb = lum(a), lum(b)
+        if la < lb then la, lb = lb, la end
+        return (la + 0.05) / (lb + 0.05)
+    end
+    local function mix(a, b, k)
+        local r1, g1, b1 = rgb(a)
+        local r2, g2, b2 = rgb(b)
+        return hex(r1 + (r2 - r1) * k, g1 + (g2 - g1) * k, b1 + (b2 - b1) * k)
+    end
+    UI.rgb, UI.hex, UI.lum, UI.contrast, UI.mix = rgb, hex, lum, contrast, mix
+    -- the ready-made looks (the first is the default)
+    UI.PRESETS = {
+        { name = "Burnt orange", panel = "#121212", field = "#1e1e1e", border = "#646464", accent = "#c64c00" },
+        { name = "Mono", panel = "#121212", field = "#1e1e1e", border = "#646464", accent = "#f2f2f2" },
+        { name = "Amber", panel = "#121212", field = "#1e1e1e", border = "#646464", accent = "#ffb020" },
+        { name = "Cyan", panel = "#121212", field = "#1e1e1e", border = "#646464", accent = "#3dd6f5" },
+        { name = "Lime", panel = "#121212", field = "#1e1e1e", border = "#646464", accent = "#a3e635" },
+        { name = "Pink", panel = "#121212", field = "#1e1e1e", border = "#646464", accent = "#ff6fb5" },
+        { name = "Graphite", panel = "#2a2a2a", field = "#373737", border = "#7a7a7a", accent = "#f5f5f5" },
+        { name = "Light", panel = "#ffffff", field = "#f2f2f2", border = "#8a8a8a", accent = "#111111" },
+    }
+    -- the outlines drawn in the world, each its own colour
+    UI.OUTLINES = {
+        { key = "oHeld", name = "Held object", def = "#ff8a1f" },
+        { key = "oRest", name = "Held, resting", def = "#a6560f" },
+        { key = "oSnap", name = "Snapped to", def = "#35e0ff" },
+        { key = "oMeet", name = "Meeting sides", def = "#7dffb0" },
+        { key = "oGroup", name = "Group", def = "#c49bff" },
+        { key = "oAim", name = "Aimed at", def = "#ffffff" },
+        { key = "oPick", name = "Snap target", def = "#ffa640" },
+        { key = "oSet", name = "Set being placed", def = "#c49bff" },
+        { key = "oCopy", name = "Copies preview", def = "#7dffb0" },
+        { key = "oMeasure", name = "Measure", def = "#c49bff" },
+        { key = "oGrid", name = "Grid", def = "#ffffff" },
+        { key = "oHalo", name = "Outline edge", def = "#000000" },
+    }
+    -- the colours used everywhere, from the four chosen ones
+    function UI.applyTheme(th)
+        local d0 = UI.PRESETS[1]
+        th = th or {}
+        local panel, field = th.panel or d0.panel, th.field or d0.field
+        local border, accent = th.border or d0.border, th.accent or d0.accent
+        UI.theme = { panel = panel, field = field, border = border, accent = accent }
+        -- (the outlines: the chosen ones kept, the rest their own default)
+        for _, o in ipairs(UI.OUTLINES) do
+            if th[o.key] then UI.theme[o.key] = th[o.key] end
+        end
+        for _, o in ipairs(UI.OUTLINES) do
+            if o.def then UI[o.key] = th[o.key] or o.def end
+        end
+        UI.purple = UI.oGroup
+        local dark = lum(panel) < 0.35
+        local text = dark and "#f2f2f2" or "#111111"
+        -- (dim text: between the text and the panel, but always at least 4.5 : 1 on the panels and the fields)
+        local dim = text
+        for k = 0.45, 0, -0.05 do
+            local c = mix(text, panel, k)
+            if contrast(c, panel) >= 4.5 and contrast(c, field) >= 4.5 then dim = c break end
+        end
+        UI.panel, UI.field, UI.border, UI.accent = panel, field, border, accent
+        UI.text, UI.dim = text, dim
+        UI.faint = mix(text, panel, 0.6)
+        UI.fieldHot = mix(field, text, 0.12)
+        UI.onAccent = contrast("#121212", accent) >= contrast("#ffffff", accent) and "#121212" or "#ffffff"
+        UI.accentHot = mix(accent, UI.onAccent == "#121212" and "#ffffff" or "#000000", 0.18)
+        UI.accentDim = mix(accent, panel, 0.72)
+        -- (the old names, for the parts that use them)
+        UI.bg, UI.bg2, UI.tile, UI.tileHot, UI.line = panel, panel, field, UI.fieldHot, border
+    end
+    UI.applyTheme(nil)
+    local okT, saved = pcall(reskate.storage.get, "theme")
+    if okT and type(saved) == "table" then UI.applyTheme(saved) end
+    function UI.saveTheme()
+        pcall(reskate.storage.set, "theme", UI.theme)
+    end
+end
 UI.BTN = { a = { "A", "#3fb950" }, b = { "B", "#f85149" }, x = { "X", "#4c8dff" }, y = { "Y", "#e3b341" } }
 function UI.textW(d, str, size, font)
     if d.measure then
@@ -418,36 +513,40 @@ function UI.badge(d, x, y, k)
 end
 -- a row of button prompts ({ button, what }) in a dark pill, centred on x
 function UI.promptRow(d, cx, y, items)
+    -- (a bar 40 high, its middle at y: at least 800 wide, wider when the buttons need it)
     local ws, total = {}, 0
     for i, it in ipairs(items) do
-        ws[i] = { UI.badgeW(d, it[1]), UI.textW(d, it[2], 16) }
-        total += ws[i][1] + 8 + ws[i][2] + (i < #items and 26 or 0)
+        ws[i] = { UI.badgeW(d, it[1]), UI.textW(d, it[2], 14) }
+        total += ws[i][1] + 6 + ws[i][2] + (i < #items and 20 or 0)
     end
+    local bw = math.max(800, total + 40)
+    local a, b = V(cx - bw / 2, y - 20, 0), V(cx + bw / 2, y + 20, 0)
+    d:rect(a, b, { colour = UI.panel, fill = true, rounding = 8 })
+    d:rect(a, b, { colour = UI.border, rounding = 8, thickness = 1 })
     local x = cx - total / 2
-    d:rect(V(x - 18, y - 22, 0), V(x + total + 18, y + 22, 0), { colour = UI.bg, fill = true, rounding = 22 })
     for i, it in ipairs(items) do
         UI.badge(d, x, y, it[1])
-        x += ws[i][1] + 8
-        d:text(V(x, y - 10, 0), it[2], { size = 16, colour = UI.text })
-        x += ws[i][2] + 26
+        x += ws[i][1] + 6
+        d:text(V(x, y - 9, 0), it[2], { size = 14, colour = UI.text })
+        x += ws[i][2] + 20
     end
 end
 -- a small rounded label with a coloured dot; its width
 function UI.chipW(d, str) return UI.textW(d, str, 15) + 30 end
 function UI.chip(d, x, y, str, col)
     local w = UI.chipW(d, str)
-    d:rect(V(x, y, 0), V(x + w, y + 28, 0), { colour = UI.bg, fill = true, rounding = 14 })
+    d:rect(V(x, y, 0), V(x + w, y + 28, 0), { colour = UI.panel, fill = true, rounding = 8 })
+    d:rect(V(x, y, 0), V(x + w, y + 28, 0), { colour = UI.border, rounding = 8, thickness = 1 })
     d:circle(V(x + 13, y + 14, 0), 4, { colour = col or UI.accent, fill = true })
     d:text(V(x + 22, y + 5, 0), str, { size = 15, colour = UI.text })
     return w
 end
 -- a window: dark rounded panel with a title bar
 function UI.panelBox(d, a, b, title)
-    d:rect(a + V(0, 4, 0), b + V(0, 4, 0), { colour = "#00000055", fill = true, rounding = 14 })
-    d:rect(a, b, { colour = UI.bg2, fill = true, rounding = 14 })
-    d:rect(a, V(b.x, a.y + 52, 0), { colour = "#ffffff0a", fill = true, rounding = 14 })
+    d:rect(a, b, { colour = UI.panel, fill = true, rounding = 8 })
+    d:rect(a, b, { colour = UI.border, rounding = 8, thickness = 1 })
     d:text(a + V(20, 13, 0), title, { size = 24, colour = UI.text, font = "heading" })
-    d:line(V(a.x + 16, a.y + 52, 0), V(b.x - 16, a.y + 52, 0), { colour = UI.line, thickness = 1 })
+    d:line(V(a.x + 16, a.y + 52, 0), V(b.x - 16, a.y + 52, 0), { colour = UI.border, thickness = 1 })
 end
 -- button prompts along the bottom of a window
 function UI.footer(d, a, b, items)
@@ -510,6 +609,7 @@ local PARTS = {
     "part13_hud",
     "part14_panel_draw",
     "part15_scan",
+    "part16_colours",
 }
 for _, name in ipairs(PARTS) do
     local ok, part = pcall(function() return require(name) end)

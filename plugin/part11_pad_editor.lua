@@ -48,6 +48,7 @@ function FN.padEditor(sec)
     if anyIn then S.padUsedAt = S.clock end
 
     if S.picker then FN.pickerPad(p) return end
+    if S.colours and FN.coloursPad then FN.coloursPad(p) return end
     if S.controlsOpen then
         if padPress("b", p.b) or padPress("a", p.a) then S.controlsOpen = false end
         return

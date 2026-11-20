@@ -111,13 +111,18 @@ local wrap = PE.wrap
         d:text(V(tx, ty, 0), s2, { size = size, colour = st.colour, font = st.font, align = al, shadow = st.shadow })
     end
     UI.fitText, UI.textIn = fitText, textIn
+    -- an edge in the border colour
+    local function edge(d, a, b, r) d:rect(a, b, { colour = UI.border, rounding = r or 6, thickness = 1 }) end
+    UI.edge = edge
     local function btn(d, a, b, label, fn, style)
         local h = hot(a, b)
-        local col = style == "primary" and (h and "#ffe27a" or UI.accent) or (style == "on" and (h and "#ffffff40" or "#ffffff33") or (h and UI.tileHot or UI.tile))
-        if style == "danger" then col = h and "#f85149cc" or "#f8514966" end
-        d:rect(a, b, { colour = col, fill = true, rounding = 9 })
-        if style == "on" then d:rect(a, b, { colour = UI.accent, rounding = 9, thickness = 2 }) end
-        textIn(d, a, b, label, { size = 15, colour = style == "primary" and "#0d1117" or UI.text, font = (style == "primary" or style == "on") and "bold" or nil, align = "centre" })
+        local col = style == "primary" and (h and UI.accentHot or UI.accent) or (h and UI.fieldHot or UI.field)
+        if style == "danger" then col = h and "#c93c37" or "#9e2f2b" end
+        d:rect(a, b, { colour = col, fill = true, rounding = 6 })
+        if style == "on" then d:rect(a, b, { colour = UI.accent, rounding = 6, thickness = 2 })
+        elseif style ~= "primary" and style ~= "danger" then edge(d, a, b, 6) end
+        local tc = style == "primary" and UI.onAccent or (style == "danger" and "#ffffff" or UI.text)
+        textIn(d, a, b, label, { size = 14, colour = tc, font = (style == "primary" or style == "on") and "bold" or nil, align = "centre" }, 6)
         if fn then tileAdd(a, b, fn) end
     end
     -- ---- hiding the panels: an arrow tab on a panel's inner edge folds it away; a small tab stays to bring it back.
@@ -135,40 +140,44 @@ local wrap = PE.wrap
     -- mouse unless noBox
     local function arrowTab(d, a, b, dir, fn, noBox)
         local h = hot(a, b)
-        d:rect(a, b, { colour = h and "#2a313b" or "#161b22", fill = true, rounding = 8 })
+        d:rect(a, b, { colour = h and UI.fieldHot or UI.panel, fill = true, rounding = 6 })
+        edge(d, a, b, 6)
         local cx, cy, r = (a.x + b.x) / 2, (a.y + b.y) / 2, 6
         local pts
         if dir == "left" then pts = { V(cx + r * 0.6, cy - r, 0), V(cx + r * 0.6, cy + r, 0), V(cx - r * 0.7, cy, 0) }
         elseif dir == "right" then pts = { V(cx - r * 0.6, cy - r, 0), V(cx - r * 0.6, cy + r, 0), V(cx + r * 0.7, cy, 0) }
         elseif dir == "up" then pts = { V(cx - r, cy + r * 0.6, 0), V(cx + r, cy + r * 0.6, 0), V(cx, cy - r * 0.7, 0) }
         else pts = { V(cx - r, cy - r * 0.6, 0), V(cx + r, cy - r * 0.6, 0), V(cx, cy + r * 0.7, 0) } end
-        d:poly(pts, { colour = h and UI.accent or "#f0f3f6c0", fill = true })
+        d:poly(pts, { colour = h and UI.accent or UI.dim, fill = true })
         tileAdd(a, b, fn)
         if not noBox then S.screen.tabs = S.screen.tabs or {}; S.screen.tabs[#S.screen.tabs + 1] = { a = a, b = b } end
     end
     -- a row of choices, one of them on
     local function seg(d, x, y, w, labels, cur, fn)
         local n = #labels
-        d:rect(V(x, y, 0), V(x + w, y + 34, 0), { colour = "#00000040", fill = true, rounding = 10 })
-        local cw = (w - 4) / n
+        d:rect(V(x, y, 0), V(x + w, y + 34, 0), { colour = UI.field, fill = true, rounding = 8 })
+        edge(d, V(x, y, 0), V(x + w, y + 34, 0), 8)
+        local cw = (w - 6) / n
         for i, l in ipairs(labels) do
-            local a, b = V(x + 2 + (i - 1) * cw, y + 2, 0), V(x + 2 + i * cw, y + 32, 0)
+            local a, b = V(x + 3 + (i - 1) * cw, y + 3, 0), V(x + 3 + i * cw, y + 31, 0)
             local on = i == cur
             local h = hot(a, b)
-            if on then d:rect(a, b, { colour = UI.accent, fill = true, rounding = 8 })
-            elseif h then d:rect(a, b, { colour = UI.tile, fill = true, rounding = 8 }) end
-            textIn(d, a, b, l, { size = 14, colour = on and "#0d1117" or UI.dim, font = on and "bold" or nil, align = "centre" }, 4)
+            if on then d:rect(a, b, { colour = h and UI.accentHot or UI.accent, fill = true, rounding = 6 })
+            elseif h then d:rect(a, b, { colour = UI.fieldHot, fill = true, rounding = 6 }) end
+            textIn(d, a, b, l, { size = 14, colour = on and UI.onAccent or UI.text, font = on and "bold" or nil, align = "centre" }, 4)
             tileAdd(a, b, function() fn(i) end)
         end
         return y + 34
     end
     local function switch(d, x, y, w, label, on, fn)
         local a, b = V(x, y, 0), V(x + w, y + 34, 0)
-        if hot(a, b) then d:rect(a, b, { colour = UI.tile, fill = true, rounding = 9 }) end
-        local sx = x + w - 52
-        textIn(d, V(x + 2, y, 0), V(sx - 4, y + 34, 0), label, { size = 15, colour = UI.text })
-        d:rect(V(sx, y + 7, 0), V(sx + 40, y + 27, 0), { colour = on and UI.accent or "#ffffff2a", fill = true, rounding = 10 })
-        d:circle(V(on and sx + 30 or sx + 10, y + 17, 0), 8, { colour = on and "#0d1117" or "#e6e9ef", fill = true })
+        if hot(a, b) then d:rect(a, b, { colour = UI.field, fill = true, rounding = 6 }) end
+        local sx = x + w - 48
+        textIn(d, V(x + 2, y, 0), V(sx - 4, y + 34, 0), label, { size = 14, colour = UI.text })
+        local ka, kb = V(sx, y + 6, 0), V(sx + 44, y + 28, 0)
+        d:rect(ka, kb, { colour = on and UI.accent or UI.field, fill = true, rounding = 11 })
+        if not on then edge(d, ka, kb, 11) end
+        d:circle(V(on and sx + 33 or sx + 11, y + 17, 0), 8, { colour = on and UI.onAccent or UI.dim, fill = true })
         tileAdd(a, b, fn)
         return y + 34
     end
@@ -177,9 +186,9 @@ local wrap = PE.wrap
         -- (off: shown crossed out and doing nothing, as tilt online)
         if off then
             local bx = x + w - 196
-            textIn(d, V(x, y + 2, 0), V(bx - 4, y + 30, 0), label, { size = 14, colour = "#f0f3f640" }, 4)
-            d:rect(V(bx, y + 2, 0), V(bx + 196, y + 30, 0), { colour = "#00000030", fill = true, rounding = 7 })
-            textIn(d, V(bx, y + 2, 0), V(bx + 196, y + 30, 0), value, { size = 15, colour = "#f0f3f640", align = "centre" })
+            textIn(d, V(x, y + 2, 0), V(bx - 4, y + 30, 0), label, { size = 14, colour = UI.faint }, 4)
+            d:rect(V(bx, y + 2, 0), V(bx + 196, y + 30, 0), { colour = UI.field, fill = true, rounding = 6 })
+            textIn(d, V(bx, y + 2, 0), V(bx + 196, y + 30, 0), value, { size = 15, colour = UI.faint, align = "centre" })
             d:line(V(x + 2, y + 16, 0), V(x + w - 2, y + 16, 0), { colour = "#f85149b0", thickness = 2 })
             return y + 34
         end
@@ -188,18 +197,19 @@ local wrap = PE.wrap
         local m1a, m1b = V(bx, y + 2, 0), V(bx + 30, y + 30, 0)
         local va, vb = V(bx + 34, y + 2, 0), V(bx + 162, y + 30, 0)
         local p1a, p1b = V(bx + 166, y + 2, 0), V(bx + 196, y + 30, 0)
-        d:rect(m1a, m1b, { colour = hot(m1a, m1b) and UI.tileHot or UI.tile, fill = true, rounding = 7 })
+        d:rect(m1a, m1b, { colour = hot(m1a, m1b) and UI.fieldHot or UI.field, fill = true, rounding = 6 }); edge(d, m1a, m1b, 6)
         textIn(d, m1a, m1b, "-", { size = 18, colour = UI.text, align = "centre" }, 2)
-        d:rect(va, vb, { colour = hot(va, vb) and "#ffffff1c" or "#00000040", fill = true, rounding = 7 })
+        d:rect(va, vb, { colour = hot(va, vb) and UI.fieldHot or UI.field, fill = true, rounding = 6 }); edge(d, va, vb, 6)
         textIn(d, va, vb, value, { size = 15, colour = UI.text, align = "centre" }, 6)
-        d:rect(p1a, p1b, { colour = hot(p1a, p1b) and UI.tileHot or UI.tile, fill = true, rounding = 7 })
+        d:rect(p1a, p1b, { colour = hot(p1a, p1b) and UI.fieldHot or UI.field, fill = true, rounding = 6 }); edge(d, p1a, p1b, 6)
         textIn(d, p1a, p1b, "+", { size = 18, colour = UI.text, align = "centre" }, 2)
         tileAdd(m1a, m1b, dec); tileAdd(p1a, p1b, inc); tileAdd(va, vb, edit)
         return y + 34
     end
+    local labelW = PW - 36
     local function label(d, x, y, str)
-        fitText(d, x + 2, y, string.upper(str), PW - 36, { size = 12, colour = "#f0f3f670", font = "bold" })
-        return y + 20
+        fitText(d, x + 2, y, string.upper(str), labelW, { size = 13, colour = UI.dim, font = "bold" })
+        return y + 21
     end
 
     -- typing one number: a text box; "+2" adds 2
@@ -316,54 +326,156 @@ local wrap = PE.wrap
 
     -- ---------------------------------------------------------------- the park, in a panel on the left: the group,
     -- arranging it, the park's objects (search, pick, delete) and saving it as a park mod
+    -- the layout (as drawn on the design canvas): the Park panel in the top-left corner, the main panel in the
+    -- top-right, both against the screen's edges; the snap bar along the top between them; the rows at the bottom
+    -- Their sizes can be changed: drag a panel's inner edge (or its bottom edge) with the mouse. Kept between games,
+    -- and kept within limits so what is in them always fits (the lowest widths are the ones the panels are laid out
+    -- for: narrower, their labels would have to shrink).
+    local SIZE_DEF = { lw = 203, lh = 847, rw = 243, rh = 880, sw = 1296, bw = 720 }
+    local SIZE_LIM = { lw = { 190, 460 }, lh = { 640, 4000 }, rw = { 230, 480 }, rh = { 640, 4000 }, sw = { 640, 4000 }, bw = { 600, 1200 } }
+    S.uiSize = {}
+    do
+        local okZ, z = pcall(reskate.storage.get, "panelSizes")
+        if okZ and type(z) == "table" then for k, v in pairs(z) do if SIZE_DEF[k] and type(v) == "number" then S.uiSize[k] = v end end end
+    end
+    local function size(k)
+        local lim = SIZE_LIM[k]
+        return clamp(S.uiSize[k] or SIZE_DEF[k], lim[1], lim[2])
+    end
+    function UI.setSize(k, v, save)
+        local lim = SIZE_LIM[k]
+        S.uiSize[k] = clamp(math.floor(v + 0.5), lim[1], lim[2])
+        if save then pcall(reskate.storage.set, "panelSizes", S.uiSize) end
+    end
+    -- where each is (moved by dragging its title, or the dotted handle): kept between games, always on the screen
+    S.uiPos = {}
+    do
+        local okP, z = pcall(reskate.storage.get, "panelPos")
+        if okP and type(z) == "table" then
+            for k, v in pairs(z) do if type(v) == "table" and type(v.x) == "number" and type(v.y) == "number" then S.uiPos[k] = { x = v.x, y = v.y } end end
+        end
+    end
+    local function place(key, w, h, dx, dy)
+        local W, H = S.size.x, S.size.y
+        local p = S.uiPos[key]
+        local x, y = dx, dy
+        if p then x, y = p.x, p.y end
+        return clamp(x, 0, math.max(0, W - w)), clamp(y, 0, math.max(0, H - h))
+    end
+    local function savePlaces()
+        pcall(reskate.storage.set, "panelSizes", S.uiSize)
+        pcall(reskate.storage.set, "panelPos", S.uiPos)
+    end
+    function UI.resetSizes() S.uiSize, S.uiPos = {}, {}; savePlaces() end
+    -- the handles (built as the panels are drawn): moving ones, and the resize arrows in the bottom corners
+    local handles = {}
+    local function mover(d, key, a, b, box, dots)
+        handles[#handles + 1] = { kind = "move", key = key, a = a, b = b, box = box }
+        if dots then
+            local on = (S.resize and S.resize.key == key and S.resize.kind == "move") or hot(a, b)
+            local cx, cy = (a.x + b.x) / 2, (a.y + b.y) / 2
+            for i = -1, 1 do for j = -1, 0 do
+                d:circle(V(cx + j * 5 + 2.5, cy + i * 6, 0), 1.6, { colour = on and UI.accent or UI.dim, fill = true })
+            end end
+        end
+    end
+    -- side "l" or "r": that bottom corner; wkey the width it changes, hkey the height (nil: the height follows what is in it)
+    local function corner(d, key, box, side, wkey, hkey)
+        local a, b = box.a, box.b
+        local ga = side == "r" and V(b.x - 20, b.y - 20, 0) or V(a.x, b.y - 20, 0)
+        local gb = side == "r" and V(b.x, b.y, 0) or V(a.x + 20, b.y, 0)
+        handles[#handles + 1] = { kind = "corner", key = key, side = side, wkey = wkey, hkey = hkey, a = ga, b = gb, box = box }
+        local rz = S.resize
+        local on = (rz and rz.kind == "corner" and rz.key == key and rz.side == side) or hot(ga, gb)
+        local col = on and UI.accent or UI.dim
+        -- a small arrow pointing out of the corner
+        if side == "r" then d:poly({ V(b.x - 4, b.y - 13, 0), V(b.x - 4, b.y - 4, 0), V(b.x - 13, b.y - 4, 0) }, { colour = col, fill = true })
+        else d:poly({ V(a.x + 4, b.y - 13, 0), V(a.x + 13, b.y - 4, 0), V(a.x + 4, b.y - 4, 0) }, { colour = col, fill = true }) end
+    end
+    -- the mouse on a handle: moves or resizes (true while it does, so nothing else takes the mouse)
+    function UI.gripMouse(c)
+        local px = c.position
+        local rz = S.resize
+        if rz then
+            if not c.left then S.resize = nil; savePlaces() return true end
+            local dx, dy = px.x - rz.from.x, px.y - rz.from.y
+            if rz.kind == "move" then
+                S.uiPos[rz.key] = { x = rz.pos.x + dx, y = rz.pos.y + dy }
+            else
+                -- (its place is fixed first, so it grows from the other corner)
+                local w0 = rz.w0
+                UI.setSize(rz.wkey, rz.side == "r" and (w0 + dx) or (w0 - dx))
+                local nw = size(rz.wkey)
+                if rz.hkey then UI.setSize(rz.hkey, rz.h0 + dy) end
+                S.uiPos[rz.key] = { x = rz.side == "r" and rz.pos.x or (rz.pos.x + w0 - nw), y = rz.pos.y }
+            end
+            return true
+        end
+        if c.left and not S.mouse.left then
+            for i = #handles, 1, -1 do
+                local g = handles[i]
+                if px.x >= g.a.x and px.x <= g.b.x and px.y >= g.a.y and px.y <= g.b.y then
+                    S.resize = { kind = g.kind, key = g.key, side = g.side, wkey = g.wkey, hkey = g.hkey, from = px, pos = { x = g.box.a.x, y = g.box.a.y },
+                        w0 = g.wkey and size(g.wkey) or 0, h0 = g.hkey and (g.box.b.y - g.box.a.y) or 0 }
+                    return true
+                end
+            end
+        end
+        return false
+    end
+    function UI.gripsClear() handles = {} end
     local function parkPanel(d)
         local W, H = S.size.x, S.size.y
         if S.hide.left then
-            local ta, tb = V(14, H / 2 - 40, 0), V(42, H / 2 + 40, 0)
+            local ta, tb = V(0, H / 2 - 40, 0), V(26, H / 2 + 40, 0)
             S.screen.leftBox, S.screen.leftEdge, S.screen.listBox = nil, tb.x, nil
             arrowTab(d, ta, tb, "right", function() toggleHide("left") end)
             return
         end
-        local a = V(14, 14, 0)
-        local b = V(14 + PW, H - 14, 0)
+        local LW, LH = size("lw"), size("lh")
+        local hh = math.min(LH, H - 2)
+        local a = (function() local px, py = place("left", LW, hh, 0, 0); return V(px, py, 0) end)()
+        local b = V(a.x + LW, a.y + hh, 0)
         S.screen.leftBox = { a = a, b = b }
         S.screen.leftEdge = b.x + 30
-        d:rect(a + V(0, 4, 0), b + V(0, 4, 0), { colour = "#00000055", fill = true, rounding = 16 })
-        d:rect(a, b, { colour = "#161b22", fill = true, rounding = 16 })
-        arrowTab(d, V(b.x + 4, H / 2 - 40, 0), V(b.x + 28, H / 2 + 40, 0), "left", function() toggleHide("left") end)
-        local x, w = a.x + 16, PW - 32
-        local y = a.y + 16
-        d:text(V(x, y, 0), "Park", { size = 22, colour = UI.text, font = "heading" })
-        y += 40
+        d:rect(a, b, { colour = UI.panel, fill = true, rounding = 8 })
+        edge(d, a, b, 8)
+        arrowTab(d, V(b.x + 4, (a.y + b.y) / 2 - 40, 0), V(b.x + 26, (a.y + b.y) / 2 + 40, 0), "left", function() toggleHide("left") end)
+        mover(d, "left", a, V(b.x, a.y + 40, 0), { a = a, b = b })
+        corner(d, "left", { a = a, b = b }, "l", "lw", "lh")
+        corner(d, "left", { a = a, b = b }, "r", "lw", "lh")
+        local x, w = a.x + 16, LW - 32
+        labelW = w - 4
+        local y = a.y + 14
+        d:text(V(x, y, 0), "Park", { size = 20, colour = UI.text, font = "heading" })
+        y += 34
         local ng = groupCount()
         local miss = S.missing or {}
-            y = label(d, x, y, ng > 0 and string.format("Group  ·  %d objects", ng) or "Group")
-            local gw = (w - 8) / 2
-            btn(d, V(x, y, 0), V(x + gw, y + 34, 0), "Add / remove picked", function() if S.sel and S.known and S.known[S.sel.id] and S.toggleGroup then S.toggleGroup(S.known[S.sel.id]) end end)
-            btn(d, V(x + gw + 8, y, 0), V(x + w, y + 34, 0), "Clear group", function() if S.clearGroup then S.clearGroup() end end)
+            y = label(d, x, y, ng > 0 and string.format("Group  ·  %d", ng) or "Group")
+            local gw = (w - 6) / 2
+            btn(d, V(x, y, 0), V(x + w, y + 32, 0), "Add / remove picked", function() if S.sel and S.known and S.known[S.sel.id] and S.toggleGroup then S.toggleGroup(S.known[S.sel.id]) end end)
+            y += 38
+            btn(d, V(x, y, 0), V(x + gw, y + 32, 0), "Clear", function() if S.clearGroup then S.clearGroup() end end)
+            btn(d, V(x + gw + 6, y, 0), V(x + w, y + 32, 0), "Copy tools", function() if S.openTools then S.openTools() end end)
             y += 42
-            btn(d, V(x, y, 0), V(x + w, y + 34, 0), "Copy tools   (row, circle, grid)", function() if S.openTools then S.openTools() end end)
-            y += 46
             y = label(d, x, y, "Arrange the group")
-            local aw = (w - 8) / 2
-            btn(d, V(x, y, 0), V(x + aw, y + 30, 0), "Mirror left / right", function() S.arrange("mirrorX") end)
-            btn(d, V(x + aw + 8, y, 0), V(x + w, y + 30, 0), "Mirror front / back", function() S.arrange("mirrorZ") end)
+            btn(d, V(x, y, 0), V(x + gw, y + 30, 0), "Mirror L/R", function() S.arrange("mirrorX") end)
+            btn(d, V(x + gw + 6, y, 0), V(x + w, y + 30, 0), "Mirror F/B", function() S.arrange("mirrorZ") end)
             y += 36
-            local a3 = (w - 12) / 3
-            btn(d, V(x, y, 0), V(x + a3, y + 30, 0), "Line up", function() S.arrange("lineup") end)
-            btn(d, V(x + a3 + 6, y, 0), V(x + 2 * a3 + 6, y + 30, 0), "Space evenly", function() S.arrange("space") end)
-            btn(d, V(x + 2 * a3 + 12, y, 0), V(x + w, y + 30, 0), "Same height", function() S.arrange("level") end)
+            btn(d, V(x, y, 0), V(x + gw, y + 30, 0), "Line up", function() S.arrange("lineup") end)
+            btn(d, V(x + gw + 6, y, 0), V(x + w, y + 30, 0), "Even gaps", function() S.arrange("space") end)
+            y += 36
+            btn(d, V(x, y, 0), V(x + w, y + 30, 0), "Same height", function() S.arrange("level") end)
             y += 40
             -- the park at a glance
             local okS, ps = pcall(FN.parkStats)
             if okS and ps then
                 local line = string.format("%d object%s  ·  %d kind%s", ps.n, ps.n == 1 and "" or "s", ps.kinds, ps.kinds == 1 and "" or "s")
-                if ps.top and ps.topN > 1 then line = line .. string.format("  ·  most: %s ×%d", FN.shortTitle(titleOf(ps.top), 14), ps.topN) end
-                fitText(d, x + 4, y, line, w - 8, { size = 13, colour = UI.dim })
+                fitText(d, x + 2, y, line, w - 4, { size = 13, colour = UI.dim })
                 y += 22
                 if #ps.dups > 0 then
-                    local lbl = string.format("Remove %d stacked duplicate%s", #ps.dups, #ps.dups == 1 and "" or "s")
-                    if S.dupAsk and S.clock - S.dupAsk < 3000 then lbl = "Click again to remove them" end
+                    local lbl = string.format("Remove %d stacked", #ps.dups)
+                    if S.dupAsk and S.clock - S.dupAsk < 3000 then lbl = "Click again" end
                     btn(d, V(x, y, 0), V(x + w, y + 30, 0), lbl, function()
                         if S.dupAsk and S.clock - S.dupAsk < 3000 then S.dupAsk = nil; FN.removeDuplicates()
                         else S.dupAsk = S.clock; say(string.format("%d object%s sit exactly on top of the same object. Click again to remove them.", #ps.dups, #ps.dups == 1 and "" or "s")) end
@@ -371,12 +483,13 @@ local wrap = PE.wrap
                     y += 38
                 end
             end
-            y += 6
+            y += 4
             FN.rebuildList()
-            y = label(d, x, y, string.format("Objects in this park  ·  %d", S.listMatched or 0))
+            y = label(d, x, y, string.format("Objects  ·  %d", S.listMatched or 0))
             local sa, sb = V(x, y, 0), V(x + w, y + 32, 0)
-            d:rect(sa, sb, { colour = hot(sa, sb) and "#ffffff1c" or "#00000040", fill = true, rounding = 8 })
-            textIn(d, sa, sb, S.search ~= "" and ("Search:  " .. S.search) or "Search…", { size = 14, colour = S.search ~= "" and UI.text or UI.dim }, 12)
+            d:rect(sa, sb, { colour = hot(sa, sb) and UI.fieldHot or UI.field, fill = true, rounding = 6 })
+            edge(d, sa, sb, 6)
+            textIn(d, sa, sb, S.search ~= "" and ("Search:  " .. S.search) or "Search the park", { size = 14, colour = S.search ~= "" and UI.text or UI.dim }, 10)
             tileAdd(sa, sb, function()
                 S.typeSearch = true
                 local ok = pcall(reskate.ui.dialog, "ddh_search", { title = "Search objects", message = "Part of a name (empty: all).", field = { text = S.search, max = 40 },
@@ -389,7 +502,7 @@ local wrap = PE.wrap
             -- not grouped): a group's heading folds it; as many rows as fit, the wheel scrolls it
             local disp = UI.listGroups(S.listObjs or {}, S.listFilter ~= 2)
             local rowH = 30
-            local bottom = b.y - 112
+            local bottom = b.y - ((S.blocked or #miss > 0) and 132 or 92)
             local rows = math.max(3, math.floor((bottom - y) / rowH))
             local n = #disp
             S.listTop = clamp(S.listTop or 0, 0, math.max(0, n - rows))
@@ -401,25 +514,27 @@ local wrap = PE.wrap
                 local ra, rb = V(x, y + (r - 1) * rowH, 0), V(x + w, y + r * rowH - 2, 0)
                 if row.head then
                     -- a group's heading: its name and how many, a triangle (down: open, right: folded)
-                    if hot(ra, rb) then d:rect(ra, rb, { colour = UI.tile, fill = true, rounding = 7 }) end
+                    if hot(ra, rb) then d:rect(ra, rb, { colour = UI.field, fill = true, rounding = 6 }) end
                     local cx, cy = x + 9, ra.y + 14
-                    if row.open then d:poly({ V(cx - 5, cy - 3, 0), V(cx + 5, cy - 3, 0), V(cx, cy + 3, 0) }, { colour = "#f0f3f6a0", fill = true })
-                    else d:poly({ V(cx - 3, cy - 5, 0), V(cx + 3, cy, 0), V(cx - 3, cy + 5, 0) }, { colour = "#f0f3f6a0", fill = true }) end
-                    fitText(d, x + 22, ra.y + 7, string.upper(row.head), w - 80, { size = 12, colour = "#f0f3f6b0", font = "bold" })
-                    d:text(V(rb.x - 8, ra.y + 7, 0), tostring(row.n), { size = 12, colour = UI.dim, align = "right" })
+                    if row.open then d:poly({ V(cx - 5, cy - 3, 0), V(cx + 5, cy - 3, 0), V(cx, cy + 3, 0) }, { colour = UI.dim, fill = true })
+                    else d:poly({ V(cx - 3, cy - 5, 0), V(cx + 3, cy, 0), V(cx - 3, cy + 5, 0) }, { colour = UI.dim, fill = true }) end
+                    fitText(d, x + 22, ra.y + 7, string.upper(row.head), w - 56, { size = 12, colour = UI.dim, font = "bold" })
+                    d:text(V(rb.x - 6, ra.y + 7, 0), tostring(row.n), { size = 12, colour = UI.dim, align = "right" })
                     local hname = row.head
                     tileAdd(ra, rb, function() S.listFold = S.listFold or {}; S.listFold[hname] = row.open; S.listFoldV = (S.listFoldV or 0) + 1 end)
                 else
                 local o = row.o
                 local ind = row.indent and 12 or 0
                 local on = S.sel and S.sel.id == o.id
-                if on then d:rect(ra, rb, { colour = UI.accentDim, fill = true, rounding = 7 })
-                elseif S.group[o.id] then d:rect(ra, rb, { colour = "#c49bff2a", fill = true, rounding = 7 })
-                elseif hot(ra, rb) then d:rect(ra, rb, { colour = UI.tile, fill = true, rounding = 7 }) end
+                if on then d:rect(ra, rb, { colour = UI.accent, fill = true, rounding = 6 })
+                elseif S.group[o.id] then d:rect(ra, rb, { colour = UI.mix(UI.purple, UI.panel, 0.78), fill = true, rounding = 6 })
+                elseif hot(ra, rb) then d:rect(ra, rb, { colour = UI.field, fill = true, rounding = 6 }) end
                 local name = titleOf(o.item)
-                if S.group[o.id] then d:circle(V(x + 10 + ind, ra.y + 14, 0), 4, { colour = UI.purple, fill = true }) end
-                fitText(d, x + 20 + ind, ra.y + 6, name, w - 80 - ind, { size = 14, colour = on and UI.accent or UI.text })
-                d:text(V(rb.x - 8, ra.y + 6, 0), string.format("%.0f m", len(o.position - (S.cam.target or o.position))), { size = 13, colour = UI.dim, align = "right" })
+                if S.group[o.id] then d:circle(V(x + 7 + ind, ra.y + 14, 0), 3, { colour = UI.purple, fill = true }) end
+                local distS = string.format("%.0f m", len(o.position - (S.cam.target or o.position)))
+                local dw = measure(d, distS, 12, nil)[1] + 8
+                fitText(d, x + 14 + ind, ra.y + 6, name, w - 20 - ind - dw, { size = 14, colour = on and UI.onAccent or UI.text, font = on and "bold" or nil })
+                d:text(V(rb.x - 5, ra.y + 7, 0), distS, { size = 12, colour = on and UI.onAccent or UI.dim, align = "right" })
                 tileAdd(ra, rb, function()
                     if reskate.input.key("Ctrl") then
                         -- Ctrl+click: in or out of the selection (the picked one joins first)
@@ -439,13 +554,13 @@ local wrap = PE.wrap
                 local f0, f1 = S.listTop / n, math.min(1, (S.listTop + rows) / n)
                 d:rect(V(lb2.x + 4, la.y + (lb2.y - la.y) * f0, 0), V(lb2.x + 7, la.y + (lb2.y - la.y) * f1, 0), { colour = UI.accent, fill = true, rounding = 2 })
             end
-            local pb = b.y - 56
+            local pb = b.y - 46
             -- delete the selected ones (the group, else the picked one): click twice; undo puts them back
             local delIds = FN.replaceTargets()
             local nd = #delIds
-            local dl = nd > 1 and string.format("Delete %d selected", nd) or (nd == 1 and "Delete picked" or "Delete  (pick or Ctrl+click objects)")
-            if nd > 0 and S.listDelAsk and S.clock - S.listDelAsk < 3000 then dl = string.format("Click again to delete %d", nd) end
-            btn(d, V(x, pb - 42, 0), V(x + w, pb - 8, 0), dl, function()
+            local dl = nd > 1 and string.format("Delete %d", nd) or (nd == 1 and "Delete picked" or "Delete")
+            if nd > 0 and S.listDelAsk and S.clock - S.listDelAsk < 3000 then dl = "Click again" end
+            btn(d, V(x, pb - 40, 0), V(x + w, pb - 6, 0), dl, function()
                 if nd == 0 then say("Pick an object, or Ctrl+click objects in the list, then Delete.", true) return end
                 if S.listDelAsk and S.clock - S.listDelAsk < 3000 then
                     S.listDelAsk = nil
@@ -458,9 +573,9 @@ local wrap = PE.wrap
                     say(string.format("Click Delete again to delete %d object%s.", nd, nd == 1 and "" or "s"))
                 end
             end, nd > 0 and "danger" or nil)
-            btn(d, V(x, pb, 0), V(x + w, pb + 34, 0), "Save as park mod  (for online)", function() FN.saveParkModSay() end)
+            btn(d, V(x, pb, 0), V(x + w, pb + 34, 0), "Save as park mod", function() FN.saveParkModSay() end, "primary")
             if S.blocked or #miss > 0 then
-                btn(d, V(x, pb - 84, 0), V(x + w, pb - 50, 0), "Park locked: check again", function()
+                btn(d, V(x, pb - 80, 0), V(x + w, pb - 46, 0), "Locked: check again", function()
                     S.blocked = nil; pcall(findMissing)
                     if #(S.missing or {}) == 0 then say("No missing objects found. Try moving something again.") else say("Fix: run Clean out park.exe with the game closed.", true) end
                 end)
@@ -472,27 +587,38 @@ local wrap = PE.wrap
     -- a small switch shown as a pill: lit when on
     local function pill(d, a, b, labelS, on, fn)
         local h = hot(a, b)
-        d:rect(a, b, { colour = on and (h and "#ffe27a" or UI.accent) or (h and UI.tileHot or UI.tile), fill = true, rounding = 10 })
-        textIn(d, a, b, labelS, { size = 14, colour = on and "#0d1117" or UI.dim, font = on and "bold" or nil, align = "centre" }, 6)
+        d:rect(a, b, { colour = on and (h and UI.accentHot or UI.accent) or (h and UI.fieldHot or UI.field), fill = true, rounding = 8 })
+        if not on then edge(d, a, b, 8) end
+        textIn(d, a, b, labelS, { size = 14, colour = on and UI.onAccent or UI.text, font = on and "bold" or nil, align = "centre" }, 6)
         tileAdd(a, b, fn)
     end
     -- a choice row with a small caption before it
-    local function capW(d, cap) return measure(d, cap, 12, nil)[1] + 10 end
+    local function capW(d, cap) return measure(d, cap, 13, nil)[1] + 10 end
     local function capSeg(d, x, y, w, cap, labels, cur, fn)
         local cw = capW(d, cap)
-        textIn(d, V(x, y, 0), V(x + cw, y + 34, 0), cap, { size = 12, colour = "#f0f3f680" }, 2)
+        textIn(d, V(x, y, 0), V(x + cw, y + 34, 0), cap, { size = 13, colour = UI.dim }, 2)
         seg(d, x + cw, y, w - cw, labels, cur, fn)
     end
     local function snapBar(d)
         local W = S.size.x
-        local left, right = S.screen.leftEdge or 14, S.screen.rightEdge or (W - 14)
+        -- (1296 wide in the middle of the screen, along its top edge, and never over the panels)
+        local half = size("sw") / 2
+        local left = math.max(W / 2 - half, S.screen.leftEdge or 14)
+        local right = math.min(W / 2 + half, S.screen.rightEdge or (W - 14))
+        local top = 0
+        -- (moved: where it was put, as wide as set)
+        if S.uiPos.snap then
+            local sw2 = math.min(size("sw"), W)
+            left, top = place("snap", sw2, 60, left, 0)
+            right = left + sw2
+        end
         local cx = (left + right) / 2
         if S.hide.snap then
             S.screen.snapBox = nil
-            arrowTab(d, V(cx - 40, 14, 0), V(cx + 40, 40, 0), "down", function() toggleHide("snap") end)
+            arrowTab(d, V(cx - 40, 0, 0), V(cx + 40, 24, 0), "down", function() toggleHide("snap") end)
             return
         end
-        local a, b = V(left, 14, 0), V(right, 60, 0)
+        local a, b = V(left, top, 0), V(right, top + 46, 0)
         -- the pieces and their share of the width
         local cur = S.snapPick == nil and 1 or (S.snapPick == "off" and 3 or 2)
         local nextName = "Next"
@@ -523,10 +649,11 @@ local wrap = PE.wrap
                 btn(d, V(x + w - 24, y + 4, 0), V(x + w, y + 30, 0), "+", function() FN.setSnapStrength(k + 0.1, true) end)
                 local ba, bb = V(x + 30, y + 6, 0), V(x + w - 30, y + 28, 0)
                 local f = (k - 0.2) / 1.8
-                d:rect(ba, bb, { colour = "#00000040", fill = true, rounding = 10 })
-                d:rect(ba, V(ba.x + (bb.x - ba.x) * f, bb.y, 0), { colour = UI.accentDim, fill = true, rounding = 10 })
+                d:rect(ba, bb, { colour = UI.field, fill = true, rounding = 6 })
+                d:rect(ba, V(ba.x + (bb.x - ba.x) * f, bb.y, 0), { colour = UI.accentDim, fill = true, rounding = 6 })
+                edge(d, ba, bb, 6)
                 local mark = ba.x + (bb.x - ba.x) * (0.8 / 1.8)
-                d:rect(V(mark - 1, ba.y - 2, 0), V(mark + 1, bb.y + 2, 0), { colour = "#ffffff55", fill = true })
+                d:rect(V(mark - 1, ba.y - 2, 0), V(mark + 1, bb.y + 2, 0), { colour = UI.dim, fill = true })
                 textIn(d, ba, bb, string.format("Strength %d%%", math.floor(k * 100 + 0.5)), { size = 13, colour = UI.text, align = "centre" }, 4)
                 local function setFromMouse()
                     local m = S.mouse and S.mouse.pos
@@ -567,7 +694,7 @@ local wrap = PE.wrap
         -- in rows: as many pieces as fit on a row at their own width, the rest on the next row; each row's spare
         -- room shared out by the pieces' weights (so nothing is ever squeezed: the bar grows a row instead)
         local gap = 8
-        local room = (right - left) - 16
+        local room = (right - left) - 16 - 14
         local rowsL, rowN, rowW = {}, {}, 0
         for i in ipairs(parts) do
             local add = (#rowN > 0 and gap or 0) + needs[i]
@@ -575,18 +702,44 @@ local wrap = PE.wrap
             rowN[#rowN + 1] = i; rowW += add
         end
         rowsL[#rowsL + 1] = rowN
+        -- (then shared out evenly over that many rows, in order: so no row is left with two pieces stretched wide)
+        if #rowsL > 1 then
+            local total = 0
+            for i in ipairs(parts) do total += needs[i] + gap end
+            local target = total / #rowsL
+            local even, cur, cw2 = {}, {}, 0
+            for i in ipairs(parts) do
+                local left2 = #parts - i + 1
+                local rowsLeft = #rowsL - #even
+                if #cur > 0 and ((cw2 + needs[i] > target and rowsLeft > 1) or cw2 + gap + needs[i] > room or left2 < rowsLeft) then
+                    even[#even + 1] = cur; cur, cw2 = {}, 0
+                end
+                cur[#cur + 1] = i; cw2 += needs[i] + gap
+            end
+            even[#even + 1] = cur
+            local ok2 = #even == #rowsL
+            for _, r in ipairs(even) do
+                local wsum2 = -gap
+                for _, i in ipairs(r) do wsum2 += needs[i] + gap end
+                if wsum2 > room then ok2 = false end
+            end
+            if ok2 then rowsL = even end
+        end
         local ROW = 40
-        b = V(right, 14 + 12 + ROW * #rowsL - (ROW - 34), 0)
+        b = V(right, top + 12 + ROW * #rowsL - (ROW - 34), 0)
         S.screen.snapBox = { a = a, b = b }
-        d:rect(a + V(0, 3, 0), b + V(0, 3, 0), { colour = "#00000055", fill = true, rounding = 14 })
-        d:rect(a, b, { colour = "#161b22", fill = true, rounding = 14 })
+        d:rect(a, b, { colour = UI.panel, fill = true, rounding = 8 })
+        edge(d, a, b, 8)
+        mover(d, "snap", V(a.x + 2, a.y + 4, 0), V(a.x + 18, b.y - 4, 0), { a = a, b = b }, true)
+        corner(d, "snap", { a = a, b = b }, "l", "sw", nil)
+        corner(d, "snap", { a = a, b = b }, "r", "sw", nil)
         arrowTab(d, V(cx - 36, b.y + 4, 0), V(cx + 36, b.y + 24, 0), "up", function() toggleHide("snap") end)
         local hint, hx = nil, 0
         for r, row in ipairs(rowsL) do
             local need, wsum = gap * (#row - 1), 0
             for _, i in ipairs(row) do need += needs[i]; wsum += parts[i][1] end
             local spare = room - need
-            local x = a.x + 8
+            local x = a.x + 8 + 14
             local y = a.y + 6 + (r - 1) * ROW
             for _, i in ipairs(row) do
                 local pt = parts[i]
@@ -605,7 +758,8 @@ local wrap = PE.wrap
             local hh = #lines * lh + (#lines - 1) * lgap + 18
             local hx0 = math.max(a.x, math.min(b.x - hw, hx - hw / 2))
             local ha, hb = V(hx0, b.y + 30, 0), V(hx0 + hw, b.y + 30 + hh, 0)
-            d:rect(ha, hb, { colour = "#1f2630", fill = true, rounding = 9 })
+            d:rect(ha, hb, { colour = UI.panel, fill = true, rounding = 8 })
+            edge(d, ha, hb, 8)
             d:rect(V(ha.x, ha.y + 6, 0), V(ha.x + 3, hb.y - 6, 0), { colour = UI.accent, fill = true, rounding = 2 })
             for i, l in ipairs(lines) do
                 d:text(V(ha.x + 16, ha.y + 9 + (i - 1) * (lh + lgap), 0), l, { size = 14, colour = UI.text, font = "body" })
@@ -628,70 +782,88 @@ local wrap = PE.wrap
         local W, H = S.size.x, S.size.y
         if S.hide.right then
             -- (hidden: only a tab at the screen's edge, to bring it back)
-            local ta, tb = V(W - 14 - 28, H / 2 - 40, 0), V(W - 14, H / 2 + 40, 0)
+            local ta, tb = V(W - 26, H / 2 - 40, 0), V(W, H / 2 + 40, 0)
             S.screen.panelBox, S.screen.rightEdge = nil, ta.x
             arrowTab(d, ta, tb, "left", function() toggleHide("right") end)
             parkPanel(d)
             snapBar(d)
             return
         end
-        local a = V(W - PW - 14, 14, 0)
-        local b = V(W - 14, H - 14, 0)
+        local RW, RH = size("rw"), size("rh")
+        local hh = math.min(RH, H - 2)
+        local a = (function() local px, py = place("right", RW, hh, W - RW, 0); return V(px, py, 0) end)()
+        local b = V(a.x + RW, a.y + hh, 0)
         S.screen.panelBox = { a = a, b = b }
         S.screen.rightEdge = a.x - 30
-        d:rect(a + V(0, 4, 0), b + V(0, 4, 0), { colour = "#00000055", fill = true, rounding = 16 })
-        d:rect(a, b, { colour = "#161b22", fill = true, rounding = 16 })
-        arrowTab(d, V(a.x - 28, H / 2 - 40, 0), V(a.x - 4, H / 2 + 40, 0), "right", function() toggleHide("right") end)
-        local x, w = a.x + 16, PW - 32
-        local y = a.y + 16
-        -- title and Done
-        d:text(V(x, y, 0), "DDH Park Editor", { size = 22, colour = UI.text, font = "heading" })
-        d:text(V(x, y + 27, 0), version and ("Quick Drop+   ·   v" .. version) or "Quick Drop+", { size = 13, colour = UI.dim })
-        btn(d, V(b.x - 16 - 86, y + 2, 0), V(b.x - 16, y + 34, 0), "Done", function() closeEditor() end)
-        y += 54
+        d:rect(a, b, { colour = UI.panel, fill = true, rounding = 8 })
+        edge(d, a, b, 8)
+        arrowTab(d, V(a.x - 26, (a.y + b.y) / 2 - 40, 0), V(a.x - 4, (a.y + b.y) / 2 + 40, 0), "right", function() toggleHide("right") end)
+        mover(d, "right", a, V(b.x, a.y + 40, 0), { a = a, b = b })
+        corner(d, "right", { a = a, b = b }, "l", "rw", "rh")
+        corner(d, "right", { a = a, b = b }, "r", "rw", "rh")
+        local x, w = a.x + 16, RW - 32
+        labelW = w - 4
+        local y = a.y + 14
+        -- title; the version, Colours and Done
+        fitText(d, x, y, "DDH Park Editor", w, { size = 20, colour = UI.text, font = "heading" })
+        -- (the version beside the title, when the panel is wide enough for both)
+        if version then
+            local tw2 = measure(d, "DDH Park Editor", 20, "heading")[1]
+            local vS = "v" .. version
+            local vw = measure(d, vS, 13, nil)[1]
+            if tw2 + 10 + vw <= w then d:text(V(x + w, y + 6, 0), vS, { size = 13, colour = UI.dim, align = "right" }) end
+        end
+        y += 32
+        local dw = math.floor((w - 6) * 0.36)
+        btn(d, V(x, y, 0), V(x + w - dw - 6, y + 30, 0), "Appearance", function() if FN.openColours then FN.openColours() end end)
+        btn(d, V(x + w - dw, y, 0), V(x + w, y + 30, 0), "Done", function() closeEditor() end)
+        y += 42
         -- what is picked
         local t = S.sel and S.target
         local ng = groupCount()
-        d:rect(V(x, y, 0), V(x + w, y + 64, 0), { colour = "#ffffff0c", fill = true, rounding = 12 })
-        local title, sub, dot = "Nothing picked", "Click an object, or aim the cross and press A", "#ffffff40"
+        d:rect(V(x, y, 0), V(x + w, y + 60, 0), { colour = UI.field, fill = true, rounding = 6 })
+        local title, sub, dot = "Nothing picked", "Click an object, or aim and press A", UI.faint
         if t then
             title = titleOf(S.sel.item)
-            sub = string.format("%.0f°   ·   size %.2f", math.deg(t.heading), t.scale)
+            sub = string.format("%.0f°  ·  size %.2f", math.deg(t.heading), t.scale)
             dot = UI.accent
-            if S.group[S.sel.id] and ng > 1 then sub = sub .. string.format("   ·   group of %d", ng); dot = UI.purple end
+            if S.group[S.sel.id] and ng > 1 then sub = sub .. string.format("  ·  group %d", ng); dot = UI.purple end
         elseif ng > 0 then
-            title, sub, dot = string.format("Group of %d", ng), "Pick one of them up to move them all", UI.purple
+            title, sub, dot = string.format("Group of %d", ng), "Pick one up to move them all", UI.purple
         end
-        d:circle(V(x + 18, y + 22, 0), 5, { colour = dot, fill = true })
-        fitText(d, x + 32, y + 11, title, w - 44, { size = 17, colour = UI.text, font = "bold" })
-        fitText(d, x + 32, y + 36, sub, w - 44, { size = 13, colour = UI.dim })
-        y += 76
+        d:circle(V(x + 13, y + 20, 0), 4, { colour = dot, fill = true })
+        fitText(d, x + 24, y + 10, title, w - 32, { size = 15, colour = UI.text, font = "bold" })
+        fitText(d, x + 24, y + 33, sub, w - 32, { size = 13, colour = UI.dim })
+        y += 70
         -- warnings and the last message
         local miss = S.missing or {}
         if S.blocked or #miss > 0 then
-            d:rect(V(x, y, 0), V(x + w, y + 30, 0), { colour = "#f8514933", fill = true, rounding = 9 })
-            fitText(d, x + 12, y + 7, string.format("Park locked: %d from a missing mod (see Park)", #miss), w - 20, { size = 13, colour = "#ffb3ad" })
+            d:rect(V(x, y, 0), V(x + w, y + 30, 0), { colour = "#5c1d1b", fill = true, rounding = 6 })
+            fitText(d, x + 10, y + 7, string.format("Park locked: %d missing (see Park)", #miss), w - 16, { size = 13, colour = "#ffd2cf" })
             y += 38
         end
-        -- the everyday buttons
-        local bw = (w - 18) / 4
-        btn(d, V(x, y, 0), V(x + bw, y + 36, 0), "+ Add", function() if S.openPicker then S.openPicker() end end, "primary")
-        btn(d, V(x + bw + 6, y, 0), V(x + 2 * bw + 6, y + 36, 0), "Undo", function() undo() end)
-        btn(d, V(x + 2 * bw + 12, y, 0), V(x + 3 * bw + 12, y + 36, 0), "Redo", function() if S.redoFn then S.redoFn() end end)
-        btn(d, V(x + 3 * bw + 18, y, 0), V(x + w, y + 36, 0), "Controls", function() S.controlsOpen = true end)
-        y += 48
+        -- the everyday buttons, two by two
+        local bw = (w - 6) / 2
+        btn(d, V(x, y, 0), V(x + bw, y + 32, 0), "+ Add", function() if S.openPicker then S.openPicker() end end, "primary")
+        btn(d, V(x + bw + 6, y, 0), V(x + w, y + 32, 0), "Controls", function() S.controlsOpen = true end)
+        y += 38
+        btn(d, V(x, y, 0), V(x + bw, y + 32, 0), "Undo", function() undo() end)
+        btn(d, V(x + bw + 6, y, 0), V(x + w, y + 32, 0), "Redo", function() if S.redoFn then S.redoFn() end end)
+        y += 44
         -- tabs
         S.ptab = S.ptab or 1
         if S.ptab ~= 1 and S.ptab ~= 4 and S.ptab ~= 5 then S.ptab = 1 end
         local tw = w / #TABS
+        d:rect(V(x - 2, y - 2, 0), V(x + w + 2, y + 36, 0), { colour = UI.field, fill = true, rounding = 8 })
         for i, n in ipairs(TABS) do
             local ta, tb = V(x + (i - 1) * tw, y, 0), V(x + i * tw, y + 34, 0)
             local on = TAB_IDS[i] == S.ptab
-            textIn(d, ta, V(tb.x, tb.y - 4, 0), n, { size = 16, colour = on and UI.text or UI.dim, font = on and "bold" or nil, align = "centre" }, 4)
-            d:rect(V(ta.x + 6, y + 31, 0), V(tb.x - 6, y + 34, 0), { colour = on and UI.accent or "#ffffff14", fill = true, rounding = 2 })
+            if on then d:rect(V(ta.x + 2, y, 0), V(tb.x - 2, tb.y, 0), { colour = UI.accent, fill = true, rounding = 6 })
+            elseif hot(ta, tb) then d:rect(V(ta.x + 2, y, 0), V(tb.x - 2, tb.y, 0), { colour = UI.fieldHot, fill = true, rounding = 6 }) end
+            textIn(d, ta, tb, n, { size = 15, colour = on and UI.onAccent or UI.dim, font = "bold", align = "centre" }, 4)
             tileAdd(ta, tb, function() S.ptab = TAB_IDS[i] end)
         end
-        y += 48
+        y += 44
         local st = STEPS[S.stepSize] or STEPS[2]
         if S.ptab == 1 then
             if not t then
@@ -704,65 +876,68 @@ local wrap = PE.wrap
                 if tilted(S.sel.id) and S.tiltWhy and not S.tiltHeld[S.sel.id] then
                     fitText(d, x + 4, y, "Tilt waits: " .. S.tiltWhy, w - 8, { size = 13, colour = UI.orange }); y += 22
                 end
-                local qw = (w - 16) / 3
-                btn(d, V(x, y, 0), V(x + qw, y + 34, 0), "Straighten", function() markUndo(); t.heading = round(t.heading, math.pi / 2); if S.tilt[S.sel.id] then S.tilt[S.sel.id] = nil; S.tiltSaveDue = true end; S.dirty = true end)
-                btn(d, V(x + qw + 8, y, 0), V(x + 2 * qw + 8, y + 34, 0), "Size 1", function() markUndo(); t.scale = 1; S.dirty = true end)
-                btn(d, V(x + 2 * qw + 16, y, 0), V(x + w, y + 34, 0), "Look at it", function() S.cam.goal = t.pos end)
-                y += 42
+                local qw = (w - 6) / 2
+                btn(d, V(x, y, 0), V(x + qw, y + 32, 0), "Straighten", function() markUndo(); t.heading = round(t.heading, math.pi / 2); if S.tilt[S.sel.id] then S.tilt[S.sel.id] = nil; S.tiltSaveDue = true end; S.dirty = true end)
+                btn(d, V(x + qw + 6, y, 0), V(x + w, y + 32, 0), "Size 1", function() markUndo(); t.scale = 1; S.dirty = true end)
+                y += 38
+                btn(d, V(x, y, 0), V(x + w, y + 32, 0), "Look at it", function() S.cam.goal = t.pos end)
+                y += 40
                 y = switch(d, x, y, w, "Measure   (M)", S.measureOn, function() FN.toggleMeasure() end) + 8
                 local nr = #FN.replaceTargets()
-                btn(d, V(x, y, 0), V(x + w, y + 34, 0), nr > 1 and string.format("Replace all %d with another object…", nr) or "Replace with another object…", function() FN.openReplace() end)
-                y += 48
+                btn(d, V(x, y, 0), V(x + w, y + 32, 0), nr > 1 and string.format("Replace all %d…", nr) or "Replace with…", function() FN.openReplace() end)
+                y += 44
             end
             y = label(d, x, y, "Step size")
             y = seg(d, x, y, w, { "Fine", "Normal", "Big" }, S.stepSize, function(i) S.stepSize = i end) + 6
-            fitText(d, x + 4, y, string.format("%s m  ·  %s  ·  size %s", string.format("%.2f", st.m), string.format(st.df, st.deg), string.format("%.2f", st.size)), w - 8, { size = 13, colour = UI.dim })
+            fitText(d, x + 2, y, string.format("%s m  ·  %s  ·  ×%s", string.format("%.2f", st.m), string.format(st.df, st.deg), string.format("%.2f", st.size)), w - 4, { size = 13, colour = UI.dim })
         elseif S.ptab == 4 then
             -- ---------------------------------------------------------------- sets
             local nm = #(S.setMembers and S.setMembers() or {})
-            fitText(d, x + 4, y, nm > 0 and string.format("Saves the %s (%d object%s)", nm > 1 and "group" or "picked object", nm, nm == 1 and "" or "s")
-                or "Pick an object or make a group,", w - 8, { size = 13, colour = UI.dim })
-            fitText(d, x + 4, y + 18, nm > 0 and "to place again on any map or server." or "then save it here.", w - 8, { size = 13, colour = UI.dim })
+            fitText(d, x + 2, y, nm > 0 and string.format("Saves the %s (%d)", nm > 1 and "group" or "picked one", nm)
+                or "Pick an object or a group,", w - 4, { size = 13, colour = UI.dim })
+            fitText(d, x + 2, y + 18, nm > 0 and "to place on any map or server." or "then save it here.", w - 4, { size = 13, colour = UI.dim })
             y += 42
-            btn(d, V(x, y, 0), V(x + w, y + 38, 0), nm > 0 and string.format("Save as a set  (%d)", nm) or "Save as a set", function()
+            btn(d, V(x, y, 0), V(x + w, y + 34, 0), nm > 0 and string.format("Save as a set  (%d)", nm) or "Save as a set", function()
                 if nm == 0 then say("Pick an object or make a group first.", true) return end
                 local ok = pcall(reskate.ui.dialog, "ddh_setname", { title = "Save as a set", message = "A name for it (letters, numbers, spaces).", field = { text = "My set", max = 40 },
                     buttons = { { id = "apply", label = "Save" }, { id = "close", label = "Cancel" } } })
                 if ok then S.typing = true end
             end, nm > 0 and "primary" or nil)
-            y += 52
+            y += 46
             if not S.sets or S.clock - (S.setsAt or -1e9) > 5000 then S.loadSets() end
             y = label(d, x, y, string.format("Saved sets  ·  %d", #S.sets))
             if #S.sets == 0 then
                 fitText(d, x + 4, y, "None yet.", w - 8, { size = 14, colour = UI.dim }); y += 26
             end
-            local rowH = 100
-            local maxRows = math.max(2, math.floor((b.y - 120 - y) / rowH))
+            local rowH = 132
+            local maxRows = math.max(2, math.floor((b.y - 100 - y) / rowH))
             for i, set in ipairs(S.sets) do
                 if i > maxRows then
-                    fitText(d, x + 4, y, string.format("+%d more (in Add object > Sets)", #S.sets - maxRows), w - 8, { size = 13, colour = UI.dim }); y += 24
+                    fitText(d, x + 2, y, string.format("+%d more (Add > Sets)", #S.sets - maxRows), w - 4, { size = 13, colour = UI.dim }); y += 24
                     break
                 end
                 local ra, rb = V(x, y, 0), V(x + w, y + rowH - 6, 0)
-                d:rect(ra, rb, { colour = UI.tile, fill = true, rounding = 9 })
+                d:rect(ra, rb, { colour = UI.field, fill = true, rounding = 6 })
+                edge(d, ra, rb, 6)
                 -- its layout from above
-                local pa, pb2 = V(x + 6, y + 6, 0), V(x + 104, y + 58, 0)
-                d:rect(pa, pb2, { colour = "#00000040", fill = true, rounding = 6 })
+                local pa, pb2 = V(x + 6, y + 6, 0), V(x + 76, y + 58, 0)
+                d:rect(pa, pb2, { colour = UI.panel, fill = true, rounding = 4 })
                 pcall(UI.drawSetPreview, d, set, pa + V(4, 4, 0), pb2 - V(4, 4, 0), UI.purple)
                 local nmS = set.name
-                fitText(d, x + 114, y + 9, nmS, w - 120, { size = 15, colour = UI.text, font = "bold" })
-                fitText(d, x + 114, y + 29, string.format("%d objects", #set.objects), w - 120, { size = 12, colour = UI.dim })
+                fitText(d, x + 84, y + 10, nmS, w - 90, { size = 14, colour = UI.text, font = "bold" })
+                fitText(d, x + 84, y + 32, string.format("%d objects", #set.objects), w - 90, { size = 13, colour = UI.dim })
                 local by = y + 64
-                local bw4 = (w - 12 - 18) / 4
+                local bw2 = (w - 12 - 6) / 2
                 local bx = x + 6
-                btn(d, V(bx, by, 0), V(bx + bw4, by + 28, 0), "Place", function() S.carrySet(set, FN.crossPoint(), wrap(S.cam.yaw + math.pi)) end, "primary")
-                btn(d, V(bx + bw4 + 6, by, 0), V(bx + 2 * bw4 + 6, by + 28, 0), "Rename", function()
+                btn(d, V(bx, by, 0), V(bx + bw2, by + 28, 0), "Place", function() S.carrySet(set, FN.crossPoint(), wrap(S.cam.yaw + math.pi)) end, "primary")
+                btn(d, V(bx + bw2 + 6, by, 0), V(bx + 2 * bw2 + 6, by + 28, 0), "Rename", function()
                     S.renameSet = set
                     local ok = pcall(reskate.ui.dialog, "ddh_setrename", { title = "Rename set", message = "A new name.", field = { text = set.name, max = 40 },
                         buttons = { { id = "apply", label = "Rename" }, { id = "close", label = "Cancel" } } })
                     if ok then S.typing = true end
                 end)
-                btn(d, V(bx + 2 * bw4 + 12, by, 0), V(bx + 3 * bw4 + 12, by + 28, 0), "Update", function()
+                by += 32
+                btn(d, V(bx, by, 0), V(bx + bw2, by + 28, 0), "Update", function()
                     if S.updSetAsk == set.file and S.clock - (S.updSetAt or 0) < 3000 then
                         S.updSetAsk = nil
                         S.saveSet(set.name)
@@ -773,54 +948,54 @@ local wrap = PE.wrap
                         say(string.format("Click Update again to save the %d selected over \"%s\".", nm2, set.name))
                     end
                 end)
-                btn(d, V(bx + 3 * bw4 + 18, by, 0), V(rb.x - 6, by + 28, 0), "Delete", function()
+                btn(d, V(bx + bw2 + 6, by, 0), V(rb.x - 6, by + 28, 0), "Delete", function()
                     if S.delSetAsk == set.file and S.clock - (S.delSetAt or 0) < 3000 then S.delSetAsk = nil; S.deleteSet(set)
                     else S.delSetAsk, S.delSetAt = set.file, S.clock; say("Click Delete again to delete \"" .. set.name .. "\".") end
                 end)
                 y += rowH
             end
-            local pb = b.y - 56
-            btn(d, V(x, pb, 0), V(x + w, pb + 34, 0), "Open the sets folder  (to share them)", function() S.openSetsFolder() end)
+            local pb = b.y - 46
+            btn(d, V(x, pb, 0), V(x + w, pb + 34, 0), "Open sets folder", function() S.openSetsFolder() end)
         end
         if S.ptab == 5 then
             -- ---------------------------------------------------------------- history: the steps undo goes back
             -- through, newest first; clicking one undoes back to before it (one step at a time)
             local list = S.undo or {}
-            fitText(d, x + 4, y, "Click a step to undo back to before it.", w - 8, { size = 13, colour = UI.dim })
+            fitText(d, x + 2, y, "Click a step to undo to it.", w - 4, { size = 13, colour = UI.dim })
             y += 24
             if (S.undoLeft or 0) > 0 then
                 fitText(d, x + 4, y, string.format("Undoing...  %d to go", S.undoLeft), w - 8, { size = 13, colour = UI.accent }); y += 22
             end
             y = label(d, x, y, string.format("Steps  ·  %d", #list))
             if #list == 0 then fitText(d, x + 4, y, "Nothing to undo yet.", w - 8, { size = 14, colour = UI.dim }); y += 26 end
-            local rowH = 34
-            local maxRows = math.max(3, math.floor((b.y - 110 - y) / rowH))
+            local rowH = 46
+            local maxRows = math.max(3, math.floor((b.y - 90 - y) / rowH))
             for k = 1, math.min(#list, maxRows) do
                 local idx = #list - k + 1
                 local u = list[idx]
                 local ra, rb = V(x, y, 0), V(x + w, y + rowH - 4, 0)
                 local h = hot(ra, rb)
-                d:rect(ra, rb, { colour = h and UI.tileHot or UI.tile, fill = true, rounding = 8 })
+                d:rect(ra, rb, { colour = h and UI.fieldHot or UI.field, fill = true, rounding = 6 })
+                edge(d, ra, rb, 6)
                 local ago = u.at and math.max(0, (S.clock - u.at) / 1000) or nil
                 local agoS = ago and (ago < 60 and string.format("%.0f s", ago) or (ago < 3600 and string.format("%.0f min", ago / 60) or string.format("%.0f h", ago / 3600))) or ""
                 local okN, nmS = pcall(FN.undoName, u)
-                local agoW = 58
-                fitText(d, x + 10, y + 7, (okN and nmS) or "A step", w - 20 - agoW, { size = 14, colour = UI.text })
-                textIn(d, V(rb.x - agoW, y, 0), V(rb.x - 6, rb.y, 0), agoS, { size = 12, colour = UI.dim, align = "right" }, 2)
+                fitText(d, x + 10, y + 5, (okN and nmS) or "A step", w - 20, { size = 14, colour = UI.text })
+                fitText(d, x + 10, y + 23, agoS ~= "" and (agoS .. " ago") or "", w - 20, { size = 12, colour = UI.dim })
                 tileAdd(ra, rb, function() FN.undoSteps(k) end)
                 y += rowH
             end
-            if #list > maxRows then fitText(d, x + 4, y, string.format("+%d older", #list - maxRows), w - 8, { size = 13, colour = UI.dim }); y += 22 end
+            if #list > maxRows then fitText(d, x + 2, y, string.format("+%d older", #list - maxRows), w - 4, { size = 13, colour = UI.dim }); y += 22 end
             local nr = #(S.redo or {})
             if nr > 0 then
                 y += 6
-                fitText(d, x + 4, y, string.format("%d step%s can be redone  (Redo, or Ctrl+Y)", nr, nr == 1 and "" or "s"), w - 8, { size = 13, colour = UI.dim })
+                fitText(d, x + 2, y, string.format("%d can be redone (Redo)", nr), w - 4, { size = 13, colour = UI.dim })
             end
         end
         -- the last message, along the bottom
         if S.msg ~= "" and S.clock < S.msgUntil and S.ptab ~= 3 and S.ptab ~= 4 and S.ptab ~= 5 then
             local msg = S.msg
-            fitText(d, x + 4, b.y - 30, msg, w - 8, { size = 13, colour = UI.dim })
+            fitText(d, x + 2, b.y - 28, msg, w - 4, { size = 13, colour = UI.dim })
         end
         parkPanel(d)
         snapBar(d)
@@ -854,11 +1029,30 @@ local wrap = PE.wrap
     -- prompts: position on the left, turn, size and tilt on the right, the same rows as the panel's Edit tab (the
     -- mouse can use them without leaving the controller's view)
     local padTiles = {}
-    UI.PAD_ROWS_H = 186
-    -- (the room they take at the bottom of the screen, for the controller's prompts above them)
+    UI.PAD_ROWS_H = 86
+    UI.PROMPT_H = 40
+    -- (the room they take at the bottom of the screen, above the prompts)
     function UI.padRowsSpace()
         if not (S.sel and S.target) then return 0 end
-        return S.hide.rows and 40 or UI.PAD_ROWS_H + 12
+        return S.hide.rows and 28 or UI.PAD_ROWS_H + 2
+    end
+    -- one cell: name  [-] value [+]  (click the value to type it; click the name to switch, where it can)
+    local function cell(d, x, y, w, name, value, dec, inc, edit, off, nameFn)
+        local nw = 40
+        local na, nb = V(x, y, 0), V(x + nw, y + 30, 0)
+        textIn(d, na, nb, name, { size = 13, colour = off and UI.faint or (nameFn and UI.accent or UI.dim), font = nameFn and "bold" or nil }, 1)
+        if nameFn then tileAdd(na, nb, nameFn) end
+        local m1a, m1b = V(x + nw, y, 0), V(x + nw + 30, y + 30, 0)
+        local p1a, p1b = V(x + w - 30, y, 0), V(x + w, y + 30, 0)
+        local va, vb = V(m1b.x + 4, y, 0), V(p1a.x - 4, y + 30, 0)
+        for _, bx in ipairs({ { m1a, m1b, "-", dec }, { va, vb, value, edit }, { p1a, p1b, "+", inc } }) do
+            local h = not off and hot(bx[1], bx[2])
+            d:rect(bx[1], bx[2], { colour = h and UI.fieldHot or UI.field, fill = true, rounding = 6 })
+            edge(d, bx[1], bx[2], 6)
+            textIn(d, bx[1], bx[2], bx[3], { size = bx[3] == value and 14 or 17, colour = off and UI.faint or UI.text, align = "centre" }, 3)
+            if not off and bx[4] then tileAdd(bx[1], bx[2], bx[4]) end
+        end
+        if off then d:line(V(x + 2, y + 15, 0), V(x + w - 2, y + 15, 0), { colour = "#f85149b0", thickness = 2 }) end
     end
     function UI.padRows(d, inMouseView)
         local t = S.sel and S.target
@@ -866,57 +1060,61 @@ local wrap = PE.wrap
         local saved = tiles
         tiles = {}
         local W, H = S.size.x, S.size.y
-        local bw, gap = 380, 14
-        local tw = 2 * bw + 3 * gap
-        -- (in the mouse view, centred in the room between the panels)
+        local tw = size("bw")
         local cx = W / 2
-        if inMouseView then
-            local left, right = S.screen.leftEdge or 0, S.screen.rightEdge or W
-            cx = math.max(tw / 2 + 14, (left + right) / 2)
-        end
         S.padRowsAt = S.clock
+        -- (right on the prompts at the bottom: in the mouse view there are none, so at the very bottom)
+        local bottom = inMouseView and H or (H - UI.PROMPT_H)
         if S.hide.rows then
-            -- (hidden: only a tab at the bottom, to bring them back)
-            local ta, tb = V(cx - 40, H - 14 - 26, 0), V(cx + 40, H - 14, 0)
+            -- (hidden: only a tab, to bring them back)
+            local ta, tb = V(cx - 40, bottom - 26, 0), V(cx + 40, bottom - 2, 0)
             S.screen.padRows = { a = ta, b = tb }
             arrowTab(d, ta, tb, "up", function() toggleHide("rows") end, true)
             padTiles = tiles
             tiles = saved
             return
         end
-        local a = V(math.floor(cx - tw / 2), H - 14 - UI.PAD_ROWS_H, 0)
-        local b = V(a.x + tw, H - 14, 0)
+        local a = (function() local px, py = place("rows", tw, UI.PAD_ROWS_H, math.floor(cx - tw / 2), bottom - 2 - UI.PAD_ROWS_H); return V(px, py, 0) end)()
+        local b = V(a.x + tw, a.y + UI.PAD_ROWS_H, 0)
+        cx = (a.x + b.x) / 2
         S.screen.padRows = { a = V(a.x, a.y - 24, 0), b = b }
-        d:rect(a, b, { colour = "#0d1117", fill = true, rounding = 16 })
-        arrowTab(d, V(cx - 40, a.y - 24, 0), V(cx + 40, a.y - 2, 0), "down", function() toggleHide("rows") end, true)
+        d:rect(a, b, { colour = UI.panel, fill = true, rounding = 8 })
+        edge(d, a, b, 8)
+        mover(d, "rows", V(a.x + 2, a.y + 4, 0), V(a.x + 18, b.y - 4, 0), { a = a, b = b }, true)
+        corner(d, "rows", { a = a, b = b }, "l", "bw", nil)
+        corner(d, "rows", { a = a, b = b }, "r", "bw", nil)
+        arrowTab(d, V(cx - 36, a.y - 22, 0), V(cx + 36, a.y - 2, 0), "down", function() toggleHide("rows") end, true)
         local st = STEPS[S.stepSize] or STEPS[2]
-        -- position
-        local x, y = a.x + gap, a.y + 12
-        y = label(d, x, y, "Position")
+        local gap, pad = 14, 12
+        local cw = (tw - 2 * pad - 14 - 2 * gap) / 3
+        local function cx0(i) return a.x + pad + 14 + (i - 1) * (cw + gap) end
+        local y1, y2 = a.y + 10, a.y + 46
         local function setP(px, py, pz) markUndo(); t.pos = V(px, py, pz); S.dirty = true end
-        y = stepRow(d, x, y, bw, "X", string.format("%.3f", t.pos.x), function() setP(t.pos.x - st.m, t.pos.y, t.pos.z) end, function() setP(t.pos.x + st.m, t.pos.y, t.pos.z) end,
-            function() typeOne("X", t.pos.x, "%.3f", function(v) setP(v, t.pos.y, t.pos.z) end) end) + 4
-        y = stepRow(d, x, y, bw, "Height", string.format("%.3f", t.pos.y), function() setP(t.pos.x, FN.heightStep(t.pos.y, t.pos.y - st.m), t.pos.z) end, function() setP(t.pos.x, FN.heightStep(t.pos.y, t.pos.y + st.m), t.pos.z) end,
-            function() typeOne("Height", t.pos.y, "%.3f", function(v) FN.markLifted(); setP(t.pos.x, v, t.pos.z) end) end) + 4
-        y = stepRow(d, x, y, bw, "Z", string.format("%.3f", t.pos.z), function() setP(t.pos.x, t.pos.y, t.pos.z - st.m) end, function() setP(t.pos.x, t.pos.y, t.pos.z + st.m) end,
-            function() typeOne("Z", t.pos.z, "%.3f", function(v) setP(t.pos.x, t.pos.y, v) end) end) + 4
-        -- turn, size, tilt
-        x, y = a.x + 2 * gap + bw, a.y + 12
-        y = label(d, x, y, "Turn, size, tilt")
+        cell(d, cx0(1), y1, cw, "X", string.format("%.2f", t.pos.x), function() setP(t.pos.x - st.m, t.pos.y, t.pos.z) end, function() setP(t.pos.x + st.m, t.pos.y, t.pos.z) end,
+            function() typeOne("X", t.pos.x, "%.3f", function(v) setP(v, t.pos.y, t.pos.z) end) end)
+        cell(d, cx0(2), y1, cw, "Y", string.format("%.2f", t.pos.y), function() setP(t.pos.x, FN.heightStep(t.pos.y, t.pos.y - st.m), t.pos.z) end, function() setP(t.pos.x, FN.heightStep(t.pos.y, t.pos.y + st.m), t.pos.z) end,
+            function() typeOne("Height", t.pos.y, "%.3f", function(v) FN.markLifted(); setP(t.pos.x, v, t.pos.z) end) end)
+        cell(d, cx0(3), y1, cw, "Z", string.format("%.2f", t.pos.z), function() setP(t.pos.x, t.pos.y, t.pos.z - st.m) end, function() setP(t.pos.x, t.pos.y, t.pos.z + st.m) end,
+            function() typeOne("Z", t.pos.z, "%.3f", function(v) setP(t.pos.x, t.pos.y, v) end) end)
         local function setH(v) markUndo(); t.heading = wrap(v); S.dirty = true end
         local function setS(v) markUndo(); t.scale = clamp(v, 0.1, 10); S.dirty = true end
-        y = stepRow(d, x, y, bw, "Turn", string.format("%.1f°", math.deg(t.heading)), function() setH(t.heading + math.rad(st.deg)) end, function() setH(t.heading - math.rad(st.deg)) end,
-            function() typeOne("Turn (degrees)", math.deg(t.heading), "%.1f", function(v) setH(math.rad(v)) end) end) + 4
-        y = stepRow(d, x, y, bw, "Size", string.format("%.2f×", t.scale), function() setS(t.scale - st.size) end, function() setS(t.scale + st.size) end,
-            function() typeOne("Size", t.scale, "%.2f", setS) end) + 4
+        cell(d, cx0(1), y2, cw, "Turn", string.format("%.1f°", math.deg(t.heading)), function() setH(t.heading + math.rad(st.deg)) end, function() setH(t.heading - math.rad(st.deg)) end,
+            function() typeOne("Turn (degrees)", math.deg(t.heading), "%.1f", function(v) setH(math.rad(v)) end) end)
+        cell(d, cx0(2), y2, cw, "Size", string.format("%.2f", t.scale), function() setS(t.scale - st.size) end, function() setS(t.scale + st.size) end,
+            function() typeOne("Size", t.scale, "%.2f", setS) end)
+        -- tilt: forward or sideways, one at a time (click its name to switch)
         local tl = S.tilt[S.sel.id] or { x = 0, z = 0 }
         local function setT(tx, tz) markUndo(); if math.abs(tx) < 1e-6 and math.abs(tz) < 1e-6 then S.tilt[S.sel.id] = nil else S.tilt[S.sel.id] = { x = wrap(tx), z = wrap(tz) } end; S.tiltSaveDue = true end
         local dd = math.rad(st.deg)
         local online = FN.online and FN.online()
-        y = stepRow(d, x, y, bw, "Tilt forward", string.format("%.1f°", math.deg(tl.x)), function() setT(tl.x - dd, tl.z) end, function() setT(tl.x + dd, tl.z) end,
-            function() typeOne("Tilt forward (degrees)", math.deg(tl.x), "%.1f", function(v) setT(math.rad(v), tl.z) end) end, online) + 4
-        y = stepRow(d, x, y, bw, "Tilt sideways", string.format("%.1f°", math.deg(tl.z)), function() setT(tl.x, tl.z - dd) end, function() setT(tl.x, tl.z + dd) end,
-            function() typeOne("Tilt sideways (degrees)", math.deg(tl.z), "%.1f", function(v) setT(tl.x, math.rad(v)) end) end, online)
+        local side = S.tiltSide
+        local nm = side and "Tilt S" or "Tilt F"
+        local val = side and tl.z or tl.x
+        cell(d, cx0(3), y2, cw, nm, string.format("%.1f°", math.deg(val)),
+            function() if side then setT(tl.x, tl.z - dd) else setT(tl.x - dd, tl.z) end end,
+            function() if side then setT(tl.x, tl.z + dd) else setT(tl.x + dd, tl.z) end end,
+            function() typeOne(side and "Tilt sideways (degrees)" or "Tilt forward (degrees)", math.deg(val), "%.1f", function(v) if side then setT(tl.x, math.rad(v)) else setT(math.rad(v), tl.z) end end) end,
+            online, not online and function() S.tiltSide = not S.tiltSide end or nil)
         padTiles = tiles
         tiles = saved
     end
@@ -1003,7 +1201,7 @@ local wrap = PE.wrap
         -- the controller, drawn (what each button does first, so the pad sits on top of the lines)
         local half = pw * 0.64
         local cx, cy = a.x + half / 2, a.y + 52 + (ph - 52) * 0.45
-        d:text(V(a.x + 24, a.y + 68, 0), "CONTROLLER", { size = 13, colour = "#f0f3f680", font = "bold" })
+        d:text(V(a.x + 24, a.y + 68, 0), "CONTROLLER", { size = 13, colour = UI.dim, font = "bold" })
         -- laid out like an Xbox pad: left stick high, d-pad low; right stick low, A B X Y high
         local ls, rs = V(cx - 140, cy - 35, 0), V(cx + 70, cy + 48, 0)
         local dp, ab = V(cx - 70, cy + 48, 0), V(cx + 140, cy - 38, 0)
@@ -1060,7 +1258,7 @@ local wrap = PE.wrap
         local kx = a.x + half + 20
         local ky = a.y + 68
         d:line(V(a.x + half, a.y + 70, 0), V(a.x + half, b.y - 40, 0), { colour = UI.line, thickness = 1 })
-        d:text(V(kx, ky, 0), "KEYBOARD AND MOUSE", { size = 13, colour = "#f0f3f680", font = "bold" })
+        d:text(V(kx, ky, 0), "KEYBOARD AND MOUSE", { size = 13, colour = UI.dim, font = "bold" })
         ky += 34
         local rows = {
             { { "W" }, { "E" }, { "R" }, "move / turn / size handles" },
@@ -1129,15 +1327,15 @@ function FN.drawMain(d)
             for i, c in ipairs(S.carryPlaces()) do
                 if i > 200 then break end
                 if S.itemBox[c.item] then
-                    PE.drawShape(d, worldShape(c.item, c.pos, c.heading, c.scale), UI.purple, 3)
+                    PE.drawShape(d, worldShape(c.item, c.pos, c.heading, c.scale), UI.oSet, 3)
                 else
-                    d:world_line(c.pos - V(0.4, 0, 0), c.pos + V(0.4, 0, 0), { colour = UI.purple, thickness = 3 })
-                    d:world_line(c.pos - V(0, 0, 0.4), c.pos + V(0, 0, 0.4), { colour = UI.purple, thickness = 3 })
-                    d:world_line(c.pos, c.pos + V(0, 1, 0), { colour = UI.purple, thickness = 3 })
+                    d:world_line(c.pos - V(0.4, 0, 0), c.pos + V(0.4, 0, 0), { colour = UI.oSet, thickness = 3 })
+                    d:world_line(c.pos - V(0, 0, 0.4), c.pos + V(0, 0, 0.4), { colour = UI.oSet, thickness = 3 })
+                    d:world_line(c.pos, c.pos + V(0, 1, 0), { colour = UI.oSet, thickness = 3 })
                 end
             end
             for _, gd in ipairs(S.carry.guides or {}) do
-                if gd.nb then PE.drawShape(d, gd.nb.shape or gd.nb, "#35e0ff", 3, gd.nb.xf) end
+                if gd.nb then PE.drawShape(d, gd.nb.shape or gd.nb, UI.oSnap, 3, gd.nb.xf) end
             end
             local W, H = S.size.x, S.size.y
             UI.chip(d, W / 2 - 120, 24, "Carrying  " .. S.carry.set.name, UI.purple)
@@ -1306,9 +1504,10 @@ function FN.drawMain(d)
         local o = S.snapPick ~= "off" and S.known and S.known[S.snapPick]
         if o then
             local so = placedSolid(o)
-            PE.drawShape(d, so.shape or so, "#ffa640", 4, so.xf)
+            pcall(PE.drawShape, d, so.shape or so, UI.oHalo, 7, so.xf)
+            PE.drawShape(d, so.shape or so, UI.oPick, 4, so.xf)
         end
-        d:text(center + V(14, 8, 0), "snap: " .. FN.snapLabel(), { size = 16, colour = "#ffa640", shadow = true })
+        d:text(center + V(14, 8, 0), "snap: " .. FN.snapLabel(), { size = 16, colour = UI.oPick, shadow = true })
     end
     -- what it is snapped to: that object's box (or its point), and how; and the sides that meet lit up
     if S.guides then
@@ -1319,15 +1518,16 @@ function FN.drawMain(d)
             if not seen[id] then
                 seen[id] = true
                 local nc = cornersOf(gd.nb)
-                if PE.drawShape(d, gd.nb.shape or gd.nb, "#35e0ff", 3, gd.nb.xf) then
+                pcall(PE.drawShape, d, gd.nb.shape or gd.nb, UI.oHalo, 6, gd.nb.xf)
+                if PE.drawShape(d, gd.nb.shape or gd.nb, UI.oSnap, 3, gd.nb.xf) then
                     -- drawn
                 elseif #nc == 8 then
-                    for _, e in ipairs(BOX_EDGES) do d:world_line(nc[e[1] + 1], nc[e[2] + 1], { colour = "#35e0ff", thickness = 3 }) end
+                    for _, e in ipairs(BOX_EDGES) do d:world_line(nc[e[1] + 1], nc[e[2] + 1], { colour = UI.oSnap, thickness = 3 }) end
                 else
                     local q = gd.nb.p
-                    d:world_line(q - V(0.4, 0, 0), q + V(0.4, 0, 0), { colour = "#35e0ff", thickness = 3 })
-                    d:world_line(q - V(0, 0, 0.4), q + V(0, 0, 0.4), { colour = "#35e0ff", thickness = 3 })
-                    d:world_line(q, q + V(0, 0.8, 0), { colour = "#35e0ff", thickness = 3 })
+                    d:world_line(q - V(0.4, 0, 0), q + V(0.4, 0, 0), { colour = UI.oSnap, thickness = 3 })
+                    d:world_line(q - V(0, 0, 0.4), q + V(0, 0, 0.4), { colour = UI.oSnap, thickness = 3 })
+                    d:world_line(q, q + V(0, 0.8, 0), { colour = UI.oSnap, thickness = 3 })
                 end
             end
         end
@@ -1337,10 +1537,11 @@ function FN.drawMain(d)
             local okM, mm = pcall(function() return d:measure(words, { size = 14, font = "bold" }) end)
             local mw, mh = (okM and mm and mm.x) or #words * 8, (okM and mm and mm.y) or 18
             local ta = center + V(16, 58, 0)
-            local tb = ta + V(mw + 20, mh + 10, 0)
-            d:rect(ta, tb, { colour = "#0d1117d0", fill = true, rounding = 8 })
-            d:rect(V(ta.x, ta.y + 5, 0), V(ta.x + 3, tb.y - 5, 0), { colour = "#35e0ff", fill = true, rounding = 2 })
-            d:text(V(ta.x + 11, ta.y + 5, 0), words, { size = 14, colour = "#35e0ff", font = "bold" })
+            local tb = ta + V(mw + 24, mh + 10, 0)
+            d:rect(ta, tb, { colour = UI.panel, fill = true, rounding = 6 })
+            UI.edge(d, ta, tb, 6)
+            d:rect(V(ta.x + 5, ta.y + 6, 0), V(ta.x + 8, tb.y - 6, 0), { colour = UI.accent, fill = true, rounding = 2 })
+            d:text(V(ta.x + 14, ta.y + 5, 0), words, { size = 14, colour = UI.text, font = "bold" })
         end
     end
     -- measuring: to the objects selected with it, or the nearest
@@ -1349,13 +1550,14 @@ function FN.drawMain(d)
     if S.boxCorners and (S.mode ~= 3 or padMode) then
         local c = S.boxCorners
         local moving = S.dirty or (S.drag and S.drag.moved) or not lastApplied()
-        local col = moving and "#ffe066" or "#ffffff66"
+        local col = moving and UI.oHeld or UI.oRest
         local sh = S.itemBox[S.sel.item] and worldShape(S.sel.item, p, t.heading, t.scale) or nil
         local tl = tilted(S.sel.id) and S.tilt[S.sel.id] or nil
         local xf = tl and function(v) return tiltPoint(p, t.heading, tl, v) end or nil
         if xf then for i = 0, 7 do c[i] = xf(c[i]) end end
         pcall(FN.drawGhost, d, c, sh, p, center, moving, xf)
-        if not (sh and PE.drawShape(d, sh, col, 2, xf)) then
+        if sh then pcall(PE.drawShape, d, sh, UI.oHalo, 6, xf) end
+        if not (sh and PE.drawShape(d, sh, col, 3, xf)) then
             for _, e in ipairs(BOX_EDGES) do
                 d:world_line(c[e[1]], c[e[2]], { colour = col, thickness = 2 })
             end
@@ -1367,7 +1569,7 @@ end
 -- (the two facing each other, at most 3 cm apart, overlapping along their length), that stretch is lit on both,
 -- from the higher of the two bottoms to the lower of the two tops. Set on top of it (or it on top): where their
 -- outlines overlap seen from above, lit at that height.
-local MEET = "#7dffb0"
+-- (its colour: UI.oMeet, the player's choice)
 local function dot3(a, b) return a.x * b.x + a.y * b.y + a.z * b.z end
 function FN.drawMeeting(d, p, t)
     if not (S.sel and S.itemBox[S.sel.item]) or tilted(S.sel.id) then return end
@@ -1392,11 +1594,11 @@ function FN.drawMeeting(d, p, t)
                                 local c1, c2 = V(a0.x, ylo, a0.z), V(a1.x, ylo, a1.z)
                                 local c3, c4 = V(a1.x, yhi, a1.z), V(a0.x, yhi, a0.z)
                                 local s1, s2, s3, s4 = d:world_to_screen(c1), d:world_to_screen(c2), d:world_to_screen(c3), d:world_to_screen(c4)
-                                if s1 and s2 and s3 and s4 then d:poly({ s1, s2, s3, s4 }, { colour = "#7dffb040", fill = true }) end
-                                d:world_line(c1, c2, { colour = MEET, thickness = 4 })
-                                d:world_line(c4, c3, { colour = MEET, thickness = 4 })
-                                d:world_line(c1, c4, { colour = MEET, thickness = 3 })
-                                d:world_line(c2, c3, { colour = MEET, thickness = 3 })
+                                if s1 and s2 and s3 and s4 then d:poly({ s1, s2, s3, s4 }, { colour = string.sub(UI.oMeet, 1, 7) .. "40", fill = true }) end
+                                d:world_line(c1, c2, { colour = UI.oMeet, thickness = 4 })
+                                d:world_line(c4, c3, { colour = UI.oMeet, thickness = 4 })
+                                d:world_line(c1, c4, { colour = UI.oMeet, thickness = 3 })
+                                d:world_line(c2, c3, { colour = UI.oMeet, thickness = 3 })
                             end
                         end
                     end
@@ -1413,7 +1615,7 @@ function FN.drawMeeting(d, p, t)
                 local n = #small.pts
                 for i = 1, n do
                     local a, b = small.pts[i], small.pts[i % n + 1]
-                    d:world_line(V(a.x, yy, a.z), V(b.x, yy, b.z), { colour = MEET, thickness = 4 })
+                    d:world_line(V(a.x, yy, a.z), V(b.x, yy, b.z), { colour = UI.oMeet, thickness = 4 })
                 end
             end
         end
@@ -1422,6 +1624,7 @@ end
 
 reskate.on("draw", function(d)
     if not S.open then return end
+    if UI.gripsClear then UI.gripsClear() end
     local ok, err = pcall(FN.drawMain, d)
     if not ok then FN.problem("drawing", err) end
     if S.ownPanel and not S.picker then
@@ -1442,6 +1645,10 @@ reskate.on("draw", function(d)
     if S.controlsOpen then
         local okc, errc = pcall(UI.controlsWin, d)
         if not okc then FN.problem("the controls window", errc); S.controlsOpen = false end
+    end
+    if S.colours and UI.coloursWin then
+        local okw, errw = pcall(UI.coloursWin, d)
+        if not okw then FN.problem("the colours window", errw); S.colours = nil end
     end
 end)
 

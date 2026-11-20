@@ -138,6 +138,7 @@ local function tickBody(dt)
     if press("F") and S.target then S.cam.goal = S.target.pos end
     if press("M") then FN.toggleMeasure() end
     if FN.undoStepTick then FN.undoStepTick() end
+    if FN.coloursTick then FN.coloursTick() end
     if press("Z") and ctrl then if reskate.input.key("Shift") then redo() else undo() end end
     if press("Y") and ctrl then redo() end
     do -- the view: arrows and PageUp / PageDown slide it
@@ -168,6 +169,15 @@ local function tickBody(dt)
     local c = reskate.input.cursor()
     -- (over the picked object's numbers under the controller's prompts: they take the mouse, and it stays the
     -- controller's view)
+    -- a panel's edge being dragged to resize it (first: it keeps the mouse until let go)
+    if c and S.ownPanel and UI.gripMouse and not S.drag and not S.colours and not S.picker and not S.controlsOpen then
+        local okg, usedG = pcall(UI.gripMouse, c)
+        if okg and usedG then
+            S.mouse = { pos = c.position, left = c.left }
+            S.hover = nil
+            c = nil
+        end
+    end
     if c and UI.padRowsMouse and not S.drag then
         local okr, usedR = pcall(UI.padRowsMouse, c)
         if okr and usedR then
@@ -178,6 +188,11 @@ local function tickBody(dt)
     if c and ((S.mouse.pos and d2(c.position, S.mouse.pos) > 3) or c.left or c.right or (c.wheel and c.wheel ~= 0)) then S.mouseUsedAt = S.clock end
     if c and S.controlsOpen then
         pcall(UI.controlsMouse, c)
+        S.mouse = { pos = c.position, left = c.left }
+        c = nil
+    end
+    if c and S.colours and UI.coloursMouse then
+        pcall(UI.coloursMouse, c)
         S.mouse = { pos = c.position, left = c.left }
         c = nil
     end
