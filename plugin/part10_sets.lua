@@ -166,7 +166,7 @@ local wrap = PE.wrap
         S.grab = nil
         S.padWait = true
         S.cam.goal = S.carry.pos
-        say("Carrying \"" .. set.name .. "\": move it, A puts it down, B cancels.")
+        say("Carrying \"" .. set.name .. FN.padText("\": move it, A puts it down, B cancels."))
     end
     function S.carryPlaces()
         local c = S.carry

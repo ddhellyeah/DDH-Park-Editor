@@ -52,7 +52,7 @@ function UI.drawPadHud(d)
     elseif ng > 0 then chips[#chips + 1] = { string.format("Group  %d", ng), UI.purple } end
     chips[#chips + 1] = { "Steps  " .. (STEPS[S.stepSize] or STEPS[2]).name, UI.accent }
     if S.grab then
-        if S.noSnap then chips[#chips + 1] = { "Snap  off (R3 held)", UI.orange }
+        if S.noSnap then chips[#chips + 1] = { FN.padText("Snap  off (R3 held)"), UI.orange }
         else chips[#chips + 1] = { "Snap  " .. FN.snapLabel(), S.snapPick and UI.oPick or UI.oSnap } end
     end
     if FN.gridSize() > 0 then chips[#chips + 1] = { "Grid  " .. FN.GRID_NAMES[S.gridI], UI.green } end
@@ -158,7 +158,7 @@ S.measureOn = false
 function FN.toggleMeasure()
     S.measureOn = not S.measureOn
     S.msr = nil
-    say(S.measureOn and "Measuring: to the objects selected with it, else the nearest.  M: off" or "Measuring off")
+    say(S.measureOn and "Measuring: to the objects selected with it, else the nearest.  " .. FN.kbLabel("measure") .. ": off" or "Measuring off")
 end
 function FN.measureData()
     local t, sel = S.target, S.sel

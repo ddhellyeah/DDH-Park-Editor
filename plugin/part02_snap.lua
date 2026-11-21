@@ -1051,7 +1051,7 @@ function FN.landTo(trusted, cur, y)
 end
 -- Raising and lowering: it catches on the ground under it when it comes near (how near: the snap strength).
 -- Back on the ground it counts as resting again (it lands on what is under it as it is moved on).
-local function groundCatch() return S.osnap and S.landOn and not S.noSnap and not reskate.input.key("Ctrl") end
+local function groundCatch() return S.osnap and S.landOn and not S.noSnap and not FN.kbDown("noSnap") end
 function FN.groundReach() return math.max(0.04, 0.09 * SNAP_K) end
 local function groundUnder(y)
     local sel, t = S.sel, S.target

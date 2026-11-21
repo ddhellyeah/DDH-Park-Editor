@@ -14,6 +14,10 @@
         "storage",
         "objects.physics",
         "files",
-        "session.read"
+        "session.read",
+        "mods.read"
+    ],
+    "content": [
+        "ddh_shapes"
     ]
 }

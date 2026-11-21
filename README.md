@@ -14,6 +14,7 @@ Works with skate.'s own Quick Drop. Drop objects as normal, then press **F6** to
   - **Snap**: snap to objects, **snap by** (Matching sides / Classic), what it snaps to (Auto / Next object / Off), **snap strength** (a slider, 20% to 200%: lower only snaps right up against things, higher from further away; kept between games), grid, drag in steps
   - **Park**: the group, copy tools, every object in the park (search, All / Near / DDH, scroll with the wheel), save as park mod
   - **Controls** opens a picture of the controller and the keys with what each one does
+  - **Settings** (top of the panel): every keyboard key can be changed. Click a key box and press a key or a combo (Ctrl, Shift or Alt with a key); each action can have two. The **Controller** tab moves each job to another button (or swaps the sticks): press the button you want, and the job that had it takes the old one. Kept between games. **Appearance** is in there too
 - On older ReSkate the panel falls back to the old sliders
 
 **Controller** (Xbox or PlayStation), like Quick Drop: **LB + D-pad right** opens it.
@@ -46,7 +47,6 @@ Works with skate.'s own Quick Drop. Drop objects as normal, then press **F6** to
 - **Pictures in the add window:** every DDH / RAW object shows its picture (they come with the mod). The game's own objects show their outline from above (when known) or their initials
 - **Controller view:** with the controller, the screen works like Quick Drop: a cross in the middle, the name of what it's on, the buttons for what you can do now along the bottom, and what's set (steps, snap, group, grid) along the top. No move/turn handles while you use the controller (they come back when you use the mouse). Leaving F6 and coming back starts with nothing picked (unless you dropped something with Quick Drop in between)
 
-Without opening it: hold **Ctrl** and use [ ] (turn), PgUp / PgDn (height), Z / X (size), arrows (slide) on the last dropped object.
 
 Online: press **Save as park mod (for online)** in the panel. It writes the whole park on this map, tilts and all, as a park mod and opens its folder: copy that folder into ReSkate's `Mods` folder, then Build > Park mods > Load (in multiplayer the host loads it, and everyone sees the tilts). Park mods only work on the game's own maps.
 

@@ -33,7 +33,7 @@ function S.arrange(kind)
     if not S.sel then
         for id in pairs(S.group) do local o = S.known and S.known[id]; if o then select(o) break end end
     end
-    if not (S.sel and S.target) then say("Pick objects first (hold A and sweep, or Ctrl+click).", true) return end
+    if not (S.sel and S.target) then say(FN.padText("Pick objects first (hold A and sweep, or ") .. FN.kbLabel("multi") .. "+click).", true) return end
     S.group[S.sel.id] = true
     local ids = {}
     for id in pairs(S.group) do if S.known and S.known[id] then ids[#ids + 1] = id end end

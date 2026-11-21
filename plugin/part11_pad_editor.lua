@@ -48,9 +48,11 @@ function FN.padEditor(sec)
     if anyIn then S.padUsedAt = S.clock end
 
     if S.picker then FN.pickerPad(p) return end
+    if S.keysWin and FN.keysPad then FN.keysPad(p) return end
     if S.colours and FN.coloursPad then FN.coloursPad(p) return end
     if S.controlsOpen then
         if padPress("b", p.b) or padPress("a", p.a) then S.controlsOpen = false end
+        if padPress("x", p.x) and FN.openKeys then FN.openKeys("pad") end
         return
     end
     if S.carry then
@@ -174,12 +176,12 @@ function FN.padEditor(sec)
             local rec = S.removeUndoable(ids, "Removed")
             S.group, S.gbase = {}, nil
             S.aim = nil
-            say(string.format("Removing %d selected objects... (View: undo)", rec.total))
+            say(string.format(FN.padText("Removing %d selected objects... (View: undo)"), rec.total))
         elseif groupCount() > 0 and (not S.aim or S.group[S.aim.id]) then
             -- the first Y with a selection: wait a moment for a second one
             S.yTap = { at = S.clock, id = S.aim and S.aim.id or nil, sel = true }
             S.yHold = { n = 0, at = S.clock }
-            say(string.format("Y again: remove all %d selected.%s", groupCount(), S.aim and "  (once: take this one out)" or ""))
+            say(string.format(FN.padText("Y again: remove all %d selected.%s"), groupCount(), S.aim and "  (once: take this one out)" or ""))
         else
             FN.deletePress(S.aim)
         end
@@ -214,7 +216,7 @@ function FN.padEditor(sec)
         S.aHold = nil
         if ah.sweep then
             local n = groupCount()
-            say(string.format("Group: %d object%s.  A on one: move them all   LB: clear   RB: add / take out", n, n == 1 and "" or "s"))
+            say(string.format(FN.padText("Group: %d object%s.  A on one: move them all   LB: clear   RB: add / take out"), n, n == 1 and "" or "s"))
         elseif not holding then
             local o = ah.first and S.known and S.known[ah.first]
             if o then
@@ -231,7 +233,7 @@ function FN.padEditor(sec)
     if padPress("x", p.x) then
         if holding then FN.copyHeld()
         elseif S.aim then FN.copyAimed(S.aim)
-        else say("Aim the cross at an object, then X copies it.") end
+        else say(FN.padText("Aim the cross at an object, then X copies it.")) end
     end
     if not holding then
         if padStep("left", p.left) then FN.pickNext(-1) t = S.target end
@@ -301,7 +303,7 @@ function FN.padEditor(sec)
         if ah and p.a and not ah.sweep and S.clock - ah.at > 300 then
             ah.sweep = true
             if ah.first and S.known and S.known[ah.first] and not S.group[ah.first] then S.group[ah.first] = true; ah.added += 1; S.gbase = nil end
-            say("Selecting: move the cross over objects, let go of A when done.")
+            say(FN.padText("Selecting: move the cross over objects, let go of A when done."))
         end
         -- Y held (started on a group member): every member the cross passes over leaves the group
         if S.yHold and p.y and S.clock - (S.yHold.at or 0) > 300 and S.aim and S.group[S.aim.id] then

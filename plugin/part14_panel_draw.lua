@@ -536,13 +536,13 @@ local wrap = PE.wrap
                 fitText(d, x + 14 + ind, ra.y + 6, name, w - 20 - ind - dw, { size = 14, colour = on and UI.onAccent or UI.text, font = on and "bold" or nil })
                 d:text(V(rb.x - 5, ra.y + 7, 0), distS, { size = 12, colour = on and UI.onAccent or UI.dim, align = "right" })
                 tileAdd(ra, rb, function()
-                    if reskate.input.key("Ctrl") then
-                        -- Ctrl+click: in or out of the selection (the picked one joins first)
+                    if FN.kbDown("multi") then
+                        -- Ctrl+click (or the key set for it): in or out of the selection (the picked one joins first)
                         if S.sel and not S.group[S.sel.id] and groupCount() == 0 and S.sel.id ~= o.id then S.group[S.sel.id] = true end
                         if S.group[o.id] then S.group[o.id] = nil else S.group[o.id] = true end
                         S.gbase = nil
                         local n = groupCount()
-                        say(n > 0 and string.format("%d selected  (Ctrl+click adds or removes)", n) or "Nothing selected.")
+                        say(n > 0 and string.format("%d selected  (%s+click adds or removes)", n, FN.kbLabel("multi")) or "Nothing selected.")
                         return
                     end
                     send(); select(o); S.cam.goal = o.position; S.listKey = nil; say("Picked " .. titleOf(o.item))
@@ -561,7 +561,7 @@ local wrap = PE.wrap
             local dl = nd > 1 and string.format("Delete %d", nd) or (nd == 1 and "Delete picked" or "Delete")
             if nd > 0 and S.listDelAsk and S.clock - S.listDelAsk < 3000 then dl = "Click again" end
             btn(d, V(x, pb - 40, 0), V(x + w, pb - 6, 0), dl, function()
-                if nd == 0 then say("Pick an object, or Ctrl+click objects in the list, then Delete.", true) return end
+                if nd == 0 then say("Pick an object, or " .. FN.kbLabel("multi") .. "+click objects in the list, then Delete.", true) return end
                 if S.listDelAsk and S.clock - S.listDelAsk < 3000 then
                     S.listDelAsk = nil
                     if S.grab then S.grab = nil; endHoldMove() end
@@ -642,7 +642,7 @@ local wrap = PE.wrap
                 elseif i == 2 and S.nextSnap then S.nextSnap()
                 elseif i == 3 then S.snapPick = "off"; S.guides = nil end
             end) end,
-                "What it snaps to: the nearest object, one object you choose (Next picks the next one near), or nothing.  Tab, or tap L3 while holding" },
+                "What it snaps to: the nearest object, one object you choose (Next picks the next one near), or nothing.  " .. FN.kbLabel("snapTarget") .. FN.padText(", or tap L3 while holding") },
             { 190, function(x, y, w)
                 -- how strongly: - / +, and the bar (click or drag on it), its % on it
                 btn(d, V(x, y + 4, 0), V(x + 24, y + 30, 0), "-", function() FN.setSnapStrength(k - 0.1, true) end)
@@ -815,14 +815,14 @@ local wrap = PE.wrap
         end
         y += 32
         local dw = math.floor((w - 6) * 0.36)
-        btn(d, V(x, y, 0), V(x + w - dw - 6, y + 30, 0), "Appearance", function() if FN.openColours then FN.openColours() end end)
+        btn(d, V(x, y, 0), V(x + w - dw - 6, y + 30, 0), "Settings", function() if FN.openKeys then FN.openKeys() end end)
         btn(d, V(x + w - dw, y, 0), V(x + w, y + 30, 0), "Done", function() closeEditor() end)
         y += 42
         -- what is picked
         local t = S.sel and S.target
         local ng = groupCount()
         d:rect(V(x, y, 0), V(x + w, y + 60, 0), { colour = UI.field, fill = true, rounding = 6 })
-        local title, sub, dot = "Nothing picked", "Click an object, or aim and press A", UI.faint
+        local title, sub, dot = "Nothing picked", FN.padText("Click an object, or aim and press A"), UI.faint
         if t then
             title = titleOf(S.sel.item)
             sub = string.format("%.0f°  ·  size %.2f", math.deg(t.heading), t.scale)
@@ -1198,6 +1198,12 @@ local wrap = PE.wrap
         local ca, cb = V(b.x - 48, a.y + 10, 0), V(b.x - 12, a.y + 44, 0)
         d:text(V((ca.x + cb.x) / 2, ca.y + 4, 0), "×", { size = 24, colour = UI.dim, align = "centre" })
         ctiles[#ctiles + 1] = { a = ca, b = cb, fn = function() S.controlsOpen = false end }
+        -- changing the keys (the Settings window)
+        do
+            local ka, kb = V(ca.x - 170, a.y + 11, 0), V(ca.x - 10, a.y + 43, 0)
+            btn(d, ka, kb, "Change keys", nil)
+            ctiles[#ctiles + 1] = { a = ka, b = kb, fn = function() if FN.openKeys then FN.openKeys() end end }
+        end
         -- the controller, drawn (what each button does first, so the pad sits on top of the lines)
         local half = pw * 0.64
         local cx, cy = a.x + half / 2, a.y + 52 + (ph - 52) * 0.45
@@ -1209,19 +1215,21 @@ local wrap = PE.wrap
         local BP = { y = V(0, -26, 0), x = V(-26, 0, 0), b = V(26, 0, 0), a = V(0, 26, 0) }
         local lx, rx = cx - 255, cx + 255
         limL, limR = a.x + 16, a.x + half - 14
-        callout(d, V(cx - 150, cy - 141, 0), V(lx, cy - 205, 0), "LT   lower", false)
-        callout(d, V(cx - 125, cy - 112, 0), V(lx, cy - 150, 0), "LB   turn  ·  clear group", false)
-        callout(d, ls, V(lx, cy - 70, 0), "L-stick   move  ·  L3 next snap", false)
-        callout(d, vw, V(lx, cy + 5, 0), "View   snap: auto / one / off", false)
-        callout(d, dp, V(lx, cy + 80, 0), "D-pad   size  ·  zoom", false)
-        callout(d, V(cx + 150, cy - 141, 0), V(rx, cy - 205, 0), "RT   raise", true)
-        callout(d, V(cx + 125, cy - 112, 0), V(rx, cy - 160, 0), "RB   turn  ·  add to group", true)
-        callout(d, ab + BP.y, V(rx, cy - 115, 0), "Y   remove  ·  ungroup", true)
-        callout(d, ab + BP.b, V(rx, cy - 75, 0), "B   cancel  /  close", true)
-        callout(d, ab + BP.x, V(rx, cy - 35, 0), "X   copy", true)
-        callout(d, ab + BP.a, V(rx, cy + 5, 0), "A   pick up  ·  hold select", true)
-        callout(d, mn, V(rx, cy + 45, 0), "Menu   step size", true)
-        callout(d, rs, V(rx, cy + 85, 0), "R-stick look · R3 tools, hold: no snap", true)
+        -- (each button's line: what it does now, when buttons were moved in Settings)
+        local function job(which, usual) return (FN.padCallout and FN.padCallout(which)) or usual end
+        callout(d, V(cx - 150, cy - 141, 0), V(lx, cy - 205, 0), job("lt", "LT   lower"), false)
+        callout(d, V(cx - 125, cy - 112, 0), V(lx, cy - 150, 0), job("lb", "LB   turn  ·  clear group"), false)
+        callout(d, ls, V(lx, cy - 70, 0), job("lstick", "L-stick   move  ·  L3 next snap"), false)
+        callout(d, vw, V(lx, cy + 5, 0), job("back", "View   snap: auto / one / off"), false)
+        callout(d, dp, V(lx, cy + 80, 0), job("dpad", "D-pad   size  ·  zoom"), false)
+        callout(d, V(cx + 150, cy - 141, 0), V(rx, cy - 205, 0), job("rt", "RT   raise"), true)
+        callout(d, V(cx + 125, cy - 112, 0), V(rx, cy - 160, 0), job("rb", "RB   turn  ·  add to group"), true)
+        callout(d, ab + BP.y, V(rx, cy - 115, 0), job("y", "Y   remove  ·  ungroup"), true)
+        callout(d, ab + BP.b, V(rx, cy - 75, 0), job("b", "B   cancel  /  close"), true)
+        callout(d, ab + BP.x, V(rx, cy - 35, 0), job("x", "X   copy"), true)
+        callout(d, ab + BP.a, V(rx, cy + 5, 0), job("a", "A   pick up  ·  hold select"), true)
+        callout(d, mn, V(rx, cy + 45, 0), job("start", "Menu   step size"), true)
+        callout(d, rs, V(rx, cy + 85, 0), job("rstick", "R-stick look · R3 tools, hold: no snap"), true)
         -- the pad as a line drawing (its outline traced like the usual Xbox pad)
         local LC, LC2 = "#45c8e4", "#45c8e499"
         local function path(pts, sx, col, th)
@@ -1236,10 +1244,12 @@ local wrap = PE.wrap
         path(PAD_INNER, 1, LC2, 2); path(PAD_INNER, -1, LC2, 2)
         path(PAD_BUMP, 1, LC, 3); path(PAD_BUMP, -1, LC, 3)
         path(PAD_TRIG, 1, LC2, 2); path(PAD_TRIG, -1, LC2, 2)
-        d:text(V(cx - 153, cy - 162, 0), "LT", { size = 12, colour = LC, font = "bold", align = "centre" })
-        d:text(V(cx + 153, cy - 162, 0), "RT", { size = 12, colour = LC, font = "bold", align = "centre" })
-        d:text(V(cx - 222, cy - 118, 0), "LB", { size = 12, colour = LC, font = "bold", align = "centre" })
-        d:text(V(cx + 222, cy - 118, 0), "RB", { size = 12, colour = LC, font = "bold", align = "centre" })
+        -- (the buttons' own names: LT / L2 and so on, see part17_keys)
+        local pn = FN.padPhysName or function(k) return string.upper(k) end
+        d:text(V(cx - 153, cy - 162, 0), pn("lt"), { size = 12, colour = LC, font = "bold", align = "centre" })
+        d:text(V(cx + 153, cy - 162, 0), pn("rt"), { size = 12, colour = LC, font = "bold", align = "centre" })
+        d:text(V(cx - 222, cy - 118, 0), pn("lb"), { size = 12, colour = LC, font = "bold", align = "centre" })
+        d:text(V(cx + 222, cy - 118, 0), pn("rb"), { size = 12, colour = LC, font = "bold", align = "centre" })
         for _, st2 in ipairs({ ls, rs }) do
             d:circle(st2, 30, { colour = LC, thickness = 3 })
             d:circle(st2, 20, { colour = LC2, thickness = 2 })
@@ -1248,35 +1258,58 @@ local wrap = PE.wrap
         local cr = { -8, -26, 8, -26, 8, -8, 26, -8, 26, 8, 8, 8, 8, 26, -8, 26, -8, 8, -26, 8, -26, -8, -8, -8, -8, -26 }
         for i = 1, #cr - 2, 2 do d:line(dp + V(cr[i], cr[i + 1], 0), dp + V(cr[i + 2], cr[i + 3], 0), { colour = LC, thickness = 3 }) end
         for k, off in pairs(BP) do
-            d:circle(ab + off, 12, { colour = UI.BTN[k][2], thickness = 3 })
-            d:text(ab + off - V(0, 9, 0), UI.BTN[k][1], { size = 14, colour = UI.BTN[k][2], font = "bold", align = "centre" })
+            UI.faceGlyph(d, ab + off, k, 12, true)
         end
         d:circle(vw, 8, { colour = LC, thickness = 2 }); d:circle(mn, 8, { colour = LC, thickness = 2 })
         d:circle(V(cx, cy - 72, 0), 16, { colour = LC, thickness = 3 })
-        d:text(V(cx, b.y - 70, 0), "LB + D-pad right opens  ·  B closes  ·  LB + View undo  ·  RB + View redo", { size = 14, colour = UI.dim, align = "centre" })
+        do
+            local nm = FN.padName or function(k) return k end
+            local line = string.format("%s + %s opens  ·  %s closes  ·  %s + %s undo  ·  %s + %s redo", nm("lb"), nm("right"), nm("b"), nm("lb"), nm("back"), nm("rb"), nm("back"))
+            UI.textIn(d, V(a.x + 16, b.y - 76, 0), V(a.x + half - 14, b.y - 52, 0), line, { size = 14, colour = UI.dim, align = "centre" }, 0)
+        end
         -- the keyboard and mouse
         local kx = a.x + half + 20
         local ky = a.y + 68
         d:line(V(a.x + half, a.y + 70, 0), V(a.x + half, b.y - 40, 0), { colour = UI.line, thickness = 1 })
         d:text(V(kx, ky, 0), "KEYBOARD AND MOUSE", { size = 13, colour = UI.dim, font = "bold" })
         ky += 34
+        -- (the keys as set in Settings: each row its keycaps, then what they do)
+        local K = FN.kbCaps or function(_) return { "?" } end
+        local function caps(row, ...)
+            for _, id in ipairs({ ... }) do for _, c in ipairs(K(id)) do row[#row + 1] = { c } end end
+            return row
+        end
+        local function one(id) local t = K(id); return #t == 1 and t[1] or nil end
+        local flyRow
+        if one("flyF") == "Up" and one("flyB") == "Down" and one("flyL") == "Left" and one("flyR") == "Right" then
+            flyRow = { { "Arrows" } }
+            caps(flyRow, "flyU", "flyD")
+        else
+            flyRow = caps({}, "flyF", "flyL", "flyB", "flyR", "flyU", "flyD")
+        end
+        flyRow[#flyRow + 1] = "fly the view"
+        local redoS = FN.kbLabel and FN.kbLabel("redo") or "Ctrl+Y"
         local rows = {
-            { { "W" }, { "E" }, { "R" }, "move / turn / size handles" },
-            { { "T" }, "snap to objects on / off" },
-            { { "Tab" }, "snap target: auto, one object, off" },
-            { { "G" }, "drag in steps" },
-            { { "F" }, "look at the picked object" },
-            { { "Ctrl" }, { "Z" }, "undo        Ctrl + Y: redo" },
-            { { "Shift" }, "bigger steps" },
-            { { "Ctrl" }, "hold while dragging: no snapping" },
-            { { "Arrows" }, { "PgUp" }, { "PgDn" }, "fly the view" },
+            caps({}, "modeMove", "modeTurn", "modeSize"),
+            caps({}, "osnap"),
+            caps({}, "snapTarget"),
+            caps({}, "grid"),
+            caps({}, "look"),
+            caps({}, "undo"),
+            caps({}, "bigger"),
+            caps({}, "noSnap"),
+            flyRow,
             { { "Esc" }, "done" },
         }
+        local said = { "move / turn / size handles", "snap to objects on / off", "snap target: auto, one object, off", "drag in steps",
+            "look at the picked object", "undo        " .. redoS .. ": redo", "bigger steps", "hold while dragging: no snapping" }
+        for i, t in ipairs(said) do rows[i][#rows[i] + 1] = t end
+        local kRight = b.x - 18
         for _, r in ipairs(rows) do
             local x = kx
             for _, part in ipairs(r) do
                 if type(part) == "table" then x += keycap(d, x, ky, part[1]) + 6
-                else d:text(V(x + 8, ky + 6, 0), part, { size = 15, colour = UI.text }) end
+                else UI.fitText(d, x + 8, ky + 6, part, math.max(40, kRight - x - 8), { size = 15, colour = UI.text }) end
             end
             ky += 40
         end
@@ -1292,8 +1325,8 @@ local wrap = PE.wrap
         d:line(V(mx + 35, my + 3, 0), V(mx + 35, my + 46, 0), { colour = "#45c8e499", thickness = 2 })
         d:line(V(mx + 4, my + 46, 0), V(mx + 66, my + 46, 0), { colour = "#45c8e499", thickness = 2 })
         d:rect(V(mx + 31, my + 12, 0), V(mx + 39, my + 32, 0), { colour = "#45c8e4", rounding = 4, thickness = 2 })
-        d:text(V(tx + 10, my + 113, 0), "Ctrl + click   group add / remove", { size = 14, colour = UI.text })
-        UI.footer(d, a, b, { { "b", "Close" } })
+        UI.fitText(d, tx + 10, my + 113, (FN.kbLabel and FN.kbLabel("multi") or "Ctrl") .. " + click   group add / remove", math.max(40, b.x - 18 - tx - 10), { size = 14, colour = UI.text })
+        UI.footer(d, a, b, { { "x", "Change buttons" }, { "b", "Close" } })
     end
     function UI.controlsMouse(c)
         if not S.controlsOpen then return false end
@@ -1557,6 +1590,8 @@ function FN.drawMain(d)
         if xf then for i = 0, 7 do c[i] = xf(c[i]) end end
         pcall(FN.drawGhost, d, c, sh, p, center, moving, xf)
         if sh then pcall(PE.drawShape, d, sh, UI.oHalo, 6, xf) end
+        -- (the held one: with a see-through fill, as Quick Drop's, where its model is known)
+        if sh then sh.fill = true end
         if not (sh and PE.drawShape(d, sh, col, 3, xf)) then
             for _, e in ipairs(BOX_EDGES) do
                 d:world_line(c[e[1]], c[e[2]], { colour = col, thickness = 2 })
@@ -1650,8 +1685,15 @@ reskate.on("draw", function(d)
         local okw, errw = pcall(UI.coloursWin, d)
         if not okw then FN.problem("the colours window", errw); S.colours = nil end
     end
+    if S.keysWin and UI.keysWin then
+        local okk2, errk2 = pcall(UI.keysWin, d)
+        if not okk2 then FN.problem("the settings window", errk2); S.keysWin = nil end
+    end
 end)
 
-reskate.on("load", function() reskate.log("Quick Drop helper ready: drop an object, then F6 (or hold Ctrl and use [ ] PgUp PgDn Z X arrows).") end)
+reskate.on("load", function()
+    local k = FN.kbLabel or function(_, _) return "?" end
+    reskate.log(string.format("Quick Drop helper ready: drop an object, then %s (Settings changes the keys).", k("open")))
+end)
 
 end

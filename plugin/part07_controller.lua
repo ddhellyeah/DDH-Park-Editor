@@ -81,7 +81,13 @@ local function axis(v, full)
     return clamp(v, -1, 1)
 end
 
+-- the pad by job: the buttons as moved in Settings (part17_keys); FN.readPadRaw is the pad as it is
 function FN.readPad()
+    local p = FN.readPadRaw()
+    if p and FN.padRemap then p = FN.padRemap(p) end
+    return p
+end
+function FN.readPadRaw()
     if not (reskate.input and reskate.input.gamepad) then return nil end
     local ok, g = pcall(reskate.input.gamepad)
     if not ok then
@@ -89,6 +95,8 @@ function FN.readPad()
         return nil
     end
     if type(g) ~= "table" then return nil end
+    -- (a PlayStation pad: its buttons are shown as Cross, Circle, L1... when Settings says Auto)
+    S.padPS = g.playstation == true or (type(g.buttons) == "table" and g.buttons.cross ~= nil)
     local bits = nil
     local bt = g.buttons
     if type(bt) == "number" then bits = bt end
@@ -230,9 +238,9 @@ local function startGrab()
     S.cam.goal = t.pos
     local n = S.gbase and groupCount() or 1
     if n > 1 then
-        say(string.format("Holding %d objects.  A: put down   B: cancel   X: copy them   D-pad left/right: zoom", n))
+        say(string.format(FN.padText("Holding %d objects.  A: put down   B: cancel   X: copy them   D-pad left/right: zoom"), n))
     else
-        say("Holding " .. titleOf(S.sel.item) .. ".  A: put down   B: cancel   X: copy   D-pad left/right: zoom")
+        say("Holding " .. titleOf(S.sel.item) .. FN.padText(".  A: put down   B: cancel   X: copy   D-pad left/right: zoom"))
     end
 end
 S.startGrab = startGrab
@@ -432,7 +440,7 @@ function FN.nextSnapObject()
     if not id then say("Nothing near to snap to.") return end
     S.snapPick = id
     S.snapLock, S.guides = nil, nil
-    say(string.format("Snap: %s  (%d of %d, L3: the next)", titleOf(S.known[id].item), i, n))
+    say(string.format(FN.padText("Snap: %s  (%d of %d, L3: the next)"), titleOf(S.known[id].item), i, n))
 end
 -- carrying a set: what it snaps to, nearest to the set first
 function FN.nextCarrySnap()
@@ -442,7 +450,7 @@ function FN.nextCarrySnap()
     if not id then say("Nothing near to snap to.") return end
     S.snapPick = id
     c.guides = nil
-    say(string.format("Snap: %s  (%d of %d, L3: the next)", titleOf(S.known[id].item), i, n))
+    say(string.format(FN.padText("Snap: %s  (%d of %d, L3: the next)"), titleOf(S.known[id].item), i, n))
 end
 -- free: what the cross is on (A picks it up), nearest to where the cross points first
 function FN.nextAimObject()
@@ -451,7 +459,7 @@ function FN.nextAimObject()
     if not id then say("Nothing near.") return end
     S.aimLock, S.aimLockAt = id, S.clock
     S.aim = S.known[id]
-    say(string.format("%s  (%d of %d, L3: the next, A: pick up)", titleOf(S.known[id].item), i, n))
+    say(string.format(FN.padText("%s  (%d of %d, L3: the next, A: pick up)"), titleOf(S.known[id].item), i, n))
 end
 -- View: the snapping mode, auto -> one object (the nearest) -> off -> auto
 function FN.snapMode()
@@ -468,7 +476,7 @@ function FN.snapMode()
     local sp = S.snapPick
     if sp == nil then say("Snap: auto (the nearest object)")
     elseif sp == "off" then say("Snap: off")
-    else say("Snap: one object, " .. titleOf(S.known[sp].item) .. "  (L3: the next one)") end
+    else say("Snap: one object, " .. titleOf(S.known[sp].item) .. FN.padText("  (L3: the next one)")) end
 end
 function FN.snapLabel()
     local sp = S.snapPick
@@ -494,7 +502,7 @@ function FN.copyAimed(o)
         local rec = queueCopies(list, "Copies")
         startGrabRef()
         if S.grab then S.grab.copyRec = rec end
-        say(string.format("Copied %d objects in place: you're holding the group. B takes the copies away.", #list))
+        say(string.format(FN.padText("Copied %d objects in place: you're holding the group. B takes the copies away."), #list))
         return
     end
     S.copyQ = { item = o.item, pos = o.position, heading = o.heading or 0, scale = o.scale or 1, tilt = S.tilt[o.id], until_ = S.clock + 3000, grab = true }
@@ -514,7 +522,7 @@ function FN.copyTick()
         S.expectCopy = { item = q.item, pos = q.pos, tilt = q.tilt and { x = q.tilt.x, z = q.tilt.z } or nil, grab = q.grab }
         S.copyQ = nil
         S.lastScan = -1e9
-        say(q.grab and "Copy made: you're holding it." or "Copy made. Move on and press X for another.")
+        say(q.grab and "Copy made: you're holding it." or FN.padText("Copy made. Move on and press X for another."))
     elseif not BUSY[why] then
         S.copyQ = nil
         say("No copy: " .. tostring(why), true)
@@ -523,7 +531,7 @@ end
 -- Y twice: remove it (a group member: the whole group)
 function FN.deletePress(o)
     o = o or (S.sel and { id = S.sel.id, item = S.sel.item })
-    if not o then say("Aim the cross at an object, then Y twice.") return end
+    if not o then say(FN.padText("Aim the cross at an object, then Y twice.")) return end
     local id = o.id
     local n = groupCount()
     if S.group[id] and n > 1 then
@@ -535,10 +543,10 @@ function FN.deletePress(o)
             local rec = S.removeUndoable(ids, "Removed")
             S.group, S.gbase = {}, nil
             S.aim = nil
-            say(string.format("Removing %d objects... (View: undo)", rec.total))
+            say(string.format(FN.padText("Removing %d objects... (View: undo)"), rec.total))
         else
             S.delAsk = { id = id, at = S.clock, all = true }
-            say(string.format("Press Y again to remove all %d objects in the group.", n))
+            say(string.format(FN.padText("Press Y again to remove all %d objects in the group."), n))
         end
         return
     end
@@ -556,31 +564,31 @@ function FN.deletePress(o)
             if S.sel and S.sel.id == id then select(nil) end
             S.aim = nil
             S.lastScan = -1e9
-            say("Removed " .. name .. ".  (View: undo)")
+            say("Removed " .. name .. FN.padText(".  (View: undo)"))
         elseif BUSY[why] then
             -- the game is busy with an edit: removed as soon as it is free
             if #keep > 0 then S.pushUndo({ kind = "removed", items = keep }) end
             table.insert(S.q, { op = "remove", id = id, rec = { done = 0, failed = 0, total = 1, label = "Remove", quiet = true } })
             S.aim = nil
-            say("Removing " .. name .. "...  (View: undo)")
+            say("Removing " .. name .. FN.padText("...  (View: undo)"))
         else
             say("Not removed: " .. tostring(why), true)
         end
     else
         S.delAsk = { id = id, at = S.clock }
-        say("Press Y again to remove " .. titleOf(o.item) .. ".")
+        say(FN.padText("Press Y again to remove ") .. titleOf(o.item) .. ".")
     end
 end
 
 startGrabRef = startGrab
 
 function FN.toggleGroup(o)
-    if not o then say("Aim the cross at an object, then RB puts it in the group.") return end
+    if not o then say(FN.padText("Aim the cross at an object, then RB puts it in the group.")) return end
     if S.group[o.id] then S.group[o.id] = nil else S.group[o.id] = true end
     S.gbase = nil
     local n = groupCount()
     if n == 0 then say("Group cleared.")
-    else say(string.format("Group: %d object%s.  RB: add / take out   LB: clear   A on one: move them all", n, n == 1 and "" or "s")) end
+    else say(string.format(FN.padText("Group: %d object%s.  RB: add / take out   LB: clear   A on one: move them all"), n, n == 1 and "" or "s")) end
 end
 function FN.clearGroup()
     if groupCount() == 0 then return end

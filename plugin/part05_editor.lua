@@ -77,6 +77,7 @@ local function closeEditor()
     S.aHold, S.yHold = nil, nil
     S.carry = nil
     S.controlsOpen = false
+    S.keysWin = nil
     if S.grab then S.grab = nil end
     S.closedAt = S.clock
     -- (the Add window open: closed the usual way, so where it was is kept)
@@ -92,12 +93,9 @@ local function closeEditor()
     reskate.ui.close()
 end
 
-reskate.input.bind("ddh_quickdrop_plus", "F6")
--- (the controller opens it with LB + D-pad right: watched in the tick, see padOpenTick)
-reskate.on("action", function(name)
-    if name == "ddh_quickdrop_plus" or name == "ddh_quickdrop_plus_pad" then FN.openEditor() end
-end)
-reskate.on("screen_closed", function(title) if title == TITLE and S.open then S.open = false; S.drag = nil; PE.padCaptureOff(); reskate.camera.release() end end)
+-- (the key that opens it, F6 unless changed in Settings, is bound in part17_keys; the controller opens it with
+-- LB + D-pad right: watched in the tick)
+reskate.on("screen_closed", function(title) if title == TITLE and S.open then S.open = false; S.drag = nil; S.keysWin = nil; PE.padCaptureOff(); reskate.camera.release() end end)
 reskate.on("unload", function() PE.padCaptureOff(); if S.open then reskate.camera.release() end end)
 reskate.on("level_loaded", function()
     FN.catalogReset()

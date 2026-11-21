@@ -81,12 +81,18 @@ local function tickBody(dt)
         local ok, err = pcall(FN.tiltTick)
         if not ok and not S.tiltWarned then S.tiltWarned = true; reskate.log("Quick Drop helper: tilt: " .. tostring(err), "warn") end
     end
+    if FN.modShapesTick then FN.modShapesTick() end
     if FN.scanTick then
         local ok, err = pcall(FN.scanTick)
         if not ok then S.scanJob = nil; if not S.scanWarned then S.scanWarned = true; reskate.log("Quick Drop helper: scan: " .. tostring(err), "warn") end end
     end
 
+    -- the keys (as set in Settings): what went down this frame
+    FN.kbBegin()
+
     if not S.open then
+        -- the key that opens it (ReSkate's own binding opens it too: whichever comes first)
+        if FN.kbOpenTick() then return end
         -- the controller: hold LB and press D-pad right to open the editor
         local pd = FN.readPad()
         if pd then
@@ -98,59 +104,42 @@ local function tickBody(dt)
             end
             S.padOpenRight = rightNow
         end
-        -- quick keys while skating: hold Ctrl
-        if reskate.input.allowed() and reskate.input.key("Ctrl") and S.target then
-            local fine = reskate.input.key("Shift")
-            local v = reskate.camera.get()
-            local f = v and flat(v.forward) or V(0, 0, 1)
-            local r = V(-f.z, 0, f.x) * -1
-            if v and v.right then r = flat(v.right) end
-            local t = S.target
-            local function ch(fn) markUndo(); fn(); S.dirty = true end
-            local st = fine and 0.01 or 0.1
-            if press("[") then ch(function() local s = math.rad(fine and 1 or 15); t.heading = wrap(round(t.heading + s, s)) end) end
-            if press("]") then ch(function() local s = math.rad(fine and 1 or 15); t.heading = wrap(round(t.heading - s, s)) end) end
-            if press("PageUp") then ch(function() t.pos = V(t.pos.x, FN.heightStep(t.pos.y, t.pos.y + (fine and 0.01 or 0.05)), t.pos.z) end) end
-            if press("PageDown") then ch(function() t.pos = V(t.pos.x, FN.heightStep(t.pos.y, t.pos.y - (fine and 0.01 or 0.05)), t.pos.z) end) end
-            if press("X") then ch(function() t.scale = clamp(t.scale + (fine and 0.01 or 0.1), 0.1, 10) end) end
-            if press("Z") then ch(function() t.scale = clamp(t.scale - (fine and 0.01 or 0.1), 0.1, 10) end) end
-            if press("Up") then ch(function() t.pos += f * st end) end
-            if press("Down") then ch(function() t.pos -= f * st end) end
-            if press("Right") then ch(function() t.pos += r * st end) end
-            if press("Left") then ch(function() t.pos -= r * st end) end
-            if press("U") then undo() end
-        else
-            for _, k in ipairs({ "[", "]", "PageUp", "PageDown", "X", "Z", "Up", "Down", "Right", "Left", "U" }) do S.held[k] = false end
-        end
+        -- (the keyboard does nothing to objects with the editor closed)
         send()
         return
     end
 
     -- the editor: keys (none while the text box is open)
     if S.typing then send(); return end
-    local ctrl = reskate.input.key("Ctrl")
-    if press("W") then S.mode = 1 end
-    if press("E") then S.mode = 2 end
-    if press("R") then S.mode = 3 end
-    if press("G") then S.snap = not S.snap end
-    if press("T") then S.osnap = not S.osnap; say(S.osnap and "Snap to objects on" or "Snap to objects off") end
-    if press("Tab") and S.sel then FN.cycleSnap() end
-    if press("F") and S.target then S.cam.goal = S.target.pos end
-    if press("M") then FN.toggleMeasure() end
     if FN.undoStepTick then FN.undoStepTick() end
     if FN.coloursTick then FN.coloursTick() end
-    if press("Z") and ctrl then if reskate.input.key("Shift") then redo() else undo() end end
-    if press("Y") and ctrl then redo() end
-    do -- the view: arrows and PageUp / PageDown slide it
+    if S.keysWin then
+        -- the Settings window: the keys are being changed, so they do nothing else (a key pressed is taken as the
+        -- new key while a box waits for one)
+        FN.keysTick()
+    else
+        local kp = FN.kbPress
+        if kp("modeMove") then S.mode = 1 end
+        if kp("modeTurn") then S.mode = 2 end
+        if kp("modeSize") then S.mode = 3 end
+        if kp("grid") then S.snap = not S.snap end
+        if kp("osnap") then S.osnap = not S.osnap; say(S.osnap and "Snap to objects on" or "Snap to objects off") end
+        if kp("snapTarget") and S.sel then FN.cycleSnap() end
+        if kp("look") and S.target then S.cam.goal = S.target.pos end
+        if kp("measure") then FN.toggleMeasure() end
+        if kp("undo") then undo() end
+        if kp("redo") then redo() end
+        -- the view: arrows and PageUp / PageDown slide it (or the keys set for it)
         local _, f, r = camBasis()
-        local sp = math.max(S.cam.dist, 3) * (reskate.input.key("Shift") and 2.5 or 0.8) * sec
+        local kd = FN.kbDown
+        local sp = math.max(S.cam.dist, 3) * (kd("bigger") and 2.5 or 0.8) * sec
         local mv = V(0, 0, 0)
-        if reskate.input.key("Up") then mv += flat(f) end
-        if reskate.input.key("Down") then mv -= flat(f) end
-        if reskate.input.key("Right") then mv += flat(r) end
-        if reskate.input.key("Left") then mv -= flat(r) end
-        if reskate.input.key("PageUp") then mv += V(0, 1, 0) end
-        if reskate.input.key("PageDown") then mv -= V(0, 1, 0) end
+        if kd("flyF") then mv += flat(f) end
+        if kd("flyB") then mv -= flat(f) end
+        if kd("flyR") then mv += flat(r) end
+        if kd("flyL") then mv -= flat(r) end
+        if kd("flyU") then mv += V(0, 1, 0) end
+        if kd("flyD") then mv -= V(0, 1, 0) end
         S.cam.goal = (S.cam.goal or S.cam.target) + mv * sp
     end
     do
@@ -170,7 +159,7 @@ local function tickBody(dt)
     -- (over the picked object's numbers under the controller's prompts: they take the mouse, and it stays the
     -- controller's view)
     -- a panel's edge being dragged to resize it (first: it keeps the mouse until let go)
-    if c and S.ownPanel and UI.gripMouse and not S.drag and not S.colours and not S.picker and not S.controlsOpen then
+    if c and S.ownPanel and UI.gripMouse and not S.drag and not S.colours and not S.keysWin and not S.picker and not S.controlsOpen then
         local okg, usedG = pcall(UI.gripMouse, c)
         if okg and usedG then
             S.mouse = { pos = c.position, left = c.left }
@@ -178,7 +167,7 @@ local function tickBody(dt)
             c = nil
         end
     end
-    if c and UI.padRowsMouse and not S.drag then
+    if c and UI.padRowsMouse and not S.drag and not S.keysWin then
         local okr, usedR = pcall(UI.padRowsMouse, c)
         if okr and usedR then
             S.mouse = { pos = c.position, left = c.left }
@@ -188,6 +177,11 @@ local function tickBody(dt)
     if c and ((S.mouse.pos and d2(c.position, S.mouse.pos) > 3) or c.left or c.right or (c.wheel and c.wheel ~= 0)) then S.mouseUsedAt = S.clock end
     if c and S.controlsOpen then
         pcall(UI.controlsMouse, c)
+        S.mouse = { pos = c.position, left = c.left }
+        c = nil
+    end
+    if c and S.keysWin and UI.keysMouse then
+        pcall(UI.keysMouse, c)
         S.mouse = { pos = c.position, left = c.left }
         c = nil
     end
@@ -278,8 +272,8 @@ local function tickBody(dt)
                     S.cam.pitch = clamp(S.cam.pitch - dy * 0.005, -1.45, 1.45)
                 end
             elseif t then
-                local step = reskate.input.key("Shift") and 1 or 0.25
-                local toObjects = S.osnap and not reskate.input.key("Ctrl")
+                local step = FN.kbDown("bigger") and 1 or 0.25
+                local toObjects = S.osnap and not FN.kbDown("noSnap")
                 S.guides = nil
                 if g.kind == "axis" then
                     local along = ((px.x - g.start.px.x) * g.dir.x + (px.y - g.start.px.y) * g.dir.y) / g.ppm
@@ -341,7 +335,7 @@ local function tickBody(dt)
                         g.acc += wrap(a - g.lastA) * g.sign
                         g.lastA = a
                         local v = wrap(g.t0[g.axis] + g.acc)
-                        if S.snap then v = round(v, math.rad(reskate.input.key("Shift") and 45 or 15)) end
+                        if S.snap then v = round(v, math.rad(FN.kbDown("bigger") and 45 or 15)) end
                         -- level again (or a quarter turn) when close to it
                         if toObjects and math.abs(v - round(v, math.pi / 2)) < SNAP_TURN then v = round(v, math.pi / 2) end
                         local tl = S.tilt[S.sel.id] or { x = 0, z = 0 }
@@ -355,7 +349,7 @@ local function tickBody(dt)
                         g.acc += wrap(a - g.lastA) * g.sign
                         g.lastA = a
                         local hd = g.start.heading + g.acc
-                        if S.snap then hd = round(hd, math.rad(reskate.input.key("Shift") and 45 or 15)) end
+                        if S.snap then hd = round(hd, math.rad(FN.kbDown("bigger") and 45 or 15)) end
                         if toObjects then hd, S.guides = FN.turnTo(hd) end
                         t.heading = wrap(hd)
                         g.moved = true
@@ -370,7 +364,7 @@ local function tickBody(dt)
             end
             if S.drag and S.drag.moved and S.drag.kind ~= "tilt" then S.dirty = true end
         elseif not c.left and S.mouse.left and S.drag then
-            if S.drag.kind == "click" then FN.clickPick(px, reskate.input.key("Ctrl")) end
+            if S.drag.kind == "click" then FN.clickPick(px, FN.kbDown("multi")) end
             local moved = S.drag.moved
             local wasTilt = S.drag.kind == "tilt"
             S.snapLock = nil
@@ -379,7 +373,7 @@ local function tickBody(dt)
                 if moved then S.tiltSaveDue = true end
                 moved = false
             end
-            if moved and S.osnap and not reskate.input.key("Ctrl") then armTighten(S.guides) end
+            if moved and S.osnap and not FN.kbDown("noSnap") then armTighten(S.guides) end
             S.guides = nil
             local st = S.dragStats
             if st and moved then
@@ -439,7 +433,7 @@ reskate.on("tick", function(dt)
     -- (an average over a few ticks, and a spike counted at once)
     S.otherMs = math.max(other, (S.otherMs or other) * 0.9 + other * 0.1)
     -- the whole tick over about 3 s, scanning and all: close to the limit, said once a minute
-    S.avgMs = (S.avgMs or all) * 0.98 + all * 0.02
+    S.avgMs = (S.avgMs or 0) * 0.98 + all * 0.02
     if S.avgMs > BUSY_MS and (S.clock or 0) - (S.busySaidAt or -1e9) > 60000 then
         S.busySaidAt = S.clock or 0
         reskate.log(string.format("Quick Drop helper: busy: %.1f ms a tick on average (ReSkate stops a plugin past 6)", S.avgMs), "warn")

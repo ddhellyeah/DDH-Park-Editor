@@ -326,7 +326,7 @@ function FN.pickerPad(p)
     if padPress("b", p.b) then if not FN.pickerBack() then closePicker() end return end
     if padPress("a", p.a) then FN.pickerPlace() return end
     if padPress("y", p.y) then
-        if #FN.replaceTargets() > 0 then FN.pickerPlace(true) else say("Select objects first (hold A over them), then Y here replaces them.", true) end
+        if #FN.replaceTargets() > 0 then FN.pickerPlace(true) else say(FN.padText("Select objects first (hold A over them), then Y here replaces them."), true) end
         return
     end
     if padPress("lb", p.lb) then FN.pickerTab(-1) end

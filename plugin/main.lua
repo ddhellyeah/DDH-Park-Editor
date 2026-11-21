@@ -5,9 +5,6 @@
 -- Click another placed object to pick it. Drag empty space to turn the view, right-drag to slide it, scroll to
 -- zoom, W A S D Q E... (see the panel). Esc closes it.
 --
--- Without opening it: hold Ctrl and use [ ] (turn), PageUp / PageDown (height), Z / X (size), arrows (slide)
--- on the last dropped object.
---
 -- The game's park objects only turn about the up axis and only size evenly, so the turn handle is one ring and
 -- every size cube sizes the whole object.
 --
@@ -80,6 +77,9 @@ S.FN = FN
 
 -- PE: what the parts share (main.lua loads part01 ... part14 in order at the end, and each one gets PE)
 local PE = {}
+
+-- a message naming controller buttons by their usual names, given the buttons doing those jobs now (part17_keys)
+function FN.padText(s) return s end
 
 local function say(text, warn)
     S.msg = text
@@ -282,7 +282,7 @@ local function scan()
             reskate.log("Quick Drop helper: new object " .. fmt(o))
             select(o)
             S.droppedAt = S.clock
-            if not S.open then reskate.ui.toast("Dropped " .. titleOf(o.item) .. ". F6: move, turn and size it") end
+            if not S.open then reskate.ui.toast("Dropped " .. titleOf(o.item) .. ". " .. (FN.kbLabel and FN.kbLabel("open") or "F6") .. ": move, turn and size it") end
         elseif #fresh > 1 then
             reskate.log(string.format("Quick Drop helper: %d objects loaded with the park.", #fresh))
         end
@@ -379,8 +379,8 @@ local function send()
             S.blocked = tostring(why):match("installed:%s*(%S+)") or "?"
             if first then pcall(findMissing, S.blocked) end
             local n = S.missing and #S.missing or 0
-            say(n > 0 and string.format("Park locked: %d object(s) from a missing mod. See the F6 panel.", n)
-                or "Park locked: an object from a missing mod. See the F6 panel.", S.clock - (S.lastWarn or -1e9) > 5000)
+            say(n > 0 and string.format("Park locked: %d object(s) from a missing mod. See the editor's panel.", n)
+                or "Park locked: an object from a missing mod. See the editor's panel.", S.clock - (S.lastWarn or -1e9) > 5000)
         else
             say("Could not change it: " .. tostring(why), S.clock - (S.lastWarn or -1e9) > 5000)
         end
@@ -497,16 +497,56 @@ function UI.textW(d, str, size, font)
     end
     return #str * size * 0.52
 end
--- a controller button: A B X Y round in their colours, the rest a small light tag; its width
-function UI.badgeW(d, k) return UI.BTN[k] and 24 or (UI.textW(d, k, 13, "bold") + 14) end
-function UI.badge(d, x, y, k)
+-- PlayStation's face buttons (the same places as A B X Y): their colours; the symbols are drawn
+UI.PSBTN = { a = "#7aa6ff", b = "#ff6b6b", x = "#e88bd3", y = "#3fd0b0" }
+-- a face button's symbol at c, r its button's radius: a letter (Xbox) or a drawn cross, circle, square, triangle
+-- (PlayStation, UI.padIsPS: set in part17_keys); ring: only the outline of the button, in its colour
+function UI.faceGlyph(d, c, k, r, ring)
+    if UI.padIsPS and UI.padIsPS() then
+        local col = UI.PSBTN[k]
+        if ring then d:circle(c, r, { colour = col, thickness = 3 })
+        else d:circle(c, r, { colour = "#1d222b", fill = true }); d:circle(c, r, { colour = col, thickness = 1.5 }) end
+        local s = r * 0.48
+        local th = math.max(2, r * 0.17)
+        if k == "a" then
+            d:line(c + V(-s, -s, 0), c + V(s, s, 0), { colour = col, thickness = th })
+            d:line(c + V(-s, s, 0), c + V(s, -s, 0), { colour = col, thickness = th })
+        elseif k == "b" then
+            d:circle(c, s * 1.05, { colour = col, thickness = th })
+        elseif k == "x" then
+            d:rect(c - V(s * 0.9, s * 0.9, 0), c + V(s * 0.9, s * 0.9, 0), { colour = col, thickness = th })
+        else
+            local p1, p2, p3 = c + V(0, -s * 1.1, 0), c + V(s * 1.05, s * 0.75, 0), c + V(-s * 1.05, s * 0.75, 0)
+            d:line(p1, p2, { colour = col, thickness = th }); d:line(p2, p3, { colour = col, thickness = th }); d:line(p3, p1, { colour = col, thickness = th })
+        end
+        return
+    end
     local b = UI.BTN[k]
-    if b then
-        d:circle(V(x + 12, y, 0), 12, { colour = b[2], fill = true })
-        d:text(V(x + 12, y - 9, 0), b[1], { size = 16, colour = "#0d1117", font = "bold", align = "centre" })
+    -- (the letter's middle sits about three quarters of its size below where it is drawn from)
+    local size = math.floor(r * (ring and 1.17 or 1.33) + 0.5)
+    local at = c - V(0, size * 0.75, 0)
+    if ring then
+        d:circle(c, r, { colour = b[2], thickness = 3 })
+        d:text(at, b[1], { size = size, colour = b[2], font = "bold", align = "centre" })
+    else
+        d:circle(c, r, { colour = b[2], fill = true })
+        d:text(at, b[1], { size = size, colour = "#0d1117", font = "bold", align = "centre" })
+    end
+end
+-- a controller button: A B X Y round in their colours (PlayStation: its symbols), the rest a small light tag; its width
+-- (k names the job's usual button: shown as the button doing that job now, see part17_keys; raw: k is the button
+-- itself)
+function UI.badgeW(d, k, raw)
+    if UI.padShow and not raw then k = UI.padShow(k) end
+    return UI.BTN[k] and 24 or (UI.textW(d, k, 13, "bold") + 14)
+end
+function UI.badge(d, x, y, k, raw)
+    if UI.padShow and not raw then k = UI.padShow(k) end
+    if UI.BTN[k] then
+        UI.faceGlyph(d, V(x + 12, y, 0), k, 12)
         return 24
     end
-    local w = UI.badgeW(d, k)
+    local w = UI.badgeW(d, k, true)
     d:rect(V(x, y - 11, 0), V(x + w, y + 11, 0), { colour = "#e6e9ef", fill = true, rounding = 6 })
     d:text(V(x + w / 2, y - 8, 0), k, { size = 13, colour = "#0d1117", font = "bold", align = "centre" })
     return w
@@ -610,6 +650,8 @@ local PARTS = {
     "part14_panel_draw",
     "part15_scan",
     "part16_colours",
+    "part17_keys",
+    "part18_modshapes",
 }
 for _, name in ipairs(PARTS) do
     local ok, part = pcall(function() return require(name) end)
