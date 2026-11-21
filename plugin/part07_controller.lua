@@ -173,6 +173,29 @@ function FN.pickNext(dir)
     say(string.format("Picked %s (%d of %d)", titleOf(list[i].item), i, #list))
 end
 
+-- (ReSkate's capture keeps the first Xbox-style controller from the game; a PlayStation pad, which ReSkate reads
+-- by itself, is named "playstation" and is kept from the game too, or the skater moves with it)
+local PS_FORMS = {
+    function(on) return reskate.input.capture(on, "playstation") end,
+    function(on) return reskate.input.capture("playstation", on) end,
+}
+local psForm = nil
+local function capturePS(on)
+    if psForm == false then return end
+    if psForm then pcall(PS_FORMS[psForm], on) return end
+    local why = {}
+    for i, f in ipairs(PS_FORMS) do
+        local ok, err = pcall(f, on)
+        if ok then
+            psForm = i
+            reskate.log("Quick Drop helper: the PlayStation controller is kept from the game too (form " .. i .. ")")
+            return
+        end
+        why[#why + 1] = tostring(err)
+    end
+    psForm = false
+    reskate.log("Quick Drop helper: could not keep a PlayStation controller from the game: " .. table.concat(why, " | "), "warn")
+end
 function FN.padCapture(on)
     if S.padCaptured == on then return end
     if not (reskate.input and reskate.input.capture) then return end
@@ -182,6 +205,22 @@ function FN.padCapture(on)
     elseif on and not S.captureErr then
         S.captureErr = true
         reskate.log("Quick Drop helper: could not keep the controller from the game: " .. tostring(why), "warn")
+    end
+    capturePS(on)
+    -- (a PlayStation pad: its sticks, triggers and buttons also hidden from the game while the editor is open)
+    if reskate.input.hide and (S.padPS or S.psHidden) then
+        local ok2, err2
+        if on then
+            ok2, err2 = pcall(reskate.input.hide, { left_x = true, left_y = true, right_x = true, right_y = true, left_trigger = true,
+                right_trigger = true, buttons = true, left_stick_click = true, right_stick_click = true })
+        else
+            ok2, err2 = pcall(reskate.input.hide, nil)
+        end
+        S.psHidden = on and ok2 or nil
+        if not S.psHideLogged then
+            S.psHideLogged = true
+            reskate.log("Quick Drop helper: hiding the PlayStation controller from the game: " .. (ok2 and "done" or tostring(err2)))
+        end
     end
 end
 
