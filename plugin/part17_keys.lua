@@ -64,10 +64,11 @@ for i = 1, 12 do CAND[#CAND + 1] = "F" .. i end
 for _, k in ipairs({ "Tab", "Space", "Enter", "Backspace", "Delete", "Home", "End", "PageUp", "PageDown", "Up", "Down", "Left", "Right",
     "[", "]", ";", "'", ",", ".", "/", "\\", "-", "=", "`", "Ctrl", "Shift", "Alt" }) do CAND[#CAND + 1] = k end
 -- (a name ReSkate doesn't know is left out, the first time it is asked about)
-local bad = {}
+local bad, seen = {}, {}
 local function rawDown(k)
     if bad[k] then return false end
     local ok, v = pcall(reskate.input.key, k)
+    seen[k] = true
     if not ok then bad[k] = true; return false end
     return v == true
 end
@@ -172,8 +173,14 @@ function FN.kbBegin()
     for _, l in pairs(B) do for _, b in ipairs(l) do want[b.key] = true end end
     if S.keysWin and S.keysWin.listen then for _, k in ipairs(CAND) do want[k] = true end end
     edge, now = {}, {}
+    -- (keys not asked about before: a few a tick. On some PCs the first questions took 200+ ms in one tick)
+    local fresh = 0
     for k in pairs(want) do
-        local d = rawDown(k)
+        local d = false
+        if seen[k] or fresh < 4 then
+            if not seen[k] then fresh += 1 end
+            d = rawDown(k)
+        end
         now[k] = d
         edge[k] = d and not was[k]
     end

@@ -207,8 +207,20 @@ local function hidePS(on)
     if not on and not S.psHidden then return end
     local ok2, err2
     if on then
-        ok2, err2 = pcall(reskate.input.hide, { left_x = true, left_y = true, right_x = true, right_y = true, left_trigger = true,
-            right_trigger = true, buttons = true, left_stick_click = true, right_stick_click = true })
+        -- (ReSkate takes only some of these: a field it refuses is named first in its answer, and left out)
+        local want = { left_x = true, left_y = true, right_x = true, right_y = true, left_trigger = true,
+            right_trigger = true, buttons = true, left_stick_click = true, right_stick_click = true }
+        local dropped = {}
+        for _ = 1, 10 do
+            ok2, err2 = pcall(reskate.input.hide, want)
+            if ok2 then break end
+            local f = string.match(tostring(err2), "([%a_]+) is ") or string.match(tostring(err2), "([%a_]+) must")
+            if not (f and want[f]) then break end
+            want[f] = nil
+            dropped[#dropped + 1] = f
+        end
+        if #dropped > 0 then reskate.log("Quick Drop helper: the game keeps these of a PlayStation controller: " .. table.concat(dropped, ", ")) end
+        if ok2 and next(want) == nil then ok2, err2 = false, "nothing could be hidden" end
     else
         ok2, err2 = pcall(reskate.input.hide, nil)
         if not ok2 then ok2, err2 = pcall(reskate.input.hide, {}) end
