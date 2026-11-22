@@ -246,7 +246,8 @@ local function drawSilhouette(d, sh, col, th, xf)
     if not (m and sh.p and sh.ax and sh.az) then return false end
     local nt = #m.t
     if silAt ~= S.clock then silAt, silUsed = S.clock, 0 end
-    if silUsed + nt > SIL_BUDGET then return false end
+    -- (near ReSkate's time limit: a quarter of the triangles; the rest are drawn plainer)
+    if silUsed + nt > (S.light and SIL_BUDGET / 4 or SIL_BUDGET) then return false end
     silUsed += nt
     local sc = sh.scale or 1
     local p, X, Y, Z = sh.p, sh.ax * sc, UP * sc, sh.az * sc
@@ -268,7 +269,7 @@ local function drawSilhouette(d, sh, col, th, xf)
         front[i] = (n.x * to.x + n.y * to.y + n.z * to.z) > 0
     end
     -- the see-through fill (a held object): its faces towards the camera
-    if sh.fill and polyOk then
+    if sh.fill and polyOk and not S.light then
         local scr = {}
         local style = { colour = fillColour(col), fill = true }
         local cy = S.cutY
@@ -340,7 +341,7 @@ function FN.wline(d, a, b, st)
     local step = (b - a) * (1 / n)
     for i = 0, n - 1, 2 do d:world_line(a + step * i, a + step * (i + 1), sb) end
 end
-local cutCache, cutN, lastById = {}, 0, {}
+local cutCache, cutN, lastById, lastAt = {}, 0, {}, {}
 local rayAt, rayUsed, supAt, supUsed = -1, 0, -1, 0
 local function hitY(h)
     if type(h) == "table" and h.position then h = h.position end
@@ -362,9 +363,13 @@ function FN.cutFor(sh)
     if v ~= nil then return v or nil end
     if cutN > 3000 then cutCache, cutN = {}, 0 end
     if id then
+        -- (an object in the world: finding the ground under it means asking what each ray hit, about 2 ms a
+        -- time, too slow to do while a group is moved; asked only when the editor has time, at most every 300 ms)
+        if S.light or S.drag or S.grab or S.padMoving then return lastById[id] end
         if supAt ~= S.clock then supAt, supUsed = S.clock, 0 end
-        if supUsed >= 1 then return lastById[id] end
+        if supUsed >= 1 or S.clock - (lastAt[id] or -1e9) < 300 then return lastById[id] end
         supUsed += 1
+        lastAt[id] = S.clock
         local ok, y = pcall(FN.supportY, sh.item, c.pos + V(0, 2, 0), c.heading or 0, c.scale or 1, id)
         v = (ok and type(y) == "number") and (y + lo) or false
         lastById[id] = v or nil

@@ -1142,7 +1142,11 @@ function FN.takeSlope(id, sl, setTl)
     end
 end
 -- landing may go on: not tilted, or tilted by a slope it stood on
-function FN.mayLand(id) return not tilted(id) or (S.slopeOn and S.slopeTilt == id) end
+-- (snapping off: it doesn't land on what is under it either, it floats where it is put)
+function FN.mayLand(id)
+    if not S.osnap then return false end
+    return not tilted(id) or (S.slopeOn and S.slopeTilt == id)
+end
 
 local function allowFree(level, updown)   -- the controller: the ways it is being moved right now
     local flat = allowIn(UP)

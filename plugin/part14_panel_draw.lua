@@ -1690,8 +1690,21 @@ function FN.drawMeeting(d, p, t)
     end
 end
 
+-- the drawing, timed: ReSkate counts it in the 6 ms a tick too, so the scanning (part15) and the costly outlines
+-- (part18) hold back when tick and drawing together come near it
+local drawBody
+local okClockD = pcall(function() return os.clock() end)
 reskate.on("draw", function(d)
-    if not S.open then return end
+    if not S.open then S.drawMs = 0 return end
+    if not okClockD then drawBody(d) return end
+    local t0 = os.clock()
+    drawBody(d)
+    local ms = (os.clock() - t0) * 1000
+    -- (an average over a few frames, and a spike counted at once, as the tick's own time)
+    S.drawMs = math.max(ms, (S.drawMs or ms) * 0.9 + ms * 0.1)
+    S.drawAvg = (S.drawAvg or 0) * 0.98 + ms * 0.02
+end)
+drawBody = function(d)
     if UI.gripsClear then UI.gripsClear() end
     local ok, err = pcall(FN.drawMain, d)
     if not ok then FN.problem("drawing", err) end
@@ -1722,7 +1735,7 @@ reskate.on("draw", function(d)
         local okk2, errk2 = pcall(UI.keysWin, d)
         if not okk2 then FN.problem("the settings window", errk2); S.keysWin = nil end
     end
-end)
+end
 
 reskate.on("load", function()
     local k = FN.kbLabel or function(_, _) return "?" end

@@ -431,8 +431,10 @@ reskate.on("tick", function(dt)
     local other = all - (S.scanMsTick or 0)
     -- (an average over a few ticks, and a spike counted at once)
     S.otherMs = math.max(other, (S.otherMs or other) * 0.9 + other * 0.1)
-    -- the whole tick over about 3 s, scanning and all: close to the limit, said once a minute
-    S.avgMs = (S.avgMs or 0) * 0.98 + all * 0.02
+    -- the whole tick over about 3 s, scanning and all, with the drawing (ReSkate counts both): close to the limit,
+    -- said once a minute; nearing it, the costly extras hold back (S.light: fewer outline triangles, no scanning)
+    S.avgMs = (S.avgMs or 0) * 0.98 + (all + (S.drawMs or 0)) * 0.02
+    if S.avgMs > 4.6 then S.light = true elseif S.avgMs < 3.6 then S.light = false end
     if S.avgMs > BUSY_MS and (S.clock or 0) - (S.busySaidAt or -1e9) > 60000 then
         S.busySaidAt = S.clock or 0
         reskate.log(string.format("Quick Drop helper: busy: %.1f ms a tick on average (ReSkate stops a plugin past 6)", S.avgMs), "warn")

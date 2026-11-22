@@ -1147,7 +1147,11 @@ function FN.scanTick()
         return
     end
     tickStart = nowMs and nowMs() or 0
-    scanMs = S.otherMs and math.max(SCAN_MS_MIN, math.min(SCAN_MS_MAX, TICK_MS - S.otherMs)) or SCAN_MS
+    -- (what the editor's own tick and its drawing leave of TICK_MS; nothing left, or near ReSkate's limit: no
+    -- scanning this tick)
+    local left = TICK_MS - (S.otherMs or 0) - (S.drawMs or 0)
+    if S.light or left < 0.3 then S.scanMsTick = 0 return end
+    scanMs = S.otherMs and math.min(SCAN_MS_MAX, math.max(0.3, left)) or SCAN_MS
     if S.drag or S.grab or S.padMoving or S.dirty or S.carry then scanMs = math.min(scanMs, SCAN_MS_MOVING) end
     job.ticks += 1
     job.tickRays = 0
