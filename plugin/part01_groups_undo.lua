@@ -89,7 +89,7 @@ local function pushUndo(u, keepRedo)
 end
 S.pushUndo = pushUndo
 local function markUndo()
-    if S.target and S.sel then
+    if S.target and S.sel and S.sel.id ~= "__carry" then
         local u = poseEntry(S.sel.id)
         if u then pushUndo(u) end
     end

@@ -25,6 +25,8 @@ local undo = PE.undo
 local wrap = PE.wrap
 
 function FN.clickPick(px, toGroup)
+    -- (placing a set with the mouse: a click doesn't pick anything else; Put down or Cancel first)
+    if S.carry and S.carry.virtual then return end
     local o, d = rayAt(px)
     local hit = reskate.world.pick(o, o + d * 300)
     if not hit then return end
@@ -75,6 +77,7 @@ end
 
 local function closeEditor()
     S.aHold, S.yHold = nil, nil
+    if S.carry and S.carry.virtual and S.carryCancel then S.carryCancel(true) end
     S.carry = nil
     S.controlsOpen = false
     S.keysWin = nil

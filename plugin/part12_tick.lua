@@ -124,7 +124,10 @@ local function tickBody(dt)
         if kp("measure") then FN.toggleMeasure() end
         if kp("undo") then undo() end
         if kp("redo") then redo() end
-        if kp("toGround") then FN.dropToGround() end
+        if kp("toGround") and not (S.carry and S.carry.virtual) then FN.dropToGround() end
+        if S.carry and S.carry.virtual then
+            if kp("setDrop") then S.carryDrop() elseif kp("setCancel") then S.carryCancel() end
+        end
         -- the view: arrows and PageUp / PageDown slide it (or the keys set for it)
         local _, f, r = camBasis()
         local kd = FN.kbDown

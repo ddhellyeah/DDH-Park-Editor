@@ -46,6 +46,9 @@ local ACTIONS = {
     { id = "flyD", name = "Down", hold = true, def = { "PageDown" } },
     { head = "Objects" },
     { id = "toGround", name = "Drop onto the ground", def = {} },
+    { head = "Placing a set" },
+    { id = "setDrop", name = "Put the set down", def = { "Enter" } },
+    { id = "setCancel", name = "Cancel placing it", def = { "Backspace" } },
 }
 local BYID = {}
 for _, a in ipairs(ACTIONS) do if a.id then a.ctx = a.ctx or "ed"; BYID[a.id] = a end end

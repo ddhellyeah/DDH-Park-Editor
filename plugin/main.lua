@@ -286,10 +286,11 @@ local function scan()
         elseif #fresh > 1 then
             reskate.log(string.format("Quick Drop helper: %d objects loaded with the park.", #fresh))
         end
-        if S.sel and not now[S.sel.id] then select(nil) end
+        -- (a set held with the mouse before it is placed is not in the game: it stays held)
+        if S.sel and not now[S.sel.id] and S.sel.id ~= "__carry" then select(nil) end
         for id in pairs(S.group) do if not now[id] then S.group[id] = nil; S.gt[id] = nil; S.gs[id] = nil end end
         -- moved by something else (Quick Drop again): follow it
-        if S.sel and not S.dirty and not S.drag and S.clock - S.lastSend > 1500 then
+        if S.sel and now[S.sel.id] and not S.dirty and not S.drag and S.clock - S.lastSend > 1500 then
             local o = now[S.sel.id]
             S.target = { pos = o.position, heading = o.heading or 0, scale = o.scale or 1 }
         end
@@ -331,6 +332,8 @@ end
 -- While a handle is dragged the object follows as often as that allows; letting go sends the exact place.
 local function send()
     if not (S.sel and S.dirty) then return end
+    -- (a set held with the mouse before it is placed: nothing in the game to change yet)
+    if S.sel.id == "__carry" then S.dirty = false return end
     local t = S.target
     if sameAsSent(t) then S.dirty = false return end
     local tries = S.tries or {}

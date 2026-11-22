@@ -507,15 +507,16 @@ local wrap = PE.wrap
         pcall(reskate.files.reveal, FOLDER)
     end
     -- place a set: its middle where the cross is, facing the view; then it is held (controller) or picked as a group
-    function S.placeSet(set, at, heading, dropped)
+    function S.placeSet(set, at, heading, dropped, k)
         local have = FN.catalogHave()
+        k = k or 1
         at = at or (S.cam and S.cam.target) or V(0, 0, 0)
         heading = heading or wrap(S.cam.yaw + math.pi)
         local list, missing = {}, 0
         for i, e in ipairs(set.objects) do
             if have[e.item] then
-                local off = rotY(V(e.x or 0, e.y or 0, e.z or 0), heading)
-                list[#list + 1] = { item = e.item, pos = at + off, heading = wrap(heading + (e.h or 0)), scale = clamp(e.s or 1, 0.1, 10),
+                local off = rotY(V(e.x or 0, e.y or 0, e.z or 0) * k, heading)
+                list[#list + 1] = { item = e.item, pos = at + off, heading = wrap(heading + (e.h or 0)), scale = clamp((e.s or 1) * k, 0.1, 10),
                     tilt = (e.tx or e.tz) and { x = e.tx or 0, z = e.tz or 0 } or nil, first = i == 1 }
             else
                 missing += 1
@@ -552,21 +553,66 @@ local wrap = PE.wrap
         end
         say(string.format("Placing the set \"%s\" (%d objects)...%s", set.name, rec.total, missing > 0 and string.format(" %d left out, missing mods: %s.", missing, (S.setMissing(set))) or ""), missing > 0)
     end
-    -- carrying a set before it is placed: it follows the cross (or the mouse) as outlines; A / click puts it down
+    -- carrying a set before it is placed (the controller): it follows the cross as outlines; A puts it down.
+    -- With the mouse and keyboard it is put down at once where the view points, picked as a group: then it is moved,
+    -- turned and sized with the handles like any object (the group follows), and the view moves freely
     function S.carrySet(set, at, heading)
-        S.carry = { set = set, pos = at or (S.cam and S.cam.target) or V(0, 0, 0), heading = heading or wrap(S.cam.yaw + math.pi) }
-        S.grab = nil
-        S.padWait = true
-        S.cam.goal = S.carry.pos
-        say("Carrying \"" .. set.name .. FN.padText("\": move it, A puts it down, B cancels."))
+        local padMode = S.padUsedAt ~= nil and (not S.mouseUsedAt or S.padUsedAt > S.mouseUsedAt)
+        if S.carry and S.carry.virtual then S.carryCancel(true) end
+        do
+            -- the set is held like one object (its outlines shown where it would go): with the mouse it is moved,
+            -- turned and sized with the handles, Put down (Enter) places it, Cancel (Backspace) drops it; with the
+            -- controller as before (left stick, A, B). Either works at any time. Held as "__carry", an object only
+            -- this editor knows: its box is the whole set's
+            at = at or (S.cam and S.cam.target) or V(0, 0, 0)
+            heading = heading or wrap(S.cam.yaw + math.pi)
+            local lo, hi = V(math.huge, math.huge, math.huge), V(-math.huge, -math.huge, -math.huge)
+            for _, e in ipairs(set.objects) do
+                local b = S.itemBox[e.item]
+                local k = e.s or 1
+                local blo, bhi = b and b[1] * k or V(-0.4, 0, -0.4), b and b[2] * k or V(0.4, 1, 0.4)
+                local c, sn = math.cos(e.h or 0), math.sin(e.h or 0)
+                for _, q in ipairs({ V(blo.x, 0, blo.z), V(bhi.x, 0, blo.z), V(bhi.x, 0, bhi.z), V(blo.x, 0, bhi.z) }) do
+                    local x, z = (e.x or 0) + q.x * c + q.z * sn, (e.z or 0) - q.x * sn + q.z * c
+                    lo = V(math.min(lo.x, x), math.min(lo.y, (e.y or 0) + blo.y), math.min(lo.z, z))
+                    hi = V(math.max(hi.x, x), math.max(hi.y, (e.y or 0) + bhi.y), math.max(hi.z, z))
+                end
+            end
+            if lo.x == math.huge then lo, hi = V(-0.5, 0, -0.5), V(0.5, 1, 0.5) end
+            S.itemBox.__set, S.exactBox.__set, S.exact.__set, S.itemShape.__set = { lo, hi }, { lo, hi }, true, nil
+            S.carryPrevGroup = S.group
+            S.group, S.gbase = {}, nil
+            S.drag, S.grab, S.guides = nil, nil, nil
+            S.snapIgnore, S.snapPick = {}, nil
+            S.carry = { set = set, pos = at, heading = heading, scale = 1, virtual = true }
+            S.sel = { id = "__carry", item = "__set", bp = false, bpTried = true, pos0 = at, h0 = heading }
+            S.target = { pos = at, heading = heading, scale = 1 }
+            S.dirty = false
+            if padMode then
+                S.padWait = true
+                S.cam.goal = at
+                say("Carrying \"" .. set.name .. FN.padText("\": move it, A puts it down, B cancels."))
+            else
+                say(string.format("Placing \"%s\": move it with the handles, then Put down (%s) or Cancel (%s).", set.name, FN.kbLabel("setDrop"), FN.kbLabel("setCancel")))
+            end
+        end
+    end
+    -- the mouse's held set: where the handles have it now (picked something else meanwhile: it is let go)
+    local function carrySync()
+        local c = S.carry
+        if not (c and c.virtual) then return end
+        if not (S.sel and S.sel.id == "__carry" and S.target) then S.carry = nil return end
+        c.pos, c.heading, c.scale, c.snapH = S.target.pos, S.target.heading, S.target.scale, nil
     end
     function S.carryPlaces()
+        carrySync()
         local c = S.carry
         if not c then return {} end
         local out = {}
         local H = c.snapH or c.heading
+        local k = c.scale or 1
         for _, e in ipairs(c.set.objects) do
-            out[#out + 1] = { item = e.item, pos = c.pos + rotY(V(e.x or 0, e.y or 0, e.z or 0), H), heading = wrap(H + (e.h or 0)), scale = clamp(e.s or 1, 0.1, 10) }
+            out[#out + 1] = { item = e.item, pos = c.pos + rotY(V(e.x or 0, e.y or 0, e.z or 0) * k, H), heading = wrap(H + (e.h or 0)), scale = clamp((e.s or 1) * k, 0.1, 10) }
         end
         return out
     end
@@ -579,10 +625,10 @@ local wrap = PE.wrap
         local best, bestG, bestCost, bestH = nil, nil, math.huge, nil
         for i, e in ipairs(c.set.objects) do
             if i > 40 then break end
-            local off = V(e.x or 0, e.y or 0, e.z or 0)
+            local off = V(e.x or 0, e.y or 0, e.z or 0) * (c.scale or 1)
             local p = at + rotY(off, c.heading)
             local h = wrap(c.heading + (e.h or 0))
-            local sc = clamp(e.s or 1, 0.1, 10)
+            local sc = clamp((e.s or 1) * (c.scale or 1), 0.1, 10)
             if S.itemBox[e.item] then
                 S.sel = { id = "__carry", item = e.item }
                 S.target = { pos = p, heading = h, scale = sc }
@@ -601,15 +647,22 @@ local wrap = PE.wrap
         return best, bestG, bestH
     end
     function S.carryDrop()
+        carrySync()
         local c = S.carry
         if not c then return end
         S.carry = nil
-        S.placeSet(c.set, c.pos, c.snapH or c.heading, true)
+        if c.virtual then S.sel, S.target, S.dirty, S.drag, S.guides = nil, nil, false, nil, nil end
+        S.placeSet(c.set, c.pos, c.snapH or c.heading, true, c.scale or 1)
     end
-    function S.carryCancel()
-        if not S.carry then return end
+    function S.carryCancel(quiet)
+        local c = S.carry
+        if not c then return end
         S.carry = nil
-        say("Cancelled: nothing placed.")
+        if c.virtual then
+            S.sel, S.target, S.dirty, S.drag, S.guides = nil, nil, false, nil, nil
+            S.group, S.gbase = S.carryPrevGroup or {}, nil
+        end
+        if not quiet then say("Cancelled: nothing placed.") end
     end
     -- a set seen from above: every object's outline, fitted into a box
     function UI.drawSetPreview(d, set, a, b, col)

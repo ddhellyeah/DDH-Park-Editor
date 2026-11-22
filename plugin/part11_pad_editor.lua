@@ -66,6 +66,12 @@ function FN.padEditor(sec)
         end
         if padPress("a", p.a) then S.carryDrop() return end
         if padPress("b", p.b) then S.carryCancel() return end
+        -- (Menu: the step size, View: snapping auto / one / off, as while holding one object)
+        if padPress("start", p.start) then
+            S.stepSize = S.stepSize % #STEPS + 1
+            say("Steps: " .. STEPS[S.stepSize].name)
+        end
+        if padPress("back", p.back) then FN.snapMode() end
         local st = STEPS[S.stepSize] or STEPS[2]
         if p.ls then st = STEPS[1] end
         local rx, ry = stick(p.rx, p.ry)
@@ -77,7 +83,19 @@ function FN.padEditor(sec)
         local lx, ly = stick(p.lx, p.ly)
         local up = p.rt - p.lt
         if math.abs(up) < 0.15 then up = 0 end
-        if lx ~= 0 or ly ~= 0 or up ~= 0 then
+        if S.snap then
+            -- "Drag in steps" on: a step of the chosen size for each push, as with one object (no snapping to objects)
+            c.raw, c.guides = nil, nil
+            local stepM = st.m
+            local base = c.pos
+            local function nudge(key, on, v)
+                if padStep(key, on) then c.pos = c.pos + v * stepM; S.cam.goal = c.pos end
+            end
+            nudge("cfwd", p.ly > 0.5, flat(f)); nudge("cback", p.ly < -0.5, flat(f) * -1)
+            nudge("crgt", p.lx > 0.5, flat(r)); nudge("clft", p.lx < -0.5, flat(r) * -1)
+            nudge("crise", up > 0.5, V(0, 1, 0)); nudge("cfall", up < -0.5, V(0, -1, 0))
+            if c.pos ~= base then c.snapH = nil end
+        elseif lx ~= 0 or ly ~= 0 or up ~= 0 then
             local mv = (flat(f) * ly + flat(r) * lx) * st.speed * sec + V(0, up * st.speed * 0.6 * sec, 0)
             c.raw = (c.raw or c.pos) + mv
             -- snapping, like one object: the set moves as one to where its nearest piece meets something
@@ -95,9 +113,18 @@ function FN.padEditor(sec)
             c.raw = nil
         end
         local tstep = math.rad(st.deg)
+        -- (zoom: D-pad right / left, as while holding one object)
+        if p.right then S.cam.goalDist = clamp((S.cam.goalDist or S.cam.dist) * (1 - 1.5 * sec), 0.5, 300) end
+        if p.left then S.cam.goalDist = clamp((S.cam.goalDist or S.cam.dist) * (1 + 1.5 * sec), 0.5, 300) end
+        -- (size: by the chosen step, as with one object)
+        if padStep("cup", p.up) then c.scale = clamp(round((c.scale or 1) + st.size, st.size), 0.1, 10); say(string.format("Set size %.2f", c.scale)) end
+        if padStep("cdn", p.down) then c.scale = clamp(round((c.scale or 1) - st.size, st.size), 0.1, 10); say(string.format("Set size %.2f", c.scale)) end
         if padStep("lb", p.lb) then c.heading = wrap(round((c.snapH or c.heading) + tstep, tstep)); c.snapH = nil end
         if padStep("rb", p.rb) then c.heading = wrap(round((c.snapH or c.heading) - tstep, tstep)); c.snapH = nil end
-        S.cam.goal = c.pos
+        -- (the view follows it while it is moved; standing still, the view is free: flown or dragged about)
+        if c.raw then S.cam.goal = c.pos end
+        -- (held as one object: the handles, for the mouse, are where the controller has it)
+        if c.virtual and S.sel and S.sel.id == "__carry" then S.target = { pos = c.pos, heading = c.snapH or c.heading, scale = c.scale or 1 } end
         return
     end
     local fine = p.ls

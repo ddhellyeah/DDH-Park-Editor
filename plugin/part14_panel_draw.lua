@@ -823,7 +823,11 @@ local wrap = PE.wrap
         local ng = groupCount()
         d:rect(V(x, y, 0), V(x + w, y + 60, 0), { colour = UI.field, fill = true, rounding = 6 })
         local title, sub, dot = "Nothing picked", FN.padText("Click an object, or aim and press A"), UI.faint
-        if t then
+        if t and S.carry and S.carry.virtual then
+            title = "Placing: " .. S.carry.set.name
+            sub = string.format("%.0f°  ·  size %.2f  ·  not placed yet", math.deg(t.heading), t.scale)
+            dot = UI.purple
+        elseif t then
             title = titleOf(S.sel.item)
             sub = string.format("%.0f°  ·  size %.2f", math.deg(t.heading), t.scale)
             dot = UI.accent
@@ -869,6 +873,14 @@ local wrap = PE.wrap
             if not t then
                 fitText(d, x + 4, y, "Pick an object to change it here.", w - 8, { size = 14, colour = UI.dim })
                 y += 30
+            elseif S.carry and S.carry.virtual then
+                -- placing a set with the mouse: the handles, then put it down or not
+                y = label(d, x, y, "Handles")
+                y = seg(d, x, y, w, { "Move", "Turn", "Size" }, S.mode, function(i) S.mode = i end) + 14
+                local qw = (w - 6) / 2
+                btn(d, V(x, y, 0), V(x + qw, y + 34, 0), "Put down", function() S.carryDrop() end, "primary")
+                btn(d, V(x + qw + 6, y, 0), V(x + w, y + 34, 0), "Cancel", function() S.carryCancel() end)
+                y += 46
             else
                 y = label(d, x, y, "Handles")
                 y = seg(d, x, y, w, { "Move", "Turn", "Size" }, S.mode, function(i) S.mode = i end) + 14
@@ -1386,10 +1398,15 @@ function FN.drawMain(d)
                 if gd.nb then PE.drawShape(d, gd.nb.shape or gd.nb, UI.oSnap, 3, gd.nb.xf) end
             end
             local W, H = S.size.x, S.size.y
-            UI.chip(d, W / 2 - 120, 24, "Carrying  " .. S.carry.set.name, UI.purple)
-            UI.promptRow(d, W / 2, H - 48, { { "a", "Put down" }, { "b", "Cancel" }, { "LB RB", "Turn" }, { "RT LT", "Up / down" }, { "L3", "Snap to next" }, { "Hold R3", "No snap" } })
+            UI.chip(d, W / 2 - 120, 24, "Placing  " .. S.carry.set.name, UI.purple)
+            if S.carry.virtual then
+                UI.promptRow(d, W / 2, H - 48, { { FN.kbLabel("setDrop"), "Put down" }, { FN.kbLabel("setCancel"), "Cancel" }, { "Handles", "Move, turn, size" }, { "Hold " .. FN.kbLabel("noSnap"), "No snap" } })
+            else
+                UI.promptRow(d, W / 2, H - 48, { { "a", "Put down" }, { "b", "Cancel" }, { "LB RB", "Turn" }, { "RT LT", "Up / down" }, { "D-pad", "Size / zoom" }, { "Menu", "Steps" }, { "L3", "Snap to next" }, { "Hold R3", "No snap" } })
+            end
         end)
-        return
+        -- (held with the mouse: its handles are drawn as for one object, below)
+        if not (S.carry and S.carry.virtual) then return end
     end
     if S.toolsWin then
         local okt, errt = pcall(FN.drawTools, d)
@@ -1595,7 +1612,7 @@ function FN.drawMain(d)
     -- measuring: to the objects selected with it, or the nearest
     if S.measureOn and FN.drawMeasure then FN.drawMeasure(d) end
     -- the object's box where it is going: shows at once while the game catches up
-    if S.boxCorners and (S.mode ~= 3 or padMode) then
+    if S.boxCorners and (S.mode ~= 3 or padMode) and S.sel.id ~= "__carry" then
         local c = S.boxCorners
         local moving = S.dirty or (S.drag and S.drag.moved) or not lastApplied()
         local col = moving and UI.oHeld or UI.oRest
@@ -1623,7 +1640,7 @@ end
 -- (its colour: UI.oMeet, the player's choice)
 local function dot3(a, b) return a.x * b.x + a.y * b.y + a.z * b.z end
 function FN.drawMeeting(d, p, t)
-    if not (S.sel and S.itemBox[S.sel.item]) or tilted(S.sel.id) then return end
+    if not (S.sel and S.itemBox[S.sel.item]) or tilted(S.sel.id) or S.sel.id == "__carry" then return end
     local me = worldShape(S.sel.item, p, t.heading, t.scale)
     if not (me.edges and #me.edges > 0) then return end
     local done = {}
