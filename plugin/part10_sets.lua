@@ -41,6 +41,7 @@ local wrap = PE.wrap
                     if okr and type(txt) == "string" then
                         local okd, data = pcall(reskate.json.decode, txt)
                         if okd and type(data) == "table" and type(data.objects) == "table" and #data.objects > 0 then
+                            if S.resolveSetItems then S.resolveSetItems(data.objects) end
                             out[#out + 1] = { name = tostring(data.name or string.sub(base, 1, -6)), file = base, objects = data.objects }
                         end
                     end
@@ -197,7 +198,8 @@ local wrap = PE.wrap
     end
     -- ---- sharing a set as a code: one line of text to paste in a chat; Import code makes it a set again.
     -- ReSkate's text box holds 256 letters, so the code is kept short:
-    -- SET2|name|item[:m],item,...|i,x,y,z,h[,s[,tx,tz]];...|mod,mod,...
+    -- SET3|name|tag[:m],tag,...|i,x,y,z,h[,s[,tx,tz]];...|mod,mod,...   (tag: see tagOf below; SET2 had the
+    -- items' names there, written short)
     --   numbers in base 62 (0-9 a-z A-Z, "-" before negative ones, nothing for 0); positions in mm, turns and tilts
     --   in 1/100 degree, size in 1/1000 (left out when 1); m: which of the mods at the end the item comes from.
     --   Items named like the Object Maker's (own_<name>____00001, 43 letters) are written as just <name>; others
@@ -245,32 +247,76 @@ local wrap = PE.wrap
         if #t > 34 then return t end
         return "own_" .. t .. string.rep("_", 38 - 4 - #t) .. "00001"
     end
+    -- SET3: each item as a short tag (5 letters, from its name) instead of its name: the one who imports it finds
+    -- the item with that tag among the objects they have. One they don't have stays "#tag" in the set, and is
+    -- found by its tag once its mod is installed.
+    local P, HB, TAGMAX = 2147483647, 131, 62 ^ 5
+    local function tagOf(key)
+        local h = 7
+        for i = 1, #key do h = (h * HB + string.byte(key, i)) % P end
+        h = h % TAGMAX
+        local t = ""
+        for _ = 1, 5 do local d = h % 62; t = string.sub(B62, d + 1, d + 1) .. t; h = (h - d) / 62 end
+        return t
+    end
+    local tagMap, tagFor = nil, nil
+    local function keyOfTag(tag)
+        local cl = FN.catalog()
+        if not tagMap or tagFor ~= cl then
+            tagMap, tagFor = {}, cl
+            for _, it in ipairs(cl) do if type(it) == "table" and it.key then tagMap[tagOf(it.key)] = it.key end end
+        end
+        return tagMap[tag]
+    end
+    -- a set's objects with a "#tag" item: the item found now, when its mod is installed
+    function S.resolveSetItems(objs)
+        for _, e in ipairs(objs or {}) do
+            if type(e.item) == "string" and string.sub(e.item, 1, 1) == "#" then
+                local k = keyOfTag(string.sub(e.item, 2))
+                if k then e.item = k end
+            end
+        end
+    end
     local function r(v, k) return math.floor((tonumber(v) or 0) * k + 0.5) end
+    -- the code (format 4, the shortest):
+    -- 4|name|mod=tagtag...;mod=tag...;=tag...|i,x,y,z,h[,s[,tx,tz]];...
+    --   each item a 5-letter tag (tagOf), put after the mod it comes from (none known: after a bare "="), the
+    --   tags one after another; i: an item's place in that order. Numbers in base 62 as in SET2, but turns and tilts
+    --   in 1/10 degree (a 4 m wall's end is off by 3 mm at most)
     function S.setCode(set)
-        local keys, idx, parts, mods, midx = {}, {}, {}, {}, {}
+        local groups, gidx, keyAt = {}, {}, {}
         for _, e in ipairs(set.objects) do
             local key = tostring(e.item)
-            if not idx[key] then
-                local m = cleanMod(e.mod) or S.modOfItem(key)
-                local k = shortKey(key)
-                if m then
-                    if not midx[m] then mods[#mods + 1] = m; midx[m] = #mods end
-                    k = k .. ":" .. midx[m]
-                end
-                keys[#keys + 1] = k; idx[key] = #keys
+            if not keyAt[key] then
+                local m = cleanMod(e.mod) or (string.sub(key, 1, 1) ~= "#" and S.modOfItem(key)) or ""
+                if not gidx[m] then groups[#groups + 1] = { m = m, keys = {} }; gidx[m] = groups[#groups] end
+                table.insert(gidx[m].keys, key)
+                keyAt[key] = true
             end
-            local t = { enc(idx[key]), enc(r(e.x, 1000)), enc(r(e.y, 1000)), enc(r(e.z, 1000)), enc(r(math.deg(e.h or 0), 100)) }
-            local s = r(e.s or 1, 1000)
-            local tx, tz = r(math.deg(e.tx or 0), 100), r(math.deg(e.tz or 0), 100)
-            if s ~= 1000 or tx ~= 0 or tz ~= 0 then t[6] = enc(s) end
+        end
+        -- (unnamed ones last; the items numbered in the order written)
+        table.sort(groups, function(a, b) if (a.m == "") ~= (b.m == "") then return b.m == "" end return false end)
+        local idx, n, gs = {}, 0, {}
+        for _, g in ipairs(groups) do
+            local t = {}
+            for _, key in ipairs(g.keys) do
+                n += 1; idx[key] = n
+                t[#t + 1] = string.sub(key, 1, 1) == "#" and string.sub(key, 2) or tagOf(key)
+            end
+            gs[#gs + 1] = g.m .. "=" .. table.concat(t)
+        end
+        local parts = {}
+        for _, e in ipairs(set.objects) do
+            local t = { enc(idx[tostring(e.item)]), enc(r(e.x, 1000)), enc(r(e.y, 1000)), enc(r(e.z, 1000)), enc(r(math.deg(e.h or 0), 10)) }
+            local sc = r(e.s or 1, 1000)
+            local tx, tz = r(math.deg(e.tx or 0), 10), r(math.deg(e.tz or 0), 10)
+            if sc ~= 1000 or tx ~= 0 or tz ~= 0 then t[6] = enc(sc) end
             if tx ~= 0 or tz ~= 0 then t[7], t[8] = enc(tx), enc(tz) end
             -- (zeros at the end left out)
             while #t > 1 and t[#t] == "" do t[#t] = nil end
             parts[#parts + 1] = table.concat(t, ",")
         end
-        local code = "SET2|" .. safeName(set.name) .. "|" .. table.concat(keys, ",") .. "|" .. table.concat(parts, ";")
-        if #mods > 0 then code = code .. "|" .. table.concat(mods, ",") end
-        return code
+        return "4|" .. safeName(set.name) .. "|" .. table.concat(gs, ";") .. "|" .. table.concat(parts, ";")
     end
     -- fields split on a separator, empty ones kept
     local function split(s, sep)
@@ -291,16 +337,49 @@ local wrap = PE.wrap
         code = (string.gsub(code, "^DDHSET1|", "SET1|"))
         local f = split(code, "|")
         local ver = f[1]
-        if (ver ~= "SET1" and ver ~= "SET2") or #f < 4 then return nil, "That is not a set code (it starts with SET2)." end
+        if ver == "4" and #f >= 4 then
+            local keys, keyMod = {}, {}
+            for _, g in ipairs(split(f[3], ";")) do
+                local m, tg = string.match(g, "^(.-)=(.*)$")
+                if m then
+                    m = cleanMod(m)
+                    for i = 1, #tg - 4, 5 do
+                        local tag = string.sub(tg, i, i + 4)
+                        keys[#keys + 1] = keyOfTag(tag) or ("#" .. tag)
+                        keyMod[#keys] = m
+                    end
+                end
+            end
+            local objs = {}
+            for e in string.gmatch(f[4], "[^;]+") do
+                local n, bad = {}, false
+                for i, v in ipairs(split(e, ",")) do n[i] = dec(v); if n[i] == nil then bad = true end end
+                local key = not bad and n[1] and keys[n[1]]
+                if key then
+                    local sc = (n[6] == nil or n[6] == 0) and 1000 or n[6]
+                    local o = { item = key, x = (n[2] or 0) / 1000, y = (n[3] or 0) / 1000, z = (n[4] or 0) / 1000, h = math.rad((n[5] or 0) / 10), s = sc / 1000 }
+                    if (n[7] or 0) ~= 0 or (n[8] or 0) ~= 0 then o.tx, o.tz = math.rad((n[7] or 0) / 10), math.rad((n[8] or 0) / 10) end
+                    o.mod = keyMod[n[1]]
+                    objs[#objs + 1] = o
+                end
+            end
+            if #objs == 0 then return nil, "That code has no objects in it (is all of it pasted?)." end
+            local name = safeName(f[2])
+            if name == "" then name = "Shared set" end
+            return { name = name, objects = objs }
+        end
+        if (ver ~= "SET1" and ver ~= "SET2" and ver ~= "SET3") or #f < 4 then return nil, "That is not a set code (it starts with 4|)." end
         local name, keyS, objS, modS = f[2], f[3], f[4], f[5]
-        local new = ver == "SET2"
+        local new = ver ~= "SET1"
+        local tags = ver == "SET3"
         local mods = {}
         for m in string.gmatch(modS or "", "[^,]+") do mods[#mods + 1] = cleanMod(m) or false end
         local keys, keyMod = {}, {}
         for k in string.gmatch(keyS, "[^,]+") do
             local kk, mi = string.match(k, "^(.-):(%d+)$")
             kk = kk or k
-            keys[#keys + 1] = new and longKey(kk) or unpackKey(kk)
+            if tags then keys[#keys + 1] = keyOfTag(kk) or ("#" .. kk)
+            else keys[#keys + 1] = new and longKey(kk) or unpackKey(kk) end
             keyMod[#keys] = mi and mods[tonumber(mi)] or nil
         end
         local objs = {}
@@ -355,7 +434,7 @@ local wrap = PE.wrap
     -- every code file in sets/import made a set (each file taken away once imported)
     local function readme(folder, text) pcall(reskate.files.write, folder .. "/READ ME.txt", text) end
     function S.importFiles()
-        readme(INBOX, "Put set code files here (a .txt file with a code starting SET2 in it), then press Import code > From files in the DDH Park Editor.\n")
+        readme(INBOX, "Put set code files here (a .txt file with a set code in it), then press Import code > From files in the DDH Park Editor.\n")
         local ok, lst = pcall(reskate.files.list, INBOX)
         local done, failed, names, missing = 0, 0, {}, 0
         if ok and type(lst) == "table" then
@@ -364,7 +443,7 @@ local wrap = PE.wrap
                 base = string.match(base, "([^/\\]+)$") or base
                 if string.lower(string.sub(base, -4)) == ".txt" and base ~= "READ ME.txt" then
                     local okr, txt = pcall(reskate.files.read, INBOX .. "/" .. base)
-                    local got = okr and type(txt) == "string" and importOne(string.match(txt, "SET[12]|[^\r\n]*") or txt)
+                    local got = okr and type(txt) == "string" and importOne(string.match(txt, "SET[123]|[^\r\n]*") or string.match(txt, "4|[^\r\n]*") or txt)
                     if got then
                         done += 1; names[#names + 1] = got.name; missing += got.missing
                         pcall(reskate.files.remove, INBOX .. "/" .. base)
@@ -409,7 +488,7 @@ local wrap = PE.wrap
     end
     function S.askImportCode()
         local ok = codeDialog("ddh_setimport", { title = "Import a set",
-            message = "Paste a set code (it starts with SET2). Got a code file? Put it in the import folder and press From files.",
+            message = "Paste a set code (it starts with 4|). Got a code file? Put it in the import folder and press From files.",
             field = { text = "", max = BOXMAX }, buttons = { { id = "apply", label = "Import" }, { id = "files", label = "From files" }, { id = "close", label = "Cancel" } } })
         if ok then S.typing = true else S.importFiles() end
     end
