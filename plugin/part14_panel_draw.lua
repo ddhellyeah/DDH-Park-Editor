@@ -1276,7 +1276,8 @@ local wrap = PE.wrap
         d:circle(V(cx, cy - 72, 0), 16, { colour = LC, thickness = 3 })
         do
             local nm = FN.padName or function(k) return k end
-            local line = string.format("%s + %s opens  ·  %s closes  ·  %s + %s undo  ·  %s + %s redo", nm("lb"), nm("right"), nm("b"), nm("lb"), nm("back"), nm("rb"), nm("back"))
+            local op = FN.padOpenLabel and FN.padOpenLabel()
+            local line = string.format("%s%s closes  ·  %s + %s undo  ·  %s + %s redo", op and (op .. " opens  ·  ") or "", nm("b"), nm("lb"), nm("back"), nm("rb"), nm("back"))
             UI.textIn(d, V(a.x + 16, b.y - 76, 0), V(a.x + half - 14, b.y - 52, 0), line, { size = 14, colour = UI.dim, align = "centre" }, 0)
         end
         -- the keyboard and mouse

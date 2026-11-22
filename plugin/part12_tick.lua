@@ -93,16 +93,11 @@ local function tickBody(dt)
     if not S.open then
         -- the key that opens it (ReSkate's own binding opens it too: whichever comes first)
         if FN.kbOpenTick() then return end
-        -- the controller: hold LB and press D-pad right to open the editor
-        local pd = FN.readPad()
-        if pd then
-            local rightNow = pd.right == true
-            if pd.lb and rightNow and not S.padOpenRight and S.clock - (S.closedAt or -1e9) > 400 then
-                S.padOpenRight = true
-                FN.openEditor()
-                return
-            end
-            S.padOpenRight = rightNow
+        -- the controller: the buttons set in Settings (LB + D-pad right unless changed; none: it doesn't open it)
+        local raw = FN.readPadRaw and FN.readPadRaw()
+        if FN.padOpenPressed and FN.padOpenPressed(raw) and S.clock - (S.closedAt or -1e9) > 400 then
+            FN.openEditor()
+            return
         end
         -- (the keyboard does nothing to objects with the editor closed)
         send()

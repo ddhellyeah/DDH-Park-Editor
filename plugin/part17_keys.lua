@@ -341,18 +341,20 @@ local PADROWS = {
     { id = "start", name = "Step size" },
     { id = "ls", name = "Next snap target (hold: fine)" },
     { id = "rs", name = "Tools, look at it (hold: no snap)" },
+    { head = "Opening the editor" },
+    { id = "open", name = "Open the editor", combo = true },
 }
 local PADBYID = {}
-for _, r in ipairs(PADROWS) do if r.id then r.def = r.def or r.id; PADBYID[r.id] = r end end
+for _, r in ipairs(PADROWS) do if r.id then if not r.combo then r.def = r.def or r.id end; PADBYID[r.id] = r end end
 
 local PMAP = {}   -- job -> the button doing it ("l" / "r" for the sticks)
 local padDefault = true
 local function padCheck()
     padDefault = true
-    for _, r in ipairs(PADROWS) do if r.id and PMAP[r.id] ~= r.def then padDefault = false end end
+    for _, r in ipairs(PADROWS) do if r.id and not r.combo and PMAP[r.id] ~= r.def then padDefault = false end end
 end
 local function padDefaults()
-    for _, r in ipairs(PADROWS) do if r.id then PMAP[r.id] = r.def end end
+    for _, r in ipairs(PADROWS) do if r.id and not r.combo then PMAP[r.id] = r.def end end
     padCheck()
 end
 padDefaults()
@@ -360,7 +362,7 @@ do
     local ok, saved = pcall(reskate.storage.get, "pad")
     if ok and type(saved) == "table" then
         for _, r in ipairs(PADROWS) do
-            local v = r.id and saved[r.id]
+            local v = r.id and not r.combo and saved[r.id]
             if v ~= nil then
                 if r.stick then if v == "l" or v == "r" then PMAP[r.id] = v end
                 elseif ISPHYS[v] then PMAP[r.id] = v end
@@ -378,8 +380,27 @@ do
 end
 local function padSave()
     local out = {}
-    for _, r in ipairs(PADROWS) do if r.id and PMAP[r.id] ~= r.def then out[r.id] = PMAP[r.id] end end
+    for _, r in ipairs(PADROWS) do if r.id and not r.combo and PMAP[r.id] ~= r.def then out[r.id] = PMAP[r.id] end end
     pcall(reskate.storage.set, "pad", out)
+end
+
+-- ---- the buttons that open the editor (with it closed): one or two buttons held together, or none. The
+-- buttons themselves, as the pad has them (not the editor's jobs). Kept between games (storage "padOpen")
+local OPEN_DEF = { "lb", "right" }
+local OPEN = { "lb", "right" }
+do
+    local ok, v = pcall(reskate.storage.get, "padOpen")
+    if ok and type(v) == "table" then
+        local l, good = {}, true
+        for i = 1, math.min(#v, 2) do if ISPHYS[v[i]] then l[#l + 1] = v[i] else good = false end end
+        if good and (#l > 0 or v.none) then OPEN = l end
+    end
+end
+local function openIsDefault() return #OPEN == 2 and OPEN[1] == OPEN_DEF[1] and OPEN[2] == OPEN_DEF[2] end
+local function setOpen(l)
+    OPEN = l
+    if #l == 0 then pcall(reskate.storage.set, "padOpen", { none = true })
+    else pcall(reskate.storage.set, "padOpen", { l[1], l[2] }) end
 end
 
 local function dig(p, ph)
@@ -390,6 +411,23 @@ end
 local function stickMag(p, side)
     local x, y = side == "l" and p.lx or p.rx, side == "l" and p.ly or p.ry
     return math.sqrt((x or 0) ^ 2 + (y or 0) ^ 2)
+end
+-- the buttons that open the editor, written ("LB + D-pad right"), or nil when none are set
+function FN.padOpenLabel()
+    if #OPEN == 0 then return nil end
+    local t = {}
+    for i, ph in ipairs(OPEN) do t[i] = nameOf(ph) end
+    return table.concat(t, " + ")
+end
+-- with the editor closed, once a tick: the buttons that open it just pressed together (raw: the pad as it is)
+local openWas = false
+function FN.padOpenPressed(raw)
+    if not raw or #OPEN == 0 then openWas = false return false end
+    local all = true
+    for _, ph in ipairs(OPEN) do if not dig(raw, ph) then all = false end end
+    local fire = all and not openWas
+    openWas = all
+    return fire
 end
 -- the pad as read, given by job (FN.readPad, part07, calls this)
 function FN.padRemap(p)
@@ -570,6 +608,28 @@ local function padCapture(w)
     if not raw then return end
     local L = w.listen
     local r = PADBYID[L.id]
+    if L.combo then
+        -- (buttons pressed, at most two, in the order pressed; set once they are all let go)
+        local any = false
+        for _, ph in ipairs(PHYS) do
+            local dn = dig(raw, ph)
+            if dn then any = true end
+            if dn and not L.base[ph] then
+                local have = false
+                for _, g in ipairs(L.got) do if g == ph then have = true end end
+                if not have and #L.got < 2 then L.got[#L.got + 1] = ph end
+            end
+            if not dn then L.base[ph] = false end
+        end
+        if not any and #L.got > 0 then
+            w.listen = nil; w.padRelease = true
+            setOpen(L.got)
+            local lab = FN.padOpenLabel()
+            if #L.got == 1 then say("Opens the editor: " .. lab .. ". One button alone also opens it whenever it is pressed while skating.", true)
+            else say("Opens the editor: " .. lab .. ".") end
+        end
+        return
+    end
     if r.stick then
         for _, side in ipairs({ "l", "r" }) do
             local on = stickMag(raw, side) > 0.7
@@ -611,7 +671,10 @@ local function padClick(id)
     local L = w.listen
     if L and L.pad and L.id == id then w.listen = nil return end
     listenPad(id)
+    if PADBYID[id] and PADBYID[id].combo then w.listen.combo, w.listen.got = true, {} end
 end
+local function openNone() setOpen({}); say("The controller doesn't open the editor now (the key still does).") end
+local function openReset() setOpen({ OPEN_DEF[1], OPEN_DEF[2] }); say("The controller opens the editor with " .. FN.padOpenLabel() .. " again.") end
 local function resetRow(id)
     local a = BYID[id]
     SET[id] = { a.def[1] or "", a.def[2] or "" }
@@ -620,7 +683,7 @@ local function resetRow(id)
 end
 local function resetPadRow(id) padAssign(id, PADBYID[id].def) end
 local function resetAllKeys() resetAll(); rebuild(); save(); bindOpen(); say("Keys back to how they were") end
-local function resetAllPad() padDefaults(); padSave(); say("Controller buttons back to how they were") end
+local function resetAllPad() padDefaults(); padSave(); setOpen({ OPEN_DEF[1], OPEN_DEF[2] }); say("Controller buttons back to how they were") end
 
 -- a box: a key or a button (listening: accent edge; a clash: orange edge)
 local function box(d, ka, kb, label, faint, listening, clash, fsize)
@@ -696,6 +759,36 @@ end
 local function padRow(d, w)
     return function(it, cx, y, colW, rh, fsize, rowFocus)
         local id = it.id
+        if it.combo then
+            -- the buttons that open it: a box (click, then press one or two buttons together), None, Reset
+            local kw = clamp(math.floor(colW * 0.3), 110, 180)
+            local rw2 = 60
+            local nameW = colW - kw - 2 * rw2 - 3 * 8
+            UI.fitText(d, cx + 2, y + (rh - fsize * 1.25) / 2, it.name, nameW, { size = fsize, colour = UI.text })
+            local ka = V(cx + nameW + 8, y + 3, 0)
+            local kb = V(ka.x + kw, y + rh - 3, 0)
+            local L = w.listen
+            local listening = L and L.pad and L.id == id
+            local lab = FN.padOpenLabel()
+            if listening then
+                local t = {}
+                for i, ph in ipairs(L.got or {}) do t[i] = nameOf(ph) end
+                lab = #t > 0 and table.concat(t, " + ") or "Press 1 or 2 buttons"
+            end
+            box(d, ka, kb, lab or "None", lab == nil and not listening, listening, false, fsize)
+            if rowFocus and w.slot == 1 then ring(d, ka, kb) end
+            tileAdd(ka, kb, function() padClick(id) end)
+            local na, nb = V(kb.x + 8, y + 3, 0), V(kb.x + 8 + rw2, y + rh - 3, 0)
+            d:rect(na, nb, { colour = hot(na, nb) and UI.fieldHot or UI.field, fill = true, rounding = 6 })
+            edgeBox(d, na, nb, 6)
+            UI.textIn(d, na, nb, "None", { size = fsize - 2, colour = UI.dim, align = "centre" }, 4)
+            tileAdd(na, nb, openNone)
+            if rowFocus and w.slot == 2 then ring(d, na, nb) end
+            local ra, rb = V(cx + colW - rw2, y + 3, 0), V(cx + colW, y + rh - 3, 0)
+            if not openIsDefault() then resetBtn(d, ra, rb, fsize, openReset) end
+            if rowFocus and w.slot == 3 then ring(d, ra, rb) end
+            return
+        end
         local kw = clamp(math.floor(colW * 0.3), 110, 180)
         local rw2 = 60
         local nameW = colW - kw - rw2 - 2 * 8
@@ -828,7 +921,7 @@ function UI.keysWin(d)
     local bw = math.min(220, (inner - 16) / 3)
     local bx = b.x - 20 - 3 * bw - 16
     if w.tab == "pad" then
-        fit(d, x0, by + 39, string.format("Opens the editor: %s + %s", FN.padName("lb"), FN.padName("right")), math.max(40, bx - x0 - 12), { size = 14, colour = UI.dim })
+        fit(d, x0, by + 39, FN.padOpenLabel() and ("Opens the editor: " .. FN.padOpenLabel()) or "The controller doesn't open the editor", math.max(40, bx - x0 - 12), { size = 14, colour = UI.dim })
     end
     for i, bt in ipairs(btns) do
         local ta = V(bx + (i - 1) * (bw + 8), by + 30, 0)
@@ -920,7 +1013,7 @@ function FN.keysPad(p)
     if up then w.focus = math.max(1, w.focus - 1) end
     if dn then w.focus = math.min(n, w.focus + 1) end
     local r = T.rows[w.focus]
-    local lim = r and maxSlot or 3
+    local lim = r and (r.combo and 3 or maxSlot) or 3
     if left then w.slot = math.max(1, w.slot - 1) end
     if right then w.slot = math.min(lim, w.slot + 1) end
     w.slot = math.min(w.slot, lim)
@@ -934,7 +1027,9 @@ function FN.keysPad(p)
     end
     if padPress("a", p.a) then
         if r then
-            if w.tab == "pad" then
+            if w.tab == "pad" and r.combo then
+                if w.slot == 1 then padClick(r.id) elseif w.slot == 2 then openNone() else openReset() end
+            elseif w.tab == "pad" then
                 if w.slot == 1 then listenPad(r.id) else resetPadRow(r.id) end
             elseif w.slot <= 2 then listenOn(r.id, w.slot) else resetRow(r.id) end
         else
@@ -944,7 +1039,10 @@ function FN.keysPad(p)
         return
     end
     if r and w.tab ~= "pad" and padPress("x", p.x) and w.slot <= 2 then setKey(r.id, w.slot, "") end
-    if r and padPress("y", p.y) then if w.tab == "pad" then resetPadRow(r.id) else resetRow(r.id) end end
+    if r and w.tab == "pad" and r.combo and padPress("x", p.x) then openNone() end
+    if r and padPress("y", p.y) then
+        if w.tab == "pad" and r.combo then openReset() elseif w.tab == "pad" then resetPadRow(r.id) else resetRow(r.id) end
+    end
 end
 
 end
