@@ -118,9 +118,12 @@ function FN.padEditor(sec)
         say("Steps: " .. STEPS[S.stepSize].name)
     end
     -- L3 tapped while holding: what it snaps to (auto, each nearby object, off); held: Fine
-    if p.ls and not S.l3At then S.l3At = S.clock end
+    -- (a click of the stick while it is pushed doesn't count: pushing the stick to move often clicks it too, and
+    -- that set snapping to one object, so it seemed to stop working)
+    if p.ls and not S.l3At then S.l3At = S.clock; S.l3Pushed = false end
+    if p.ls and (math.abs(p.lx) > 0.35 or math.abs(p.ly) > 0.35) then S.l3Pushed = true end
     if not p.ls and S.l3At then
-        if S.clock - S.l3At < 300 then
+        if S.clock - S.l3At < 300 and not S.l3Pushed then
             if holding then FN.nextSnapObject() else FN.nextAimObject() end
         end
         S.l3At = nil

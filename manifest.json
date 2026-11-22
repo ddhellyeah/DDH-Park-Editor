@@ -1,7 +1,7 @@
 {
     "name": "DDH Park Editor",
     "author": "DDH",
-    "version_number": "3.5.1",
+    "version_number": "3.6.0",
     "website_url": "",
     "description": "In-game park editor for Quick Drop: press F6 (or LB + D-pad right on a controller) to move, turn and size placed objects, snap them together, copy, group and save sets.",
     "dependencies": []

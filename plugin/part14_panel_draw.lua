@@ -909,7 +909,7 @@ local wrap = PE.wrap
             if #S.sets == 0 then
                 fitText(d, x + 4, y, "None yet.", w - 8, { size = 14, colour = UI.dim }); y += 26
             end
-            local rowH = 132
+            local rowH = 164
             local maxRows = math.max(2, math.floor((b.y - 100 - y) / rowH))
             for i, set in ipairs(S.sets) do
                 if i > maxRows then
@@ -925,7 +925,14 @@ local wrap = PE.wrap
                 pcall(UI.drawSetPreview, d, set, pa + V(4, 4, 0), pb2 - V(4, 4, 0), UI.purple)
                 local nmS = set.name
                 fitText(d, x + 84, y + 10, nmS, w - 90, { size = 14, colour = UI.text, font = "bold" })
-                fitText(d, x + 84, y + 32, string.format("%d objects", #set.objects), w - 90, { size = 13, colour = UI.dim })
+                local mn, mshort = 0, ""
+                if S.setMissing then local _; _, mn, mshort = S.setMissing(set) end
+                if mn > 0 then
+                    fitText(d, x + 84, y + 28, string.format("%d objects, %d missing:", #set.objects, mn), w - 90, { size = 13, colour = UI.orange })
+                    fitText(d, x + 84, y + 44, mshort, w - 90, { size = 12, colour = UI.dim })
+                else
+                    fitText(d, x + 84, y + 32, string.format("%d objects", #set.objects), w - 90, { size = 13, colour = UI.dim })
+                end
                 local by = y + 64
                 local bw2 = (w - 12 - 6) / 2
                 local bx = x + 6
@@ -952,10 +959,15 @@ local wrap = PE.wrap
                     if S.delSetAsk == set.file and S.clock - (S.delSetAt or 0) < 3000 then S.delSetAsk = nil; S.deleteSet(set)
                     else S.delSetAsk, S.delSetAt = set.file, S.clock; say("Click Delete again to delete \"" .. set.name .. "\".") end
                 end)
+                by += 32
+                -- its code, to send to a friend
+                btn(d, V(bx, by, 0), V(rb.x - 6, by + 28, 0), "Share code", function() if S.shareSet then S.shareSet(set) end end)
                 y += rowH
             end
             local pb = b.y - 46
-            btn(d, V(x, pb, 0), V(x + w, pb + 34, 0), "Open sets folder", function() S.openSetsFolder() end)
+            local hw = (w - 6) / 2
+            btn(d, V(x, pb, 0), V(x + hw, pb + 34, 0), "Import code", function() if S.askImportCode then S.askImportCode() end end)
+            btn(d, V(x + hw + 6, pb, 0), V(x + w, pb + 34, 0), "Open folder", function() S.openSetsFolder() end)
         end
         if S.ptab == 5 then
             -- ---------------------------------------------------------------- history: the steps undo goes back
@@ -1360,7 +1372,9 @@ function FN.drawMain(d)
             for i, c in ipairs(S.carryPlaces()) do
                 if i > 200 then break end
                 if S.itemBox[c.item] then
-                    PE.drawShape(d, worldShape(c.item, c.pos, c.heading, c.scale), UI.oSet, 3)
+                    local sh = worldShape(c.item, c.pos, c.heading, c.scale)
+                    sh.cut = "ray"
+                    PE.drawShape(d, sh, UI.oSet, 3)
                 else
                     d:world_line(c.pos - V(0.4, 0, 0), c.pos + V(0.4, 0, 0), { colour = UI.oSet, thickness = 3 })
                     d:world_line(c.pos - V(0, 0, 0.4), c.pos + V(0, 0, 0.4), { colour = UI.oSet, thickness = 3 })
@@ -1589,6 +1603,7 @@ function FN.drawMain(d)
         local xf = tl and function(v) return tiltPoint(p, t.heading, tl, v) end or nil
         if xf then for i = 0, 7 do c[i] = xf(c[i]) end end
         pcall(FN.drawGhost, d, c, sh, p, center, moving, xf)
+        if sh then sh.cut = "held" end
         if sh then pcall(PE.drawShape, d, sh, UI.oHalo, 6, xf) end
         -- (the held one: with a see-through fill, as Quick Drop's, where its model is known)
         if sh then sh.fill = true end

@@ -410,6 +410,8 @@ function FN.wireOf(item)
     S.wireCache[item] = a
     return a
 end
+-- a line of an outline (part18 draws the part under the ground apart)
+function FN.wline(d, a, b, st) d:world_line(a, b, st) end
 -- lines drawn from models in one frame at most (past it, the rest get their boxes: a big group stays quick)
 local WIRE_BUDGET = 2500
 local function drawWire(d, sh, col, th, xf)
@@ -427,7 +429,7 @@ local function drawWire(d, sh, col, th, xf)
         local a = p + X * w[i] + Y * w[i + 1] + Z * w[i + 2]
         local b = p + X * w[i + 3] + Y * w[i + 4] + Z * w[i + 5]
         if xf then a, b = xf(a), xf(b) end
-        d:world_line(a, b, style)
+        FN.wline(d, a, b, style)
     end
     return true
 end
@@ -440,13 +442,13 @@ PE.drawShape = function(d, sh, col, th, xf)
     local base, up = UP * (sh.ylo - sh.p.y), UP * (sh.yhi - sh.ylo)
     for i = 1, n do
         local a, b = pts[i] + base, pts[i % n + 1] + base
-        d:world_line(xf(a), xf(b), { colour = col, thickness = th })
-        d:world_line(xf(a + up), xf(b + up), { colour = col, thickness = th })
+        FN.wline(d, xf(a), xf(b), { colour = col, thickness = th })
+        FN.wline(d, xf(a + up), xf(b + up), { colour = col, thickness = th })
     end
     for i = 1, n do
         local a, b, c = pts[(i - 2) % n + 1], pts[i], pts[i % n + 1]
         if n <= 8 or dot(norm(b - a), norm(c - b)) < FN.COS25 then
-            d:world_line(xf(b + base), xf(b + base + up), { colour = col, thickness = th })
+            FN.wline(d, xf(b + base), xf(b + base + up), { colour = col, thickness = th })
         end
     end
     return true

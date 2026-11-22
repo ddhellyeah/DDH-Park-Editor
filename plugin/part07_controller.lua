@@ -97,6 +97,8 @@ function FN.readPadRaw()
     if type(g) ~= "table" then return nil end
     -- (a PlayStation pad: its buttons are shown as Cross, Circle, L1... when Settings says Auto)
     S.padPS = g.playstation == true or (type(g.buttons) == "table" and g.buttons.cross ~= nil)
+    -- (first seen while the editor holds the controller: hidden from the game now)
+    if S.padPS and S.padCaptured and not S.psHidden and FN.hidePS then FN.hidePS(true) end
     local bits = nil
     local bt = g.buttons
     if type(bt) == "number" then bits = bt end
@@ -196,31 +198,45 @@ local function capturePS(on)
     psForm = false
     reskate.log("Quick Drop helper: could not keep a PlayStation controller from the game: " .. table.concat(why, " | "), "warn")
 end
-function FN.padCapture(on)
-    if S.padCaptured == on then return end
-    if not (reskate.input and reskate.input.capture) then return end
-    local ok, why = pcall(reskate.input.capture, on)
-    if ok then
-        S.padCaptured = on
-    elseif on and not S.captureErr then
-        S.captureErr = true
-        reskate.log("Quick Drop helper: could not keep the controller from the game: " .. tostring(why), "warn")
+-- a PlayStation pad's sticks, triggers and buttons hidden from the game (on) or given back (off). Done again when
+-- a PlayStation pad is first seen while the editor is open: the pad may not have been read yet when it opened,
+-- and before, the hiding was then skipped for the whole time it was open (the skater moved with the pad)
+local function hidePS(on)
+    if not reskate.input.hide then return end
+    if on and (S.psHidden or S.psHideFailed) then return end
+    if not on and not S.psHidden then return end
+    local ok2, err2
+    if on then
+        ok2, err2 = pcall(reskate.input.hide, { left_x = true, left_y = true, right_x = true, right_y = true, left_trigger = true,
+            right_trigger = true, buttons = true, left_stick_click = true, right_stick_click = true })
+    else
+        ok2, err2 = pcall(reskate.input.hide, nil)
+        if not ok2 then ok2, err2 = pcall(reskate.input.hide, {}) end
     end
-    capturePS(on)
-    -- (a PlayStation pad: its sticks, triggers and buttons also hidden from the game while the editor is open)
-    if reskate.input.hide and (S.padPS or S.psHidden) then
-        local ok2, err2
-        if on then
-            ok2, err2 = pcall(reskate.input.hide, { left_x = true, left_y = true, right_x = true, right_y = true, left_trigger = true,
-                right_trigger = true, buttons = true, left_stick_click = true, right_stick_click = true })
-        else
-            ok2, err2 = pcall(reskate.input.hide, nil)
+    S.psHidden = on and ok2 or nil
+    if on and not ok2 then S.psHideFailed = true end
+    reskate.log("Quick Drop helper: " .. (on and "hiding the PlayStation controller from the game: " or "PlayStation controller given back to the game: ")
+        .. (ok2 and "done" or tostring(err2)), ok2 and "info" or "warn")
+end
+FN.hidePS = hidePS
+function FN.padCapture(on)
+    if not (reskate.input and reskate.input.capture) then return end
+    -- (is it a PlayStation pad? read it now, if not read yet)
+    if on and S.padPS == nil and FN.readPadRaw then pcall(FN.readPadRaw) end
+    if S.padCaptured ~= on then
+        local ok, why = pcall(reskate.input.capture, on)
+        if ok then
+            S.padCaptured = on
+        elseif on and not S.captureErr then
+            S.captureErr = true
+            reskate.log("Quick Drop helper: could not keep the controller from the game: " .. tostring(why), "warn")
         end
-        S.psHidden = on and ok2 or nil
-        if not S.psHideLogged then
-            S.psHideLogged = true
-            reskate.log("Quick Drop helper: hiding the PlayStation controller from the game: " .. (ok2 and "done" or tostring(err2)))
-        end
+        capturePS(on)
+    end
+    if on then
+        if S.padPS then hidePS(true) end
+    else
+        hidePS(false)
     end
 end
 

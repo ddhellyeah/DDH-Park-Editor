@@ -88,6 +88,7 @@ local wrap = PE.wrap
             local e = { item = m.item, x = math.floor(off.x * 1000 + 0.5) / 1000, y = math.floor(off.y * 1000 + 0.5) / 1000, z = math.floor(off.z * 1000 + 0.5) / 1000,
                 h = math.floor(wrap(m.heading - h0) * 1e5 + 0.5) / 1e5, s = math.floor(m.scale * 1000 + 0.5) / 1000 }
             if m.tilt then e.tx, e.tz = m.tilt.x, m.tilt.z end
+            e.mod = S.modOfItem(m.item)
             objs[#objs + 1] = e
         end
         local data = { format = "ddh-park-set", version = 1, name = name, objects = objs }
@@ -114,6 +115,314 @@ local wrap = PE.wrap
         S.loadSets()
         say(ok and ("Deleted the set \"" .. set.name .. "\".") or "Could not delete it.", not ok)
     end
+    -- the mod an object comes from, by name (nil when not known): the game's catalog when it says, else the mod
+    -- whose Object Maker outlines have it (part18)
+    local MODFIELDS = { "mod", "mod_title", "modTitle", "mod_name", "modName", "source", "package", "pack", "owner" }
+    local catByKey, catLogged = nil, false
+    local function cleanMod(v)
+        if type(v) == "table" then v = v.title or v.name or v.id end
+        if type(v) ~= "string" then return nil end
+        v = string.gsub(v, "[^%w%-_ %.%(%)!&'+]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if v == "" then return nil end
+        return #v > 40 and string.sub(v, 1, 40) or v
+    end
+    function S.modOfItem(key)
+        local cl = FN.catalog()
+        if catByKey == nil or catByKey.__list ~= cl then
+            catByKey = { __list = cl }
+            for _, it in ipairs(cl) do if type(it) == "table" and it.key then catByKey[it.key] = it end end
+        end
+        local it = catByKey[key]
+        if it then
+            if not catLogged then
+                catLogged = true
+                local f = {}
+                for k in pairs(it) do f[#f + 1] = tostring(k) end
+                table.sort(f)
+                reskate.log("Quick Drop helper: a catalog item has: " .. table.concat(f, ", "))
+            end
+            for _, k in ipairs(MODFIELDS) do
+                local m = cleanMod(it[k])
+                if m then return m end
+            end
+        end
+        local ms = S.modShape and S.modShape[key]
+        if ms and ms.mod then return cleanMod((S.modTitle and S.modTitle[ms.mod]) or ms.mod) end
+        return nil
+    end
+    -- "2 from Fixing Size, 1 from a mod not named" for the objects of a set that are not installed
+    function S.missingText(objs, quiet)
+        local have, by, order, n = FN.catalogHave(), {}, {}, 0
+        for _, o in ipairs(objs) do
+            if not have[o.item] then
+                n += 1
+                local m = o.mod or "?"
+                if not by[m] then by[m] = 0; order[#order + 1] = m end
+                by[m] += 1
+            end
+        end
+        if n == 0 then return 0, "" end
+        table.sort(order, function(a, b) if (a == "?") ~= (b == "?") then return b == "?" end return by[a] > by[b] end)
+        local parts = {}
+        for i, m in ipairs(order) do
+            if i > 3 then parts[#parts + 1] = string.format("%d more mod%s", #order - 3, #order - 3 == 1 and "" or "s") break end
+            parts[#parts + 1] = string.format("%d from %s", by[m], m == "?" and "a mod the set doesn't name" or ("\"" .. m .. "\""))
+        end
+        local all = {}
+        for _, m in ipairs(order) do all[#all + 1] = (m == "?" and "unnamed" or m) .. " x" .. by[m] end
+        if not quiet then reskate.log("Quick Drop helper: set objects missing: " .. table.concat(all, "; ")) end
+        return n, table.concat(parts, ", ")
+    end
+    -- a set's missing objects in short ("2 from "Test Rail Pack", 1 from ..."), "" when none; worked out again when
+    -- the sets are read again (or the game's objects change)
+    function S.setMissing(set)
+        local have = FN.catalogHave()
+        if set._missFor ~= have then
+            local n, text = S.missingText(set.objects, true)
+            -- (and a shorter list for the Sets tab: "Test Rail Pack (2), unknown mod (1)")
+            local by, order = {}, {}
+            for _, o in ipairs(set.objects) do
+                if not have[o.item] then
+                    local m = o.mod or "unknown mod"
+                    if not by[m] then by[m] = 0; order[#order + 1] = m end
+                    by[m] += 1
+                end
+            end
+            table.sort(order, function(a, b) return by[a] > by[b] end)
+            local sh = {}
+            for _, m in ipairs(order) do sh[#sh + 1] = m .. " (" .. by[m] .. ")" end
+            set._missFor, set._missN, set._miss, set._missShort = have, n, text, table.concat(sh, ", ")
+        end
+        return set._miss, set._missN, set._missShort
+    end
+    -- ---- sharing a set as a code: one line of text to paste in a chat; Import code makes it a set again.
+    -- ReSkate's text box holds 256 letters, so the code is kept short:
+    -- SET2|name|item[:m],item,...|i,x,y,z,h[,s[,tx,tz]];...|mod,mod,...
+    --   numbers in base 62 (0-9 a-z A-Z, "-" before negative ones, nothing for 0); positions in mm, turns and tilts
+    --   in 1/100 degree, size in 1/1000 (left out when 1); m: which of the mods at the end the item comes from.
+    --   Items named like the Object Maker's (own_<name>____00001, 43 letters) are written as just <name>; others
+    --   start with "=" and have their runs of 3 or more "_" written ~n~.
+    -- A code too long for the box goes in a text file instead: Share saves it in sets/codes, and Import takes every
+    -- code file put in sets/import. (SET1 and DDHSET1 codes from before still import.)
+    local BOXMAX = 256
+    local CODES, INBOX = FOLDER .. "/codes", FOLDER .. "/import"
+    local B62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    local B62I = {}
+    for i = 1, #B62 do B62I[string.sub(B62, i, i)] = i - 1 end
+    local function enc(n)
+        n = math.floor(n + 0.5)
+        if n == 0 then return "" end
+        local neg = n < 0
+        if neg then n = -n end
+        local t = ""
+        while n > 0 do local d = n % 62; t = string.sub(B62, d + 1, d + 1) .. t; n = math.floor((n - d) / 62) end
+        return neg and ("-" .. t) or t
+    end
+    local function dec(s)
+        if s == nil or s == "" then return 0 end
+        local neg = string.sub(s, 1, 1) == "-"
+        if neg then s = string.sub(s, 2) end
+        local n = 0
+        for i = 1, #s do
+            local d = B62I[string.sub(s, i, i)]
+            if not d then return nil end
+            n = n * 62 + d
+        end
+        return neg and -n or n
+    end
+    local function packKey(k) return (string.gsub(k, "(___+)", function(r) return "~" .. #r .. "~" end)) end
+    local function unpackKey(k) return (string.gsub(k, "~(%d+)~", function(n) return string.rep("_", math.min(tonumber(n) or 0, 64)) end)) end
+    local function shortKey(k)
+        local name = #k == 43 and string.match(k, "^own_(.-)_+00001$")
+        if name and name ~= "" and not string.find(name, "[^%w_]") and string.sub(name, -1) ~= "_" then
+            local back = "own_" .. name .. string.rep("_", 38 - 4 - #name) .. "00001"
+            if back == k then return name end
+        end
+        return "=" .. packKey(k)
+    end
+    local function longKey(t)
+        if string.sub(t, 1, 1) == "=" then return unpackKey(string.sub(t, 2)) end
+        if #t > 34 then return t end
+        return "own_" .. t .. string.rep("_", 38 - 4 - #t) .. "00001"
+    end
+    local function r(v, k) return math.floor((tonumber(v) or 0) * k + 0.5) end
+    function S.setCode(set)
+        local keys, idx, parts, mods, midx = {}, {}, {}, {}, {}
+        for _, e in ipairs(set.objects) do
+            local key = tostring(e.item)
+            if not idx[key] then
+                local m = cleanMod(e.mod) or S.modOfItem(key)
+                local k = shortKey(key)
+                if m then
+                    if not midx[m] then mods[#mods + 1] = m; midx[m] = #mods end
+                    k = k .. ":" .. midx[m]
+                end
+                keys[#keys + 1] = k; idx[key] = #keys
+            end
+            local t = { enc(idx[key]), enc(r(e.x, 1000)), enc(r(e.y, 1000)), enc(r(e.z, 1000)), enc(r(math.deg(e.h or 0), 100)) }
+            local s = r(e.s or 1, 1000)
+            local tx, tz = r(math.deg(e.tx or 0), 100), r(math.deg(e.tz or 0), 100)
+            if s ~= 1000 or tx ~= 0 or tz ~= 0 then t[6] = enc(s) end
+            if tx ~= 0 or tz ~= 0 then t[7], t[8] = enc(tx), enc(tz) end
+            -- (zeros at the end left out)
+            while #t > 1 and t[#t] == "" do t[#t] = nil end
+            parts[#parts + 1] = table.concat(t, ",")
+        end
+        local code = "SET2|" .. safeName(set.name) .. "|" .. table.concat(keys, ",") .. "|" .. table.concat(parts, ";")
+        if #mods > 0 then code = code .. "|" .. table.concat(mods, ",") end
+        return code
+    end
+    -- fields split on a separator, empty ones kept
+    local function split(s, sep)
+        local out, from = {}, 1
+        while true do
+            local at = string.find(s, sep, from, true)
+            if not at then out[#out + 1] = string.sub(s, from) break end
+            out[#out + 1] = string.sub(s, from, at - 1)
+            from = at + 1
+        end
+        return out
+    end
+    -- a code back into a set (nil and why when it is not one)
+    local function readCode(code)
+        -- (line breaks a chat may have put in taken out; the name keeps its spaces)
+        code = string.gsub(tostring(code or ""), "[\r\n\t]", "")
+        code = string.gsub((string.gsub(code, "^%s+", "")), "%s+$", "")
+        code = (string.gsub(code, "^DDHSET1|", "SET1|"))
+        local f = split(code, "|")
+        local ver = f[1]
+        if (ver ~= "SET1" and ver ~= "SET2") or #f < 4 then return nil, "That is not a set code (it starts with SET2)." end
+        local name, keyS, objS, modS = f[2], f[3], f[4], f[5]
+        local new = ver == "SET2"
+        local mods = {}
+        for m in string.gmatch(modS or "", "[^,]+") do mods[#mods + 1] = cleanMod(m) or false end
+        local keys, keyMod = {}, {}
+        for k in string.gmatch(keyS, "[^,]+") do
+            local kk, mi = string.match(k, "^(.-):(%d+)$")
+            kk = kk or k
+            keys[#keys + 1] = new and longKey(kk) or unpackKey(kk)
+            keyMod[#keys] = mi and mods[tonumber(mi)] or nil
+        end
+        local objs = {}
+        for e in string.gmatch(objS, "[^;]+") do
+            local n, bad = {}, false
+            for i, v in ipairs(split(e, ",")) do
+                if new then n[i] = dec(v) else n[i] = tonumber(v) end
+                if n[i] == nil then bad = true end
+            end
+            if new then
+                for i = 2, 5 do n[i] = n[i] or 0 end
+                if n[6] == nil or n[6] == 0 then n[6] = 1000 end
+            end
+            local key = not bad and n[1] and keys[n[1]]
+            if key and n[2] and n[3] and n[4] and n[5] and n[6] then
+                local o = { item = key, x = n[2] / 1000, y = n[3] / 1000, z = n[4] / 1000, h = math.rad(n[5] / 100), s = n[6] / 1000 }
+                if (n[7] and n[7] ~= 0) or (n[8] and n[8] ~= 0) then o.tx, o.tz = math.rad((n[7] or 0) / 100), math.rad((n[8] or 0) / 100) end
+                o.mod = keyMod[n[1]] or nil
+                objs[#objs + 1] = o
+            end
+        end
+        if #objs == 0 then return nil, "That code has no objects in it (is all of it pasted?)." end
+        name = safeName(name)
+        if name == "" then name = "Shared set" end
+        return { name = name, objects = objs }
+    end
+    -- a code made a saved set; quiet: no message, just what happened (name, objects, missing count, missing text)
+    local function importOne(code)
+        local set, why = readCode(code)
+        if not set then return nil, why end
+        -- (a name not taken yet)
+        S.loadSets()
+        local taken = {}
+        for _, s2 in ipairs(S.sets or {}) do taken[string.lower(s2.name)] = true end
+        local name, n = set.name, 2
+        while taken[string.lower(name)] do name = set.name .. " " .. n; n += 1 end
+        local data = { format = "ddh-park-set", version = 1, name = name, objects = set.objects }
+        local file = string.gsub(name, " ", "_") .. ".json"
+        local ok, err = pcall(reskate.files.write, FOLDER .. "/" .. file, reskate.json.encode(data, true))
+        if not ok or err == false then return nil, "Set not imported: " .. tostring(err) end
+        S.loadSets()
+        local missing, mtext = S.missingText(set.objects)
+        reskate.log(string.format("Quick Drop helper: imported set %s with %d objects (%d missing)", file, #set.objects, missing))
+        return { name = name, count = #set.objects, missing = missing, mtext = mtext }
+    end
+    function S.importCode(code)
+        local got, why = importOne(code)
+        if not got then say(why, true) return end
+        say(string.format("Imported the set \"%s\" (%d object%s)%s. Find it under Sets.", got.name, got.count, got.count == 1 and "" or "s",
+            got.missing > 0 and ("; missing mods: " .. got.mtext) or ""), got.missing > 0)
+    end
+    -- every code file in sets/import made a set (each file taken away once imported)
+    local function readme(folder, text) pcall(reskate.files.write, folder .. "/READ ME.txt", text) end
+    function S.importFiles()
+        readme(INBOX, "Put set code files here (a .txt file with a code starting SET2 in it), then press Import code > From files in the DDH Park Editor.\n")
+        local ok, lst = pcall(reskate.files.list, INBOX)
+        local done, failed, names, missing = 0, 0, {}, 0
+        if ok and type(lst) == "table" then
+            for _, e in ipairs(lst) do
+                local base = tostring(type(e) == "table" and (e.name or e.path) or e)
+                base = string.match(base, "([^/\\]+)$") or base
+                if string.lower(string.sub(base, -4)) == ".txt" and base ~= "READ ME.txt" then
+                    local okr, txt = pcall(reskate.files.read, INBOX .. "/" .. base)
+                    local got = okr and type(txt) == "string" and importOne(string.match(txt, "SET[12]|[^\r\n]*") or txt)
+                    if got then
+                        done += 1; names[#names + 1] = got.name; missing += got.missing
+                        pcall(reskate.files.remove, INBOX .. "/" .. base)
+                    else
+                        failed += 1
+                        reskate.log("Quick Drop helper: no set code in import/" .. base)
+                    end
+                end
+            end
+        end
+        if done == 0 then
+            say(failed > 0 and "The files in the import folder have no set codes in them (opened)."
+                or "No code files to import: put them in the import folder (opened), then press From files again.", true)
+            pcall(reskate.files.reveal, INBOX)
+            return
+        end
+        local list = table.concat(names, "\", \"", 1, math.min(#names, 3)) .. (#names > 3 and ("\" and " .. (#names - 3) .. " more") or "\"")
+        say(string.format("Imported \"%s. Find them under Sets.%s%s", list,
+            missing > 0 and " Some objects are from mods you don't have (Place says which)." or "",
+            failed > 0 and string.format(" %d file%s had no code.", failed, failed == 1 and "" or "s") or ""), missing > 0 or failed > 0)
+    end
+    -- the dialogs: the code to copy, and a box to paste one in
+    local function codeDialog(id, opts)
+        local ok, err = pcall(reskate.ui.dialog, id, opts)
+        if ok then return true end
+        reskate.log("Quick Drop helper: set code box: " .. tostring(err))
+        return false
+    end
+    function S.shareSet(set)
+        local code = S.setCode(set)
+        local file = string.gsub(set.name, " ", "_") .. ".txt"
+        readme(CODES, "Set codes made with Share code in the DDH Park Editor. Send a file (or the text in it); your friend puts it in their sets/import folder and presses Import code > From files.\n")
+        pcall(reskate.files.write, CODES .. "/" .. file, code .. "\n")
+        if #code <= BOXMAX and codeDialog("ddh_setshare", { title = "Share \"" .. set.name .. "\"",
+            message = "Copy this code (click in it, Ctrl+A, Ctrl+C) and send it. A friend pastes it with Import code.",
+            field = { text = code, max = BOXMAX }, buttons = { { id = "close", label = "Done" }, { id = "codes", label = "Open codes folder" } } }) then
+            S.typing = true
+            return
+        end
+        say(string.format("This set is too big for a pasted code (%d letters, the box takes %d): send the file \"%s\" from the codes folder (opened).", #code, BOXMAX, file), true)
+        pcall(reskate.files.reveal, CODES)
+    end
+    function S.askImportCode()
+        local ok = codeDialog("ddh_setimport", { title = "Import a set",
+            message = "Paste a set code (it starts with SET2). Got a code file? Put it in the import folder and press From files.",
+            field = { text = "", max = BOXMAX }, buttons = { { id = "apply", label = "Import" }, { id = "files", label = "From files" }, { id = "close", label = "Cancel" } } })
+        if ok then S.typing = true else S.importFiles() end
+    end
+    reskate.on("throwdown_ui", function(e)
+        if e.action ~= "dialog" or (e.args[1] ~= "ddh_setshare" and e.args[1] ~= "ddh_setimport") then return end
+        local id, what = e.args[1], e.args[2]
+        if what ~= "apply" and what ~= "cancel" and what ~= "close" and what ~= "codes" and what ~= "files" then return end
+        S.typing = false
+        if what ~= "cancel" then pcall(reskate.ui.close_dialog, id) end
+        if what == "codes" then pcall(reskate.files.reveal, CODES) end
+        if what == "files" then S.importFiles() end
+        if id == "ddh_setimport" and what == "apply" then S.importCode(e.args[3]) end
+    end)
     function S.openSetsFolder()
         pcall(reskate.files.write, FOLDER .. "/READ ME.txt", "Sets saved with the DDH Park Editor. Share a set by sending its .json file; put sets you get here.\n")
         pcall(reskate.files.reveal, FOLDER)
@@ -133,7 +442,11 @@ local wrap = PE.wrap
                 missing += 1
             end
         end
-        if #list == 0 then say("None of this set's objects are installed (their mods are missing).", true) return end
+        if #list == 0 then
+            local _, mtext = S.missingText(set.objects)
+            say("None of this set's objects are installed. Missing mods: " .. mtext, true)
+            return
+        end
         local rec = { ids = {}, byIdx = {}, total = 0, done = 0, failed = 0, label = "Set \"" .. set.name .. "\"" }
         for i, c in ipairs(list) do
             if i > 200 then break end
@@ -158,7 +471,7 @@ local wrap = PE.wrap
             end
             say(string.format("Placed the set \"%s\": %d objects (picked as a group).%s", set.name, #r.ids, missing > 0 and string.format(" %d left out (mod missing).", missing) or ""))
         end
-        say(string.format("Placing the set \"%s\" (%d objects)...%s", set.name, rec.total, missing > 0 and string.format(" %d left out: their mod is missing.", missing) or ""), missing > 0)
+        say(string.format("Placing the set \"%s\" (%d objects)...%s", set.name, rec.total, missing > 0 and string.format(" %d left out, missing mods: %s.", missing, (S.setMissing(set))) or ""), missing > 0)
     end
     -- carrying a set before it is placed: it follows the cross (or the mouse) as outlines; A / click puts it down
     function S.carrySet(set, at, heading)

@@ -14,6 +14,7 @@ local UP = PE.UP or V(0, 1, 0)
 
 local DIR = "ddh_shapes"
 S.modShape = {}    -- item -> { mod = folder }: its edges are read from that mod the first time they are drawn
+S.modTitle = {}    -- mod folder -> its title, when ReSkate gives one (sets name the mods their objects come from)
 S.modWire = {}     -- item -> its edges (metres), or false when they could not be read
 local SHOWN = 0
 
@@ -68,6 +69,7 @@ local function modFolders()
     if type(t) ~= "table" then return out end
     for _, e in pairs(t) do
         local m = type(e) == "table" and e.mod
+        if type(m) == "string" and type(e.title) == "string" and e.title ~= "" then S.modTitle[m] = e.title end
         if type(m) == "string" and not seen[m] and e.path == "index.json" then
             seen[m] = true
             out[#out + 1] = m
@@ -200,17 +202,30 @@ local function readItem(item, src)
         end
     end
 end
+-- (one object's file read per frame at most: a set of new objects shown at once read them all in one frame, and
+-- the draw went over its 50 ms. The others are drawn as boxes until their turn)
+local readAt, readN = -1, 0
+local function readSome(item, src)
+    if S.modWire[item] ~= nil then return true end
+    -- (only while drawing: snapping and the rest always get the real outline at once)
+    if not S.inDraw then readItem(item, src) return true end
+    if readAt ~= S.clock then readAt, readN = S.clock, 0 end
+    if readN >= 1 then return false end
+    readN += 1
+    readItem(item, src)
+    return true
+end
 local baseWire = FN.wireOf
 function FN.wireOf(item)
     local src = item and S.modShape[item]
     if not src then return baseWire(item) end
-    readItem(item, src)
+    if not readSome(item, src) then return nil end
     return S.modWire[item] or baseWire(item)
 end
 function FN.meshOf(item)
     local src = item and S.modShape[item]
     if not src then return nil end
-    readItem(item, src)
+    if not readSome(item, src) then return nil end
     return S.modMesh[item] or nil
 end
 
@@ -256,8 +271,10 @@ local function drawSilhouette(d, sh, col, th, xf)
     if sh.fill and polyOk then
         local scr = {}
         local style = { colour = fillColour(col), fill = true }
+        local cy = S.cutY
         for i, tr in ipairs(m.t) do
-            if front[i] then
+            -- (none under the ground)
+            if front[i] and not (cy and w[tr[1]].y < cy and w[tr[2]].y < cy and w[tr[3]].y < cy) then
                 local pts = {}
                 for k = 1, 3 do
                     local vi = tr[k]
@@ -281,7 +298,7 @@ local function drawSilhouette(d, sh, col, th, xf)
             local f = front[f1]
             for k = 4, #e do if front[e[k]] ~= f then edge = true break end end
         end
-        if edge then d:world_line(w[e[1]], w[e[2]], style) end
+        if edge then FN.wline(d, w[e[1]], w[e[2]], style) end
     end
     return true
 end
@@ -294,6 +311,96 @@ do
             if not ok and SHOWN < 8 then SHOWN += 1; log("drawing: " .. tostring(done), "warn") end
         end
         return baseDraw(d, sh, col, th, xf)
+    end
+end
+
+-- ---------------------------------------------------------------- what is under the ground, drawn apart
+-- An outline whose shape is marked (sh.cut) is split at the ground's height under it: above, drawn as always;
+-- under it, dashed and see-through (and no dark edge, no fill), so a sunk object shows at once.
+--   sh.cut = "held": the held object (its height over the ground is looked at already, FN.readout)
+--   sh.cut = "ray": not in the world yet (a set or copies being placed): one fast ray down
+--   sh.cut = { id, pos, heading, scale }: an object in the world (a group's): asked as the held one is (its own
+--   model left out), one a frame, the last answer kept meanwhile
+local DASH = 0.12
+function FN.wline(d, a, b, st)
+    local cy = S.cutY
+    if not cy then d:world_line(a, b, st) return end
+    local ay, by = a.y - cy, b.y - cy
+    if ay >= 0 and by >= 0 then d:world_line(a, b, st) return end
+    if ay >= 0 or by >= 0 then
+        local m = a + (b - a) * (ay / (ay - by))
+        if ay >= 0 then d:world_line(a, m, st); a = m else d:world_line(m, b, st); b = m end
+    end
+    if S.cutHalo then return end
+    local sb = { colour = string.sub(tostring(st.colour or "#ffffff"), 1, 7) .. "90", thickness = math.max(1, (st.thickness or 2) - 1) }
+    local dx, dy, dz = b.x - a.x, b.y - a.y, b.z - a.z
+    local n = math.floor(math.sqrt(dx * dx + dy * dy + dz * dz) / DASH)
+    if n < 2 then d:world_line(a, b, sb) return end
+    n = math.min(n, 24)
+    local step = (b - a) * (1 / n)
+    for i = 0, n - 1, 2 do d:world_line(a + step * i, a + step * (i + 1), sb) end
+end
+local cutCache, cutN, lastById = {}, 0, {}
+local rayAt, rayUsed, supAt, supUsed = -1, 0, -1, 0
+local function hitY(h)
+    if type(h) == "table" and h.position then h = h.position end
+    return (h and type(h.y) == "number") and h.y or nil
+end
+function FN.cutFor(sh)
+    local c = sh.cut
+    if not (c and sh.p and sh.ylo) then return nil end
+    local p = sh.p
+    local lo = sh.ylo - p.y
+    if c == "held" then
+        local ro = FN.readout and FN.readout()
+        return (ro and ro.groundY) and (ro.groundY + lo) or nil
+    end
+    local id = type(c) == "table" and c.id or nil
+    local key = tostring(id or sh.item) .. string.format("@%d,%d,%d,%d", math.floor(p.x * 50), math.floor(p.y * 50), math.floor(p.z * 50),
+        math.floor((type(c) == "table" and c.heading or 0) * 100))
+    local v = cutCache[key]
+    if v ~= nil then return v or nil end
+    if cutN > 3000 then cutCache, cutN = {}, 0 end
+    if id then
+        if supAt ~= S.clock then supAt, supUsed = S.clock, 0 end
+        if supUsed >= 1 then return lastById[id] end
+        supUsed += 1
+        local ok, y = pcall(FN.supportY, sh.item, c.pos + V(0, 2, 0), c.heading or 0, c.scale or 1, id)
+        v = (ok and type(y) == "number") and (y + lo) or false
+        lastById[id] = v or nil
+    else
+        if not reskate.world.raycast then return nil end
+        if rayAt ~= S.clock then rayAt, rayUsed = S.clock, 0 end
+        if rayUsed >= 40 then return nil end
+        rayUsed += 1
+        local ok, h = pcall(reskate.world.raycast, V(p.x, sh.yhi + 2, p.z), V(p.x, sh.ylo - 30, p.z))
+        v = ok and hitY(h) or false
+    end
+    cutCache[key] = v
+    cutN += 1
+    return v or nil
+end
+do
+    local inner = PE.drawShape
+    PE.drawShape = function(d, sh, col, th, xf)
+        S.inDraw = true
+        local okA, rA = pcall(function()
+        local cy = nil
+        if sh and sh.cut then
+            local ok, v = pcall(FN.cutFor, sh)
+            if ok then cy = v elseif SHOWN < 8 then SHOWN += 1; log("ground: " .. tostring(v), "warn") end
+        end
+        if not cy then return inner(d, sh, col, th, xf) end
+        -- (a centimetre of slack: an object resting on the ground keeps its bottom lines solid)
+        S.cutY, S.cutHalo = cy - 0.01, col == UI.oHalo
+        local ok, r = pcall(inner, d, sh, col, th, xf)
+        S.cutY, S.cutHalo = nil, nil
+        if not ok then error(r, 0) end
+        return r
+        end)
+        S.inDraw = false
+        if not okA then error(rA, 0) end
+        return rA
     end
 end
 

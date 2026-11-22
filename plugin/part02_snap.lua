@@ -614,9 +614,40 @@ local function heldSolid()
     S.heldSolidC = { id = S.sel.id, pos = t.pos, h = t.heading, sc = t.scale, tl = tl, ok = ok, so = so }
     return ok, so
 end
+-- two turned boxes overlap? (their footprints as turned rectangles, tested side by side, and their heights; each
+-- shrunk by m). Boxes square to the world were compared before, and a turned wall's square box reaches far past
+-- the wall: a copy put flush beside its original still "overlapped" it, so it was never snapped to.
+local function footOf(item, pos, heading, scale, m)
+    local b = S.itemBox[item]
+    if not b then return nil end
+    local lo, hi = b[1] * scale, b[2] * scale
+    local ax, az = V(math.cos(heading), 0, -math.sin(heading)), V(math.sin(heading), 0, math.cos(heading))
+    local x0, x1, z0, z1 = lo.x + m, hi.x - m, lo.z + m, hi.z - m
+    if x0 > x1 then x0, x1 = (lo.x + hi.x) / 2, (lo.x + hi.x) / 2 end
+    if z0 > z1 then z0, z1 = (lo.z + hi.z) / 2, (lo.z + hi.z) / 2 end
+    return { pts = { pos + ax * x0 + az * z0, pos + ax * x1 + az * z0, pos + ax * x1 + az * z1, pos + ax * x0 + az * z1 },
+        axes = { ax, az }, y0 = pos.y + lo.y + m, y1 = pos.y + hi.y - m }
+end
+local function footsOverlap(A, B)
+    if A.y0 >= B.y1 or B.y0 >= A.y1 then return false end
+    for _, F in ipairs({ A, B }) do
+        for _, n in ipairs(F.axes) do
+            local a0, a1, b0, b1 = math.huge, -math.huge, math.huge, -math.huge
+            for _, q in ipairs(A.pts) do local d = q.x * n.x + q.z * n.z; a0 = math.min(a0, d); a1 = math.max(a1, d) end
+            for _, q in ipairs(B.pts) do local d = q.x * n.x + q.z * n.z; b0 = math.min(b0, d); b1 = math.max(b1, d) end
+            if a1 <= b0 or b1 <= a0 then return false end
+        end
+    end
+    return true
+end
 function FN.overlapsHeld(o)
     local t = S.target
     if not (t and S.sel and o) then return false end
+    if not tiltOf(S.sel.id) and not tiltOf(o.id) and S.itemBox[S.sel.item] and S.itemBox[o.item] then
+        local A = footOf(S.sel.item, t.pos, t.heading or 0, t.scale or 1, 0.02)
+        local B = footOf(o.item, o.position, o.heading or 0, o.scale or 1, 0.02)
+        if A and B then return footsOverlap(A, B) end
+    end
     local okA, a = heldSolid()
     local okB, b = pcall(placedSolid, o)
     if okA and okB and a and b and a.x0 and b.x0 and a.x0 < math.huge and b.x0 < math.huge then
@@ -1084,6 +1115,21 @@ function FN.heightStep(oldY, newY)
     end
     FN.markLifted()
     return newY
+end
+-- the held object (and its group with it) put down onto what is under it: its bottom on the ground, also when it
+-- was sunk into it or floating (asked from 2 m higher up, so one sunk up to that deep is found too)
+function FN.dropToGround()
+    local sel, t = S.sel, S.target
+    if not (sel and t) then PE.say("Pick an object first: it then drops onto the ground.", true) return end
+    local ok, y = pcall(FN.supportY, sel.item, t.pos + V(0, 2, 0), t.heading, t.scale, sel.id)
+    if not ok or type(y) ~= "number" then PE.say("No ground found under it.", true) return end
+    local moved = y - t.pos.y
+    if math.abs(moved) < 0.002 then PE.say("It is on the ground already.") return end
+    PE.markUndo()
+    S.lifted[sel.id] = nil
+    t.pos = V(t.pos.x, y, t.pos.z)
+    S.dirty = true
+    PE.say(string.format("Dropped onto the ground (%s %.2f m).", moved > 0 and "up" or "down", math.abs(moved)))
 end
 -- the slope found while moving: tilt the held object to it (or level again when it was tilted by a slope)
 function FN.takeSlope(id, sl, setTl)

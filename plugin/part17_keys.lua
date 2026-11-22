@@ -44,6 +44,8 @@ local ACTIONS = {
     { id = "flyR", name = "Right", hold = true, def = { "Right" } },
     { id = "flyU", name = "Up", hold = true, def = { "PageUp" } },
     { id = "flyD", name = "Down", hold = true, def = { "PageDown" } },
+    { head = "Objects" },
+    { id = "toGround", name = "Drop onto the ground", def = {} },
 }
 local BYID = {}
 for _, a in ipairs(ACTIONS) do if a.id then a.ctx = a.ctx or "ed"; BYID[a.id] = a end end
@@ -175,7 +177,9 @@ function FN.kbBegin()
     was = now
 end
 local function modsOk(b)
-    return (not b.ctrl or now.Ctrl) and (not b.shift or now.Shift) and (not b.alt or now.Alt)
+    -- (Alt held only counts for a key set with Alt: else Alt+Tab, going to another window, cycled the snap target
+    -- with Tab, and snapping seemed to stop)
+    return (not b.ctrl or now.Ctrl) and (not b.shift or now.Shift) and (not b.alt or now.Alt) and (b.alt or not now.Alt or b.key == "Alt")
 end
 -- held: one of its keys down (with its Ctrl / Shift / Alt, if it has them)
 function FN.kbDown(id)

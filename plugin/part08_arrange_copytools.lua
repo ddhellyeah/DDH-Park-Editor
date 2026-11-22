@@ -209,7 +209,9 @@ function FN.drawTools(d)
     for i, c in ipairs(plan) do
         if i > MAX_COPIES then break end
         if S.itemBox[c.item] then
-            PE.drawShape(d, worldShape(c.item, c.pos, c.heading, c.scale), UI.oCopy, 2)
+            local sh = worldShape(c.item, c.pos, c.heading, c.scale)
+            sh.cut = "ray"
+            PE.drawShape(d, sh, UI.oCopy, 2)
         else
             d:world_line(c.pos - V(0.4, 0, 0), c.pos + V(0.4, 0, 0), { colour = UI.oCopy, thickness = 2 })
             d:world_line(c.pos - V(0, 0, 0.4), c.pos + V(0, 0, 0.4), { colour = UI.oCopy, thickness = 2 })
@@ -263,7 +265,9 @@ function FN.drawGroup(d)
             if g and S.itemBox[o.item] then
                 local tl = tilted(id) and S.tilt[id] or nil
                 local xf = tl and function(v) return tiltPoint(g.pos, g.heading, tl, v) end or nil
-                PE.drawShape(d, worldShape(o.item, g.pos, g.heading, g.scale), UI.oGroup, 3, xf)
+                local sh = worldShape(o.item, g.pos, g.heading, g.scale)
+                sh.cut = { id = id, pos = g.pos, heading = g.heading, scale = g.scale }
+                PE.drawShape(d, sh, UI.oGroup, 3, xf)
             else
                 local so = placedSolid(o)
                 if not PE.drawShape(d, so.shape or so, UI.oGroup, 3, so.xf) then
