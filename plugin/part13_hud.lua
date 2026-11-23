@@ -411,7 +411,19 @@ function FN.wireOf(item)
     return a
 end
 -- a line of an outline (part18 draws the part under the ground apart)
-function FN.wline(d, a, b, st) d:world_line(a, b, st) end
+-- Outline lines a frame at most: ReSkate draws at most 4000 shapes a frame (it drops the rest and the drawing
+-- takes long: a big set or group being moved stopped the editor). Past it, no more outline lines this frame;
+-- nearing it, outlines from models give way to plain boxes (12 lines)
+FN.LINES_MAX = 2400
+function FN.lineRoom()
+    if S.lineAt ~= S.clock then S.lineAt, S.lineN = S.clock, 0 end
+    return (S.light and FN.LINES_MAX / 2 or FN.LINES_MAX) - S.lineN
+end
+function FN.wline(d, a, b, st)
+    if FN.lineRoom() <= 0 then return end
+    S.lineN += 1
+    d:world_line(a, b, st)
+end
 -- lines drawn from models in one frame at most (past it, the rest get their boxes: a big group stays quick)
 local WIRE_BUDGET = 2500
 local function drawWire(d, sh, col, th, xf)
@@ -420,7 +432,9 @@ local function drawWire(d, sh, col, th, xf)
     if not (w and sh.p and sh.ax and sh.az) then return false end
     local n = #w // 6
     if S.wireAt ~= S.clock then S.wireAt, S.wireUsed = S.clock, 0 end
-    if S.wireUsed + n > WIRE_BUDGET then return false end
+    if S.wireUsed + n > (S.light and WIRE_BUDGET / 3 or WIRE_BUDGET) then return false end
+    -- (the frame's lines nearly used up: a box instead)
+    if FN.lineRoom() < n + 300 then return false end
     S.wireUsed += n
     local sc = sh.scale or 1
     local p, X, Y, Z = sh.p, sh.ax * sc, UP * sc, sh.az * sc

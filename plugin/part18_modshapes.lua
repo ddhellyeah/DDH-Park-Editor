@@ -248,6 +248,8 @@ local function drawSilhouette(d, sh, col, th, xf)
     if silAt ~= S.clock then silAt, silUsed = S.clock, 0 end
     -- (near ReSkate's time limit: a quarter of the triangles; the rest are drawn plainer)
     if silUsed + nt > (S.light and SIL_BUDGET / 4 or SIL_BUDGET) then return false end
+    -- (and lines left this frame for its edges, else the plainer outline)
+    if FN.lineRoom and FN.lineRoom() < #m.e / 3 + 300 then return false end
     silUsed += nt
     local sc = sh.scale or 1
     local p, X, Y, Z = sh.p, sh.ax * sc, UP * sc, sh.az * sc
@@ -284,6 +286,8 @@ local function drawSilhouette(d, sh, col, th, xf)
                     pts[k] = s2
                 end
                 if pts[1] and pts[2] and pts[3] then
+                    if FN.lineRoom() < 400 then break end
+                    S.lineN += 1
                     local ok = pcall(d.poly, d, pts, style)
                     if not ok then polyOk = false break end
                 end
@@ -323,23 +327,31 @@ end
 --   sh.cut = { id, pos, heading, scale }: an object in the world (a group's): asked as the held one is (its own
 --   model left out), one a frame, the last answer kept meanwhile
 local DASH = 0.12
+local function line(d, a, b, st)
+    S.lineN += 1
+    d:world_line(a, b, st)
+end
 function FN.wline(d, a, b, st)
+    -- (the frame's outline lines counted: see FN.lineRoom, part13)
+    local room = FN.lineRoom()
+    if room <= 0 then return end
     local cy = S.cutY
-    if not cy then d:world_line(a, b, st) return end
+    if not cy then line(d, a, b, st) return end
     local ay, by = a.y - cy, b.y - cy
-    if ay >= 0 and by >= 0 then d:world_line(a, b, st) return end
+    if ay >= 0 and by >= 0 then line(d, a, b, st) return end
     if ay >= 0 or by >= 0 then
         local m = a + (b - a) * (ay / (ay - by))
-        if ay >= 0 then d:world_line(a, m, st); a = m else d:world_line(m, b, st); b = m end
+        if ay >= 0 then line(d, a, m, st); a = m else line(d, m, b, st); b = m end
     end
     if S.cutHalo then return end
     local sb = { colour = string.sub(tostring(st.colour or "#ffffff"), 1, 7) .. "90", thickness = math.max(1, (st.thickness or 2) - 1) }
     local dx, dy, dz = b.x - a.x, b.y - a.y, b.z - a.z
     local n = math.floor(math.sqrt(dx * dx + dy * dy + dz * dz) / DASH)
-    if n < 2 then d:world_line(a, b, sb) return end
+    -- (dashes only while lines are plentiful: else one see-through line)
+    if n < 2 or room < 800 then line(d, a, b, sb) return end
     n = math.min(n, 24)
     local step = (b - a) * (1 / n)
-    for i = 0, n - 1, 2 do d:world_line(a + step * i, a + step * (i + 1), sb) end
+    for i = 0, n - 1, 2 do line(d, a + step * i, a + step * (i + 1), sb) end
 end
 local cutCache, cutN, lastById, lastAt = {}, 0, {}, {}
 local rayAt, rayUsed, supAt, supUsed = -1, 0, -1, 0
